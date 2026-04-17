@@ -3,6 +3,7 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -227,3 +228,6 @@ async def redeem_reward(
         redeemed=True,
         ledger_entry_id=entry_id,
     )
+
+
+app.mount("/", StaticFiles(directory="static", html=True), name="static")

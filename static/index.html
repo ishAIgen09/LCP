@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Barista POS — The Indie Coffee Loop</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --card: #1a1d24;
+      --text: #f4f4f5;
+      --muted: #8b8f97;
+      --border: #2a2f3a;
+      --accent: #6366f1;
+      --success: #22c55e;
+      --warn: #f59e0b;
+      --error: #ef4444;
+      --reward: #fbbf24;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+    .app {
+      max-width: 480px;
+      margin: 0 auto;
+      padding: 16px;
+      padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
+    }
+    h1 {
+      font-size: 20px;
+      margin: 8px 0 16px;
+      font-weight: 600;
+    }
+    .card {
+      background: var(--card);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .card h2 {
+      margin: 0 0 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    label {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 6px;
+      color: var(--muted);
+    }
+    input[type="text"] {
+      width: 100%;
+      padding: 12px;
+      font-size: 16px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #0f1115;
+      color: var(--text);
+      font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+    }
+    input[type="text"]:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    button {
+      width: 100%;
+      padding: 14px;
+      font-size: 16px;
+      font-weight: 600;
+      border: none;
+      border-radius: 8px;
+      background: var(--accent);
+      color: white;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    button.secondary {
+      background: var(--border);
+    }
+    .row { display: flex; gap: 8px; }
+    .row button { flex: 1; }
+    .gap { height: 10px; }
+    .status {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 10px;
+      line-height: 1.4;
+      min-height: 18px;
+    }
+    .status.ok { color: var(--success); }
+    #reader {
+      width: 100%;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #000;
+    }
+    #reader video { border-radius: 8px; display: block; width: 100%; }
+
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 24px);
+      transform: translateX(-50%) translateY(200%);
+      background: var(--card);
+      color: var(--text);
+      padding: 14px 20px;
+      border-radius: 12px;
+      font-size: 15px;
+      font-weight: 500;
+      min-width: 260px;
+      max-width: 90vw;
+      text-align: center;
+      transition: transform 0.25s ease;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+      z-index: 250;
+    }
+    .toast.show { transform: translateX(-50%) translateY(0); }
+    .toast.success { background: var(--success); color: white; }
+    .toast.error { background: var(--error); color: white; }
+    .toast.warn { background: var(--warn); color: white; }
+
+    .reward-modal {
+      position: fixed;
+      inset: 0;
+      background: var(--reward);
+      color: #111;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 24px);
+      z-index: 200;
+    }
+    .reward-modal[hidden] { display: none; }
+    .reward-modal-inner {
+      width: 100%;
+      max-width: 420px;
+      text-align: center;
+    }
+    .reward-emoji {
+      font-size: 64px;
+      line-height: 1;
+      margin-bottom: 8px;
+    }
+    .reward-headline {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      line-height: 1.1;
+      margin-bottom: 10px;
+    }
+    .reward-balance {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 32px;
+      opacity: 0.75;
+    }
+    .big {
+      width: 100%;
+      padding: 20px;
+      font-size: 18px;
+      font-weight: 700;
+      border-radius: 12px;
+      border: none;
+      cursor: pointer;
+      touch-action: manipulation;
+      margin-bottom: 12px;
+    }
+    .big:last-child { margin-bottom: 0; }
+    .big.redeem {
+      background: #111;
+      color: var(--reward);
+    }
+    .big.outlined {
+      background: transparent;
+      color: #111;
+      border: 2px solid #111;
+    }
+    .big:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <h1>☕ Barista POS</h1>
+
+    <section class="card">
+      <h2>Configuration</h2>
+      <label for="api-key">Venue API Key</label>
+      <input type="text" id="api-key" placeholder="paste your Venue-API-Key" autocomplete="off" spellcheck="false">
+      <div class="gap"></div>
+      <div class="row">
+        <button id="save-key">Save</button>
+        <button id="clear-key" class="secondary">Clear</button>
+      </div>
+      <div class="status" id="config-status"></div>
+    </section>
+
+    <section class="card">
+      <h2>Scan Customer Code</h2>
+      <div id="reader"></div>
+      <div class="gap"></div>
+      <div class="row">
+        <button id="start-scan">Start scanner</button>
+        <button id="stop-scan" class="secondary" disabled>Stop</button>
+      </div>
+      <div class="status" id="scan-status">Scanner idle.</div>
+    </section>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <div class="reward-modal" id="reward-modal" role="dialog" aria-labelledby="reward-headline" hidden>
+    <div class="reward-modal-inner">
+      <div class="reward-emoji" aria-hidden="true">🎉</div>
+      <div class="reward-headline" id="reward-headline">FREE DRINK AVAILABLE!</div>
+      <div class="reward-balance" id="reward-balance-label">Balance: 10</div>
+      <button id="redeem-now" class="big redeem">Redeem Reward Now</button>
+      <button id="save-later" class="big outlined">Save for Later</button>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script>
+  (function () {
+    "use strict";
+
+    const STORAGE_KEY = "indie_coffee_loop_api_key";
+    const TILL_CODE_PATTERN = /^[A-Z0-9]{6}$/;
+    const SCAN_COOLDOWN_MS = 2500;
+    const REWARD_RESOLVED_COOLDOWN_MS = 10000;
+
+    const apiKeyInput = document.getElementById("api-key");
+    const saveKeyBtn = document.getElementById("save-key");
+    const clearKeyBtn = document.getElementById("clear-key");
+    const configStatus = document.getElementById("config-status");
+    const startBtn = document.getElementById("start-scan");
+    const stopBtn = document.getElementById("stop-scan");
+    const scanStatus = document.getElementById("scan-status");
+    const toastEl = document.getElementById("toast");
+    const rewardModal = document.getElementById("reward-modal");
+    const rewardBalanceLabel = document.getElementById("reward-balance-label");
+    const redeemNowBtn = document.getElementById("redeem-now");
+    const saveLaterBtn = document.getElementById("save-later");
+
+    let scanner = null;
+    let scannerPaused = false;
+    let lastScanValue = "";
+    let lastScanTime = 0;
+    let inFlight = false;
+    let toastTimer = null;
+
+    let pendingRewardTillCode = null;
+    let rewardResolvedCode = "";
+    let rewardResolvedAt = 0;
+
+    function getStoredKey() {
+      return localStorage.getItem(STORAGE_KEY) || "";
+    }
+    function setStoredKey(key) {
+      if (key) localStorage.setItem(STORAGE_KEY, key);
+      else localStorage.removeItem(STORAGE_KEY);
+    }
+    function renderConfigStatus() {
+      const key = getStoredKey();
+      if (key) {
+        configStatus.textContent = "API key saved (" + key.slice(0, 8) + "…).";
+        configStatus.classList.add("ok");
+      } else {
+        configStatus.textContent = "No API key saved yet.";
+        configStatus.classList.remove("ok");
+      }
+    }
+    function showToast(message, variant, durationMs) {
+      if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+      toastEl.textContent = message;
+      toastEl.className = "toast show " + (variant || "");
+      const ms = durationMs === 0 ? 0 : (durationMs || 3000);
+      if (ms > 0) {
+        toastTimer = setTimeout(() => toastEl.classList.remove("show"), ms);
+      }
+    }
+
+    function pauseScanner() {
+      if (!scanner || scannerPaused) return;
+      try { scanner.pause(true); scannerPaused = true; } catch (_) {}
+    }
+    function resumeScanner() {
+      if (!scanner || !scannerPaused) return;
+      try { scanner.resume(); scannerPaused = false; } catch (_) {}
+    }
+
+    function showRewardPrompt(tillCode, balance) {
+      pendingRewardTillCode = tillCode;
+      rewardBalanceLabel.textContent = "Balance: " + balance;
+      redeemNowBtn.disabled = false;
+      saveLaterBtn.disabled = false;
+      redeemNowBtn.textContent = "Redeem Reward Now";
+      rewardModal.hidden = false;
+      pauseScanner();
+      scanStatus.textContent = "Reward available for " + tillCode + " — awaiting barista action.";
+    }
+    function dismissRewardPrompt() {
+      if (pendingRewardTillCode) {
+        rewardResolvedCode = pendingRewardTillCode;
+        rewardResolvedAt = Date.now();
+      }
+      pendingRewardTillCode = null;
+      rewardModal.hidden = true;
+      resumeScanner();
+    }
+
+    saveKeyBtn.addEventListener("click", () => {
+      const key = apiKeyInput.value.trim();
+      if (!key) {
+        showToast("Enter a key first.", "warn");
+        return;
+      }
+      setStoredKey(key);
+      apiKeyInput.value = "";
+      renderConfigStatus();
+      showToast("API key saved.", "success");
+    });
+    clearKeyBtn.addEventListener("click", () => {
+      setStoredKey("");
+      renderConfigStatus();
+      showToast("API key cleared.", "warn");
+    });
+
+    async function postStamp(tillCode) {
+      const key = getStoredKey();
+      if (!key) {
+        showToast("Save your API key first.", "error");
+        return;
+      }
+      if (inFlight) return;
+      inFlight = true;
+      scanStatus.textContent = "Stamping " + tillCode + "…";
+
+      let res;
+      try {
+        res = await fetch("/api/venues/stamp", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Venue-API-Key": key,
+          },
+          body: JSON.stringify({ till_code: tillCode }),
+        });
+      } catch (e) {
+        showToast("Network error: " + e.message, "error", 4000);
+        scanStatus.textContent = "Network error.";
+        inFlight = false;
+        return;
+      }
+
+      let detail = "";
+      let data = null;
+      try {
+        const body = await res.json();
+        data = body;
+        if (body && typeof body.detail === "string") detail = body.detail;
+      } catch (_) { /* body not json */ }
+
+      if (res.ok && data) {
+        const balance = data.stamp_balance;
+        if (balance >= 10 || data.reward_earned) {
+          showRewardPrompt(tillCode, balance);
+        } else {
+          showToast("Stamp added. Balance: " + balance + "/10", "success");
+          scanStatus.textContent = "Last: " + tillCode + " → " + balance + "/10";
+        }
+      } else if (res.status === 401) {
+        showToast("Invalid API key — re-enter it in Configuration.", "error", 4500);
+        scanStatus.textContent = "Auth failed (401).";
+      } else if (res.status === 402) {
+        showToast("Subscription inactive — " + (detail || "billing required"), "error", 5500);
+        scanStatus.textContent = "Billing required (402).";
+      } else if (res.status === 404) {
+        showToast("Customer not found.", "error");
+        scanStatus.textContent = "Unknown till_code (404).";
+      } else if (res.status === 422) {
+        showToast("Invalid code format.", "error");
+        scanStatus.textContent = "Validation failed (422).";
+      } else {
+        showToast("Error " + res.status + (detail ? ": " + detail : ""), "error", 4000);
+        scanStatus.textContent = "Error " + res.status + ".";
+      }
+      inFlight = false;
+    }
+
+    async function postRedeem(tillCode) {
+      const key = getStoredKey();
+      if (!key) {
+        showToast("Save your API key first.", "error");
+        return;
+      }
+      redeemNowBtn.disabled = true;
+      saveLaterBtn.disabled = true;
+      redeemNowBtn.textContent = "Redeeming…";
+
+      let res;
+      try {
+        res = await fetch("/api/venues/redeem", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Venue-API-Key": key,
+          },
+          body: JSON.stringify({ till_code: tillCode }),
+        });
+      } catch (e) {
+        showToast("Network error: " + e.message, "error", 4000);
+        redeemNowBtn.disabled = false;
+        saveLaterBtn.disabled = false;
+        redeemNowBtn.textContent = "Redeem Reward Now";
+        return;
+      }
+
+      let detail = "";
+      let data = null;
+      try {
+        const body = await res.json();
+        data = body;
+        if (body && typeof body.detail === "string") detail = body.detail;
+      } catch (_) {}
+
+      if (res.ok && data) {
+        dismissRewardPrompt();
+        showToast("✅ Reward redeemed. Balance: " + data.stamp_balance, "success", 3000);
+        scanStatus.textContent = "Redeemed " + tillCode + " → " + data.stamp_balance + "/10";
+      } else if (res.status === 409) {
+        dismissRewardPrompt();
+        showToast("Balance changed — " + (detail || "no reward to redeem"), "warn", 4000);
+        scanStatus.textContent = "Redeem rejected (409).";
+      } else {
+        showToast("Redeem failed: " + res.status + (detail ? " — " + detail : ""), "error", 4500);
+        redeemNowBtn.disabled = false;
+        saveLaterBtn.disabled = false;
+        redeemNowBtn.textContent = "Redeem Reward Now";
+      }
+    }
+
+    redeemNowBtn.addEventListener("click", () => {
+      const tillCode = pendingRewardTillCode;
+      if (!tillCode) return;
+      postRedeem(tillCode);
+    });
+    saveLaterBtn.addEventListener("click", () => {
+      const tillCode = pendingRewardTillCode;
+      dismissRewardPrompt();
+      showToast("Saved for later. Ready for next customer.", "success", 2500);
+      scanStatus.textContent = "Saved for later (" + tillCode + ") — ready to scan.";
+    });
+
+    function onScanSuccess(decodedText) {
+      if (!rewardModal.hidden) return;
+
+      const code = (decodedText || "").trim().toUpperCase();
+      const now = Date.now();
+
+      if (code === lastScanValue && now - lastScanTime < SCAN_COOLDOWN_MS) return;
+      if (code === rewardResolvedCode && now - rewardResolvedAt < REWARD_RESOLVED_COOLDOWN_MS) {
+        scanStatus.textContent = "Just resolved '" + code + "' — move the card away.";
+        return;
+      }
+      if (!TILL_CODE_PATTERN.test(code)) {
+        scanStatus.textContent = "Ignoring '" + code + "' — not a 6-char [A-Z0-9] code.";
+        return;
+      }
+
+      lastScanValue = code;
+      lastScanTime = now;
+      postStamp(code);
+    }
+
+    startBtn.addEventListener("click", async () => {
+      if (scanner) return;
+      try {
+        scanner = new Html5Qrcode("reader");
+        await scanner.start(
+          { facingMode: "environment" },
+          { fps: 10, qrbox: { width: 240, height: 240 } },
+          onScanSuccess,
+          () => {}
+        );
+        scannerPaused = false;
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        scanStatus.textContent = "Scanner running. Point the camera at a customer code.";
+      } catch (e) {
+        scanner = null;
+        showToast("Camera error: " + (e && e.message ? e.message : e), "error", 4500);
+        scanStatus.textContent = "Camera unavailable.";
+      }
+    });
+
+    stopBtn.addEventListener("click", async () => {
+      if (!scanner) return;
+      try {
+        await scanner.stop();
+        await scanner.clear();
+      } catch (_) { /* ignore */ }
+      scanner = null;
+      scannerPaused = false;
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      scanStatus.textContent = "Scanner stopped.";
+    });
+
+    renderConfigStatus();
+  })();
+  </script>
+</body>
+</html>
