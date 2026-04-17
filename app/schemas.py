@@ -47,7 +47,6 @@ class BalanceResponse(BaseModel):
 
 
 class StampRequest(BaseModel):
-    cafe_id: UUID
     user_id: UUID | None = None
     till_code: str | None = Field(default=None, pattern=r"^[A-Z0-9]{6}$")
     barista_id: UUID | None = None
