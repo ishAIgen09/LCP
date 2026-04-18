@@ -3,12 +3,33 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models import SubscriptionStatus
+from app.models import SchemeType, SubscriptionStatus
+
+
+class BrandCreate(BaseModel):
+    name: str = Field(min_length=1)
+    slug: str = Field(min_length=1, pattern=r"^[a-z0-9-]+$")
+    contact_email: str = Field(min_length=3)
+    scheme_type: SchemeType = SchemeType.GLOBAL
+
+
+class BrandResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    name: str
+    slug: str
+    contact_email: str
+    scheme_type: SchemeType
+    subscription_status: SubscriptionStatus
+    created_at: datetime
 
 
 class CafeCreate(BaseModel):
+    brand_id: UUID
     name: str = Field(min_length=1)
     slug: str = Field(min_length=1, pattern=r"^[a-z0-9-]+$")
+    address: str = Field(min_length=1)
     contact_email: str = Field(min_length=3)
 
 
@@ -16,10 +37,11 @@ class CafeResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    brand_id: UUID
     name: str
     slug: str
+    address: str
     contact_email: str
-    subscription_status: SubscriptionStatus
     created_at: datetime
 
 
@@ -74,3 +96,11 @@ class RedeemResponse(BaseModel):
     stamp_balance: int
     redeemed: bool
     ledger_entry_id: UUID
+
+
+class CheckoutRequest(BaseModel):
+    brand_id: UUID
+
+
+class CheckoutResponse(BaseModel):
+    checkout_url: str

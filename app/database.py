@@ -11,6 +11,9 @@ from sqlalchemy.orm import DeclarativeBase
 
 class Settings(BaseSettings):
     database_url: str
+    stripe_secret_key: str | None = None
+    stripe_webhook_secret: str | None = None
+    debug_skip_stripe_sig: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

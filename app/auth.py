@@ -4,7 +4,7 @@ from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
-from app.models import Cafe, SubscriptionStatus
+from app.models import Brand, Cafe, SubscriptionStatus
 
 
 async def get_active_cafe(
@@ -32,11 +32,18 @@ async def get_active_cafe(
             detail="Invalid Venue-API-Key",
         )
 
-    if cafe.subscription_status != SubscriptionStatus.ACTIVE:
+    brand = await session.get(Brand, cafe.brand_id)
+    if brand is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Venue-API-Key",
+        )
+
+    if brand.subscription_status != SubscriptionStatus.ACTIVE:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=(
-                f"Cafe subscription is '{cafe.subscription_status.value}'; "
+                f"Brand subscription is '{brand.subscription_status.value}'; "
                 "'active' required to use venue endpoints."
             ),
         )

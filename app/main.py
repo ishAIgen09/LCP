@@ -8,10 +8,21 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_active_cafe
+from app.billing import router as billing_router
 from app.database import get_session
-from app.models import Cafe, LedgerEventType, StampLedger, SubscriptionStatus, User
+from app.models import (
+    Brand,
+    Cafe,
+    LedgerEventType,
+    SchemeType,
+    StampLedger,
+    SubscriptionStatus,
+    User,
+)
 from app.schemas import (
     BalanceResponse,
+    BrandCreate,
+    BrandResponse,
     CafeCreate,
     CafeResponse,
     RedeemRequest,
@@ -25,7 +36,7 @@ from app.schemas import (
 TILL_CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 REWARD_THRESHOLD = 10
 
-app = FastAPI(title="The Indie Coffee Loop API", version="0.1.0")
+app = FastAPI(title="The Indie Coffee Loop API", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -43,10 +54,27 @@ def _generate_barcode() -> str:
     return secrets.token_hex(12)
 
 
-async def _lock_user_and_read_balance(
+def _scoped_balance_stmt(user_id: UUID, scanning_brand: Brand):
+    # Balance is computed per the scanning brand's scheme:
+    #   PRIVATE → only stamps earned at this brand's own cafes
+    #   GLOBAL  → stamps earned at any cafe whose brand is also GLOBAL
+    stmt = (
+        select(func.coalesce(func.sum(StampLedger.stamp_delta), 0))
+        .join(Cafe, StampLedger.cafe_id == Cafe.id)
+        .where(StampLedger.customer_id == user_id)
+    )
+    if scanning_brand.scheme_type == SchemeType.PRIVATE:
+        return stmt.where(Cafe.brand_id == scanning_brand.id)
+    return stmt.join(Brand, Cafe.brand_id == Brand.id).where(
+        Brand.scheme_type == SchemeType.GLOBAL
+    )
+
+
+async def _lock_user_and_read_scoped_balance(
     session: AsyncSession,
     user_id: UUID | None,
     till_code: str | None,
+    scanning_brand: Brand,
 ) -> tuple[User, int]:
     stmt = select(User).with_for_update()
     if user_id is not None:
@@ -60,11 +88,52 @@ async def _lock_user_and_read_balance(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
 
-    balance_stmt = select(
-        func.coalesce(func.sum(StampLedger.stamp_delta), 0)
-    ).where(StampLedger.customer_id == user.id)
-    balance = int((await session.execute(balance_stmt)).scalar_one())
+    balance = int(
+        (
+            await session.execute(_scoped_balance_stmt(user.id, scanning_brand))
+        ).scalar_one()
+    )
     return user, balance
+
+
+@app.post(
+    "/api/admin/brands",
+    response_model=BrandResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_brand(
+    payload: BrandCreate,
+    session: AsyncSession = Depends(get_session),
+) -> Brand:
+    brand = Brand(
+        name=payload.name,
+        slug=payload.slug,
+        contact_email=payload.contact_email,
+        scheme_type=payload.scheme_type,
+    )
+    session.add(brand)
+    await session.commit()
+    await session.refresh(brand)
+    return brand
+
+
+@app.post(
+    "/api/admin/brands/{brand_id}/activate",
+    response_model=BrandResponse,
+)
+async def activate_brand(
+    brand_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> Brand:
+    brand = await session.get(Brand, brand_id)
+    if brand is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Brand not found"
+        )
+    brand.subscription_status = SubscriptionStatus.ACTIVE
+    await session.commit()
+    await session.refresh(brand)
+    return brand
 
 
 @app.post(
@@ -76,31 +145,19 @@ async def create_cafe(
     payload: CafeCreate,
     session: AsyncSession = Depends(get_session),
 ) -> Cafe:
+    brand = await session.get(Brand, payload.brand_id)
+    if brand is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Brand not found"
+        )
     cafe = Cafe(
+        brand_id=payload.brand_id,
         name=payload.name,
         slug=payload.slug,
+        address=payload.address,
         contact_email=payload.contact_email,
     )
     session.add(cafe)
-    await session.commit()
-    await session.refresh(cafe)
-    return cafe
-
-
-@app.post(
-    "/api/admin/cafes/{cafe_id}/activate",
-    response_model=CafeResponse,
-)
-async def activate_cafe(
-    cafe_id: UUID,
-    session: AsyncSession = Depends(get_session),
-) -> Cafe:
-    cafe = await session.get(Cafe, cafe_id)
-    if cafe is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Cafe not found"
-        )
-    cafe.subscription_status = SubscriptionStatus.ACTIVE
     await session.commit()
     await session.refresh(cafe)
     return cafe
@@ -156,8 +213,9 @@ async def issue_stamp(
     cafe: Cafe = Depends(get_active_cafe),
     session: AsyncSession = Depends(get_session),
 ) -> StampResponse:
-    user, current_balance = await _lock_user_and_read_balance(
-        session, payload.user_id, payload.till_code
+    brand = await session.get(Brand, cafe.brand_id)
+    user, current_balance = await _lock_user_and_read_scoped_balance(
+        session, payload.user_id, payload.till_code, brand
     )
 
     entry = StampLedger(
@@ -194,8 +252,9 @@ async def redeem_reward(
     cafe: Cafe = Depends(get_active_cafe),
     session: AsyncSession = Depends(get_session),
 ) -> RedeemResponse:
-    user, current_balance = await _lock_user_and_read_balance(
-        session, payload.user_id, payload.till_code
+    brand = await session.get(Brand, cafe.brand_id)
+    user, current_balance = await _lock_user_and_read_scoped_balance(
+        session, payload.user_id, payload.till_code, brand
     )
 
     if current_balance < REWARD_THRESHOLD:
@@ -229,5 +288,7 @@ async def redeem_reward(
         ledger_entry_id=entry_id,
     )
 
+
+app.include_router(billing_router)
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

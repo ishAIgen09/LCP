@@ -31,6 +31,11 @@ class SubscriptionStatus(str, enum.Enum):
     INCOMPLETE = "incomplete"
 
 
+class SchemeType(str, enum.Enum):
+    GLOBAL = "global"
+    PRIVATE = "private"
+
+
 ledger_event_type_enum = PgEnum(
     LedgerEventType,
     name="ledger_event_type",
@@ -45,9 +50,16 @@ subscription_status_enum = PgEnum(
     create_type=False,
 )
 
+scheme_type_enum = PgEnum(
+    SchemeType,
+    name="scheme_type",
+    values_callable=lambda e: [m.value for m in e],
+    create_type=False,
+)
 
-class Cafe(Base):
-    __tablename__ = "cafes"
+
+class Brand(Base):
+    __tablename__ = "brands"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -57,10 +69,20 @@ class Cafe(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     slug: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     contact_email: Mapped[str] = mapped_column(Text, nullable=False)
+    scheme_type: Mapped[SchemeType] = mapped_column(
+        scheme_type_enum,
+        nullable=False,
+        server_default=text("'global'"),
+    )
+    stripe_customer_id: Mapped[str | None] = mapped_column(Text, unique=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(Text, unique=True)
     subscription_status: Mapped[SubscriptionStatus] = mapped_column(
         subscription_status_enum,
         nullable=False,
         server_default=text("'incomplete'"),
+    )
+    current_period_end: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True)
     )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
@@ -69,7 +91,36 @@ class Cafe(Base):
     )
 
     __table_args__ = (
-        Index("idx_cafes_subscription_status", "subscription_status"),
+        Index("idx_brands_subscription_status", "subscription_status"),
+        Index("idx_brands_scheme_type", "scheme_type"),
+    )
+
+
+class Cafe(Base):
+    __tablename__ = "cafes"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    brand_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("brands.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    slug: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    address: Mapped[str] = mapped_column(Text, nullable=False)
+    contact_email: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+    )
+
+    __table_args__ = (
+        Index("idx_cafes_brand_id", "brand_id"),
     )
 
 
@@ -120,37 +171,6 @@ class Barista(Base):
     __table_args__ = (
         UniqueConstraint("cafe_id", "email", name="baristas_cafe_id_email_key"),
         Index("idx_baristas_cafe_id", "cafe_id"),
-    )
-
-
-class Subscription(Base):
-    __tablename__ = "subscriptions"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        server_default=text("gen_random_uuid()"),
-    )
-    cafe_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("cafes.id", ondelete="CASCADE"),
-        nullable=False,
-        unique=True,
-    )
-    stripe_customer_id: Mapped[str | None] = mapped_column(Text, unique=True)
-    stripe_subscription_id: Mapped[str | None] = mapped_column(Text, unique=True)
-    status: Mapped[SubscriptionStatus] = mapped_column(
-        subscription_status_enum,
-        nullable=False,
-        server_default=text("'incomplete'"),
-    )
-    current_period_end: Mapped[datetime | None] = mapped_column(
-        TIMESTAMP(timezone=True)
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True),
-        nullable=False,
-        server_default=text("now()"),
     )
 
 

@@ -1,12 +1,14 @@
 -- =============================================================================
--- The Indie Coffee Loop — PHASE 1 schema (Data & Admin Foundation)
+-- The Indie Coffee Loop — schema (post-Brand pivot)
 -- =============================================================================
--- Scope: Phase 1 ONLY. Do not add POS-auth, SSE subscriber state, or
--- geolocation/map-discovery tables here — those land in Phases 2 and 3.
+-- Two loyalty models, both driven by brands.scheme_type:
+--   'global'  → stamps pool across EVERY cafe whose brand is also 'global'
+--   'private' → stamps pool only across the cafes belonging to this brand
 --
 -- Ledger rule (non-negotiable):
 --   stamp_ledger is APPEND-ONLY. Never UPDATE, never DELETE.
---   A customer's current balance = SUM(stamp_delta) over their ledger rows.
+--   A customer's current balance is computed at read time, scoped by the
+--   scanning cafe's brand scheme (see README / app/main.py::_scoped_balance_stmt).
 --   Atomic stamp issuance uses SELECT ... FOR UPDATE on the users row,
 --   inside a single transaction, to prevent double-scans.
 --
@@ -19,12 +21,8 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- Enums
 -- -----------------------------------------------------------------------------
 
--- Ledger event type. EARN = +1 stamp. REDEEM = -10 stamps (free drink claim).
 CREATE TYPE ledger_event_type AS ENUM ('EARN', 'REDEEM');
 
--- Cafe-level subscription status, written by admin in Phase 1 and by the
--- Stripe webhook handler in Phase 2. Kept as a small enum so the POS can
--- gate access on status = 'active' without joining extra tables.
 CREATE TYPE subscription_status AS ENUM (
     'trialing',
     'active',
@@ -33,48 +31,63 @@ CREATE TYPE subscription_status AS ENUM (
     'incomplete'
 );
 
+-- Loyalty scheme for a brand.
+--   global  — opt-in to the shared network; stamps pool across ALL global brands
+--   private — walled garden; stamps pool only within this brand's own cafes
+CREATE TYPE scheme_type AS ENUM ('global', 'private');
+
 -- -----------------------------------------------------------------------------
--- cafes — independent cafe tenants in the network
+-- brands — top-level tenant. A brand owns one or more cafes and one Stripe
+-- subscription. scheme_type decides the loyalty pool for all its cafes.
+-- -----------------------------------------------------------------------------
+CREATE TABLE brands (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name                    TEXT        NOT NULL,
+    slug                    TEXT        NOT NULL UNIQUE,
+    contact_email           TEXT        NOT NULL,
+    scheme_type             scheme_type NOT NULL DEFAULT 'global',
+    stripe_customer_id      TEXT        UNIQUE,
+    stripe_subscription_id  TEXT        UNIQUE,
+    subscription_status     subscription_status NOT NULL DEFAULT 'incomplete',
+    current_period_end      TIMESTAMPTZ,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_brands_subscription_status ON brands (subscription_status);
+CREATE INDEX idx_brands_scheme_type         ON brands (scheme_type);
+
+-- -----------------------------------------------------------------------------
+-- cafes — a physical branch that belongs to exactly one brand.
+-- Subscription / billing fields live on brands, not here.
 -- -----------------------------------------------------------------------------
 CREATE TABLE cafes (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    brand_id        UUID        NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
     name            TEXT        NOT NULL,
-    slug            TEXT        NOT NULL UNIQUE,           -- url-safe handle
+    slug            TEXT        NOT NULL UNIQUE,
+    address         TEXT        NOT NULL,
     contact_email   TEXT        NOT NULL,
-    -- Denormalised subscription status for fast POS-gate reads.
-    -- Source of truth for billing details lives in subscriptions.
-    subscription_status subscription_status NOT NULL DEFAULT 'incomplete',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_cafes_subscription_status ON cafes (subscription_status);
+CREATE INDEX idx_cafes_brand_id ON cafes (brand_id);
 
 -- -----------------------------------------------------------------------------
 -- users — end customers (B2C). Each has a unique 6-character till_code drawn
 -- from the uppercase alphanumeric alphabet [A-Z0-9] and a barcode string.
--- till_code and barcode are kept separate so the barcode can later be
--- rotated without changing the spoken code.
 -- -----------------------------------------------------------------------------
 CREATE TABLE users (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    till_code       CHAR(6)     NOT NULL UNIQUE,            -- spoken/typed at the till
-    barcode         TEXT        NOT NULL UNIQUE,            -- scanned via WebRTC
-    email           TEXT        UNIQUE,                     -- optional for MVP
+    till_code       CHAR(6)     NOT NULL UNIQUE,
+    barcode         TEXT        NOT NULL UNIQUE,
+    email           TEXT        UNIQUE,
     display_name    TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT till_code_format CHECK (till_code ~ '^[A-Z0-9]{6}$')
 );
 
--- till_code UNIQUE already creates a btree index used for lookups by the POS.
--- The PRIMARY KEY on users.id is what the atomic stamp path locks via
---   SELECT ... FROM users WHERE id = $1 FOR UPDATE
--- so no extra index is needed for the lock itself.
-
 -- -----------------------------------------------------------------------------
 -- baristas — staff accounts scoped to a single cafe.
--- Included in Phase 1 because the ledger references barista_id for auditing,
--- but auth/login for baristas is Phase 2 (Barista POS). Phase 1 admin
--- endpoints can seed these rows directly.
 -- -----------------------------------------------------------------------------
 CREATE TABLE baristas (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -88,32 +101,30 @@ CREATE TABLE baristas (
 CREATE INDEX idx_baristas_cafe_id ON baristas (cafe_id);
 
 -- -----------------------------------------------------------------------------
--- subscriptions — minimal Stripe subscription record per cafe.
--- Phase 1 writes rows via admin API. Phase 2 wires up Stripe webhooks to
--- keep this and cafes.subscription_status in sync.
--- -----------------------------------------------------------------------------
-CREATE TABLE subscriptions (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    cafe_id                 UUID        NOT NULL UNIQUE REFERENCES cafes(id) ON DELETE CASCADE,
-    stripe_customer_id      TEXT        UNIQUE,
-    stripe_subscription_id  TEXT        UNIQUE,
-    status                  subscription_status NOT NULL DEFAULT 'incomplete',
-    current_period_end      TIMESTAMPTZ,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- -----------------------------------------------------------------------------
--- stamp_ledger — APPEND-ONLY source of truth for loyalty balances.
+-- stamp_ledger — APPEND-ONLY source of truth for loyalty events.
 --
--- Balance for a customer:
---     SELECT COALESCE(SUM(stamp_delta), 0)
---     FROM   stamp_ledger
---     WHERE  customer_id = $1;
+-- Balance for a customer is computed at read time, scoped by the scanning
+-- cafe's brand scheme:
+--
+--   -- PRIVATE (this brand's cafes only):
+--   SELECT COALESCE(SUM(sl.stamp_delta), 0)
+--   FROM   stamp_ledger sl
+--   JOIN   cafes c ON sl.cafe_id = c.id
+--   WHERE  sl.customer_id = $1
+--     AND  c.brand_id = $2;    -- scanning brand
+--
+--   -- GLOBAL (all global-scheme brands):
+--   SELECT COALESCE(SUM(sl.stamp_delta), 0)
+--   FROM   stamp_ledger sl
+--   JOIN   cafes  c ON sl.cafe_id  = c.id
+--   JOIN   brands b ON c.brand_id  = b.id
+--   WHERE  sl.customer_id = $1
+--     AND  b.scheme_type = 'global';
 --
 -- Writes happen inside a single transaction that FIRST executes
 --     SELECT id FROM users WHERE id = $1 FOR UPDATE;
--- on the customer row, so concurrent scans serialise on that row and
--- cannot produce duplicate EARN rows for the same scan.
+-- so concurrent scans serialise on the user row and cannot produce duplicate
+-- EARN rows for the same scan.
 -- -----------------------------------------------------------------------------
 CREATE TABLE stamp_ledger (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -121,17 +132,15 @@ CREATE TABLE stamp_ledger (
     cafe_id         UUID        NOT NULL REFERENCES cafes(id)    ON DELETE RESTRICT,
     barista_id      UUID                 REFERENCES baristas(id) ON DELETE SET NULL,
     event_type      ledger_event_type NOT NULL,
-    stamp_delta     INTEGER     NOT NULL,                       -- +1 for EARN, -10 for REDEEM
-    note            TEXT,                                        -- optional admin note
+    stamp_delta     INTEGER     NOT NULL,
+    note            TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- Enforce the only two shapes we support in Phase 1.
     CONSTRAINT ledger_delta_matches_event CHECK (
         (event_type = 'EARN'   AND stamp_delta = 1)
      OR (event_type = 'REDEEM' AND stamp_delta = -10)
     )
 );
 
--- Fast per-customer balance scans and recent-activity queries.
 CREATE INDEX idx_ledger_customer_created ON stamp_ledger (customer_id, created_at DESC);
 CREATE INDEX idx_ledger_cafe_created     ON stamp_ledger (cafe_id, created_at DESC);
 
