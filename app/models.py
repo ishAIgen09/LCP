@@ -84,6 +84,7 @@ class Brand(Base):
     current_period_end: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True)
     )
+    password_hash: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -113,6 +114,8 @@ class Cafe(Base):
     slug: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     address: Mapped[str] = mapped_column(Text, nullable=False)
     contact_email: Mapped[str] = mapped_column(Text, nullable=False)
+    store_number: Mapped[str | None] = mapped_column(Text, unique=True)
+    pin_hash: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -121,6 +124,10 @@ class Cafe(Base):
 
     __table_args__ = (
         Index("idx_cafes_brand_id", "brand_id"),
+        CheckConstraint(
+            r"store_number IS NULL OR store_number ~ '^[A-Z0-9]{3,10}$'",
+            name="store_number_format",
+        ),
     )
 
 
@@ -136,6 +143,8 @@ class User(Base):
     barcode: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     email: Mapped[str | None] = mapped_column(Text, unique=True)
     display_name: Mapped[str | None] = mapped_column(Text)
+    first_name: Mapped[str | None] = mapped_column(Text)
+    last_name: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -144,6 +153,28 @@ class User(Base):
 
     __table_args__ = (
         CheckConstraint(r"till_code ~ '^[A-Z0-9]{6}$'", name="till_code_format"),
+    )
+
+
+class ConsumerOTP(Base):
+    __tablename__ = "consumer_otps"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    email: Mapped[str] = mapped_column(Text, nullable=False)
+    code_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    used_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
     )
 
 

@@ -1,5 +1,23 @@
 export type SchemeType = "global" | "private"
 
+export type Session =
+  | {
+      role: "admin"
+      token: string
+      email: string
+      brandId: string
+      brandName: string
+      schemeType: SchemeType
+    }
+  | {
+      role: "store"
+      token: string
+      venueApiKey: string
+      storeNumber: string
+      cafeName: string
+      brandName: string
+    }
+
 export type Brand = {
   name: string
   slug: string
@@ -9,6 +27,7 @@ export type Brand = {
   planPrice: string
   subscriptionStatus: "active" | "trialing" | "past_due" | "canceled"
   createdAt: string
+  currentPeriodEnd?: string | null
 }
 
 export type Cafe = {

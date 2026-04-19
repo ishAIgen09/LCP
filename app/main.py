@@ -1,4 +1,6 @@
+import re
 import secrets
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -7,9 +9,11 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_active_cafe
+from app.auth import get_active_cafe, get_admin_session
+from app.auth_routes import router as auth_router
 from app.billing import router as billing_router
-from app.database import get_session
+from app.consumer_auth import router as consumer_auth_router
+from app.database import get_session, settings
 from app.models import (
     Brand,
     Cafe,
@@ -20,11 +24,18 @@ from app.models import (
     User,
 )
 from app.schemas import (
+    AdminMeResponse,
+    AdminProfile,
+    AdminSession,
     BalanceResponse,
     BrandCreate,
+    BrandProfile,
     BrandResponse,
+    BrandUpdate,
     CafeCreate,
     CafeResponse,
+    CafeScans,
+    MetricsResponse,
     RedeemRequest,
     RedeemResponse,
     StampRequest,
@@ -32,6 +43,7 @@ from app.schemas import (
     UserCreate,
     UserResponse,
 )
+from app.security import hash_password
 
 TILL_CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 REWARD_THRESHOLD = 10
@@ -40,9 +52,12 @@ app = FastAPI(title="The Indie Coffee Loop API", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=settings.cors_origin_list(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=600,
 )
 
 
@@ -52,6 +67,28 @@ def _generate_till_code() -> str:
 
 def _generate_barcode() -> str:
     return secrets.token_hex(12)
+
+
+def _slugify(value: str) -> str:
+    # lowercase, strip diacritics-free, collapse non-alphanumerics to '-'
+    cleaned = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return cleaned or "cafe"
+
+
+async def _unique_cafe_slug(
+    session: AsyncSession, base_slug: str, max_attempts: int = 50
+) -> str:
+    for i in range(1, max_attempts + 1):
+        candidate = base_slug if i == 1 else f"{base_slug}-{i}"
+        existing = (
+            await session.execute(select(Cafe.id).where(Cafe.slug == candidate))
+        ).scalar_one_or_none()
+        if existing is None:
+            return candidate
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Could not allocate a unique slug for this cafe.",
+    )
 
 
 def _scoped_balance_stmt(user_id: UUID, scanning_brand: Brand):
@@ -136,6 +173,141 @@ async def activate_brand(
     return brand
 
 
+@app.get("/api/admin/me", response_model=AdminMeResponse)
+async def admin_me(
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> AdminMeResponse:
+    brand = await session.get(Brand, admin.brand_id)
+    if brand is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin session references an unknown brand.",
+        )
+    return AdminMeResponse(
+        admin=AdminProfile(email=admin.email),
+        brand=BrandProfile.model_validate(brand),
+    )
+
+
+@app.patch("/api/admin/brand", response_model=BrandProfile)
+async def update_admin_brand(
+    payload: BrandUpdate,
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> Brand:
+    brand = await session.get(Brand, admin.brand_id)
+    if brand is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin session references an unknown brand.",
+        )
+
+    if payload.slug is not None and payload.slug != brand.slug:
+        collision = (
+            await session.execute(
+                select(Brand.id)
+                .where(Brand.slug == payload.slug)
+                .where(Brand.id != brand.id)
+            )
+        ).scalar_one_or_none()
+        if collision is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Slug '{payload.slug}' is already in use.",
+            )
+        brand.slug = payload.slug
+
+    if payload.name is not None:
+        brand.name = payload.name.strip()
+    if payload.contact_email is not None:
+        brand.contact_email = payload.contact_email.strip()
+    if payload.scheme_type is not None:
+        brand.scheme_type = payload.scheme_type
+
+    await session.commit()
+    await session.refresh(brand)
+    return brand
+
+
+@app.get("/api/admin/metrics", response_model=MetricsResponse)
+async def admin_metrics(
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> MetricsResponse:
+    brand = await session.get(Brand, admin.brand_id)
+    if brand is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin session references an unknown brand.",
+        )
+
+    now = datetime.now(timezone.utc)
+    thirty_days_ago = now - timedelta(days=30)
+    sixty_days_ago = now - timedelta(days=60)
+
+    per_cafe_rows = (
+        await session.execute(
+            select(
+                StampLedger.cafe_id,
+                func.count().label("scans"),
+            )
+            .join(Cafe, StampLedger.cafe_id == Cafe.id)
+            .where(Cafe.brand_id == admin.brand_id)
+            .where(StampLedger.event_type == LedgerEventType.EARN)
+            .where(StampLedger.created_at >= thirty_days_ago)
+            .group_by(StampLedger.cafe_id)
+        )
+    ).all()
+    per_cafe = [CafeScans(cafe_id=r[0], scans_30d=int(r[1])) for r in per_cafe_rows]
+    total_scans_30d = sum(r.scans_30d for r in per_cafe)
+
+    total_scans_prev_30d = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(StampLedger)
+                .join(Cafe, StampLedger.cafe_id == Cafe.id)
+                .where(Cafe.brand_id == admin.brand_id)
+                .where(StampLedger.event_type == LedgerEventType.EARN)
+                .where(StampLedger.created_at >= sixty_days_ago)
+                .where(StampLedger.created_at < thirty_days_ago)
+            )
+        ).scalar_one()
+    )
+
+    total_cafes = int(
+        (
+            await session.execute(
+                select(func.count(Cafe.id)).where(Cafe.brand_id == admin.brand_id)
+            )
+        ).scalar_one()
+    )
+    active_cafes = total_cafes if brand.subscription_status == SubscriptionStatus.ACTIVE else 0
+
+    return MetricsResponse(
+        total_scans_30d=total_scans_30d,
+        total_scans_prev_30d=total_scans_prev_30d,
+        active_cafes=active_cafes,
+        total_cafes=total_cafes,
+        per_cafe_30d=per_cafe,
+        renews_at=brand.current_period_end,
+    )
+
+
+@app.get("/api/admin/cafes", response_model=list[CafeResponse])
+async def list_admin_cafes(
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> list[Cafe]:
+    result = await session.execute(
+        select(Cafe)
+        .where(Cafe.brand_id == admin.brand_id)
+        .order_by(Cafe.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
 @app.post(
     "/api/admin/cafes",
     response_model=CafeResponse,
@@ -143,19 +315,43 @@ async def activate_brand(
 )
 async def create_cafe(
     payload: CafeCreate,
+    admin: AdminSession = Depends(get_admin_session),
     session: AsyncSession = Depends(get_session),
 ) -> Cafe:
-    brand = await session.get(Brand, payload.brand_id)
+    brand = await session.get(Brand, admin.brand_id)
     if brand is None:
+        # JWT referenced a brand that no longer exists — treat as auth failure.
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Brand not found"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin session references an unknown brand.",
         )
+
+    base_slug = payload.slug or f"{brand.slug}-{_slugify(payload.name)}"
+    slug = await _unique_cafe_slug(session, base_slug)
+
+    if payload.store_number is not None:
+        normalized_store_number = payload.store_number.strip().upper()
+        collision = (
+            await session.execute(
+                select(Cafe.id).where(Cafe.store_number == normalized_store_number)
+            )
+        ).scalar_one_or_none()
+        if collision is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Store ID '{normalized_store_number}' is already in use.",
+            )
+    else:
+        normalized_store_number = None
+
     cafe = Cafe(
-        brand_id=payload.brand_id,
-        name=payload.name,
-        slug=payload.slug,
-        address=payload.address,
-        contact_email=payload.contact_email,
+        brand_id=brand.id,
+        name=f"{brand.name} — {payload.name.strip()}",
+        slug=slug,
+        address=payload.address.strip(),
+        contact_email=(payload.contact_email or brand.contact_email).strip(),
+        store_number=normalized_store_number,
+        pin_hash=hash_password(payload.pin) if payload.pin else None,
     )
     session.add(cafe)
     await session.commit()
@@ -289,6 +485,18 @@ async def redeem_reward(
     )
 
 
+app.include_router(auth_router)
+app.include_router(consumer_auth_router)
 app.include_router(billing_router)
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
+
+
+if __name__ == "__main__":
+    # Run directly with `python -m app.main` to boot the API on 0.0.0.0:8000
+    # so physical devices on the LAN (e.g. Expo Go on a phone) can reach it.
+    # In terminal-land you can also use:
+    #   uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    import uvicorn
+
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

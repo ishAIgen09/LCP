@@ -50,6 +50,7 @@ CREATE TABLE brands (
     stripe_subscription_id  TEXT        UNIQUE,
     subscription_status     subscription_status NOT NULL DEFAULT 'incomplete',
     current_period_end      TIMESTAMPTZ,
+    password_hash           TEXT,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -67,7 +68,12 @@ CREATE TABLE cafes (
     slug            TEXT        NOT NULL UNIQUE,
     address         TEXT        NOT NULL,
     contact_email   TEXT        NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    store_number    TEXT        UNIQUE,
+    pin_hash        TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT store_number_format CHECK (
+        store_number IS NULL OR store_number ~ '^[A-Z0-9]{3,10}$'
+    )
 );
 
 CREATE INDEX idx_cafes_brand_id ON cafes (brand_id);
@@ -82,9 +88,30 @@ CREATE TABLE users (
     barcode         TEXT        NOT NULL UNIQUE,
     email           TEXT        UNIQUE,
     display_name    TEXT,
+    first_name      TEXT,
+    last_name       TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT till_code_format CHECK (till_code ~ '^[A-Z0-9]{6}$')
 );
+
+-- -----------------------------------------------------------------------------
+-- consumer_otps — short-lived email OTPs for the native Consumer App's
+-- passwordless login (Email + 4-digit code). We store the bcrypt hash of
+-- the code, not the code itself; used_at is set on successful verification
+-- so a code can't be replayed. Rows are cheap — housekeep via a cron later.
+-- -----------------------------------------------------------------------------
+CREATE TABLE consumer_otps (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email           TEXT        NOT NULL,
+    code_hash       TEXT        NOT NULL,
+    expires_at      TIMESTAMPTZ NOT NULL,
+    attempts        INTEGER     NOT NULL DEFAULT 0,
+    used_at         TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_consumer_otps_email_created
+    ON consumer_otps (lower(email), created_at DESC);
 
 -- -----------------------------------------------------------------------------
 -- baristas — staff accounts scoped to a single cafe.

@@ -5,14 +5,12 @@ import stripe
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_admin_session
 from app.database import get_session, settings
 from app.models import Brand, SubscriptionStatus
-from app.schemas import CheckoutRequest, CheckoutResponse
+from app.schemas import AdminSession, CheckoutResponse
 
 router = APIRouter(prefix="/api/billing", tags=["billing"])
-
-CHECKOUT_SUCCESS_URL = "http://localhost:8000/?billing=success&session_id={CHECKOUT_SESSION_ID}"
-CHECKOUT_CANCEL_URL = "http://localhost:8000/?billing=cancel"
 
 if settings.stripe_secret_key:
     stripe.api_key = settings.stripe_secret_key
@@ -26,23 +24,37 @@ def _require_stripe_key() -> None:
         )
 
 
+def _success_url() -> str:
+    # {CHECKOUT_SESSION_ID} is a Stripe template token, not a Python format
+    # placeholder — Stripe substitutes it after the session is created.
+    return (
+        settings.frontend_base_url.rstrip("/")
+        + "/success?session_id={CHECKOUT_SESSION_ID}"
+    )
+
+
+def _cancel_url() -> str:
+    return settings.frontend_base_url.rstrip("/") + "/cancel"
+
+
 @router.post("/checkout", response_model=CheckoutResponse)
 async def create_checkout(
-    payload: CheckoutRequest,
+    admin: AdminSession = Depends(get_admin_session),
     session: AsyncSession = Depends(get_session),
 ) -> CheckoutResponse:
     _require_stripe_key()
 
-    brand = await session.get(Brand, payload.brand_id)
+    brand = await session.get(Brand, admin.brand_id)
     if brand is None:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Brand not found"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin session references an unknown brand.",
         )
 
-    checkout_session = stripe.checkout.Session.create(
-        mode="subscription",
-        payment_method_types=["card"],
-        line_items=[
+    kwargs: dict = {
+        "mode": "subscription",
+        "payment_method_types": ["card"],
+        "line_items": [
             {
                 "price_data": {
                     "currency": "gbp",
@@ -55,11 +67,19 @@ async def create_checkout(
                 "quantity": 1,
             }
         ],
-        client_reference_id=str(brand.id),
-        metadata={"brand_id": str(brand.id)},
-        success_url=CHECKOUT_SUCCESS_URL,
-        cancel_url=CHECKOUT_CANCEL_URL,
-    )
+        "client_reference_id": str(brand.id),
+        "metadata": {"brand_id": str(brand.id)},
+        "success_url": _success_url(),
+        "cancel_url": _cancel_url(),
+    }
+    # Reuse the same Stripe customer across sessions so past payment methods
+    # and invoices stay linked to one record per brand.
+    if brand.stripe_customer_id:
+        kwargs["customer"] = brand.stripe_customer_id
+    else:
+        kwargs["customer_email"] = brand.contact_email
+
+    checkout_session = stripe.checkout.Session.create(**kwargs)
 
     return CheckoutResponse(checkout_url=checkout_session.url)
 

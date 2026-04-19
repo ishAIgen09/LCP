@@ -1,4 +1,4 @@
-import { LayoutDashboard, MapPin, CreditCard, Settings, Coffee } from "lucide-react"
+import { LayoutDashboard, MapPin, CreditCard, Settings, Coffee, LogOut } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 export type NavKey = "overview" | "locations" | "billing" | "settings"
@@ -14,10 +14,12 @@ export function Sidebar({
   active,
   onSelect,
   brandName,
+  onLogout,
 }: {
   active: NavKey
   onSelect: (k: NavKey) => void
   brandName: string
+  onLogout?: () => void
 }) {
   return (
     <aside className="flex h-screen w-64 shrink-0 flex-col border-r border-border bg-sidebar text-sidebar-foreground">
@@ -59,16 +61,26 @@ export function Sidebar({
         </ul>
       </nav>
 
-      <div className="border-t border-sidebar-border p-3">
+      <div className="space-y-1 border-t border-sidebar-border p-3">
         <div className="flex items-center gap-2.5 rounded-md px-2 py-1.5">
           <div className="grid h-8 w-8 place-items-center rounded-full bg-foreground text-[11px] font-semibold text-background">
             {brandName.slice(0, 2).toUpperCase()}
           </div>
-          <div className="min-w-0 leading-tight">
+          <div className="min-w-0 flex-1 leading-tight">
             <div className="truncate text-sm font-medium text-foreground">{brandName}</div>
             <div className="text-[11px] text-muted-foreground">Owner · Admin</div>
           </div>
         </div>
+        {onLogout && (
+          <button
+            type="button"
+            onClick={onLogout}
+            className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+          >
+            <LogOut className="h-4 w-4" strokeWidth={1.75} />
+            <span className="font-medium">Sign out</span>
+          </button>
+        )}
       </div>
     </aside>
   )

@@ -1,10 +1,13 @@
 from uuid import UUID
 
+import jwt
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import tokens
 from app.database import get_session
 from app.models import Brand, Cafe, SubscriptionStatus
+from app.schemas import AdminSession
 
 
 async def get_active_cafe(
@@ -49,3 +52,34 @@ async def get_active_cafe(
         )
 
     return cafe
+
+
+async def get_admin_session(
+    authorization: str | None = Header(default=None),
+) -> AdminSession:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid Authorization header.",
+        )
+
+    token = authorization[len("Bearer ") :].strip()
+    try:
+        claims = tokens.decode(token, audience="admin")
+    except jwt.PyJWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired admin token.",
+        )
+
+    try:
+        brand_id = UUID(str(claims.get("brand_id") or ""))
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin token is missing a valid brand claim.",
+        )
+
+    email = claims.get("email") or ""
+    brand_name = claims.get("brand_name") or ""
+    return AdminSession(brand_id=brand_id, email=email, brand_name=brand_name)

@@ -128,3 +128,31 @@
     @apply font-sans;
     }
 }
+
+/* Barista POS — html5-qrcode injects its own UI we don't want. Hide the
+   default select/file controls so we can render our own premium chrome. */
+#barista-reader :is(div, select, input)[id*="html5-qrcode-select"],
+#barista-reader :is(div, button, input)[id*="html5-qrcode-anchor"],
+#barista-reader > div > span,
+#barista-reader > div:has(> select) {
+  display: none !important;
+}
+#barista-reader video {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover;
+  display: block;
+}
+#barista-reader {
+  border: 0 !important;
+  padding: 0 !important;
+}
+
+@keyframes scan-line {
+  0%, 100% { transform: translateY(0%); opacity: 0; }
+  15%, 85% { opacity: 0.85; }
+  50% { transform: translateY(100%); }
+}
+.animate-scan-line {
+  animation: scan-line 2.4s ease-in-out infinite;
+}

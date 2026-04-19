@@ -3,14 +3,41 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/com
 import { Button } from "@/components/ui/button"
 import { MetricCard } from "@/components/MetricCard"
 import type { Brand, Cafe } from "@/lib/mock"
+import type { ApiMetrics } from "@/lib/api"
 
 function formatNumber(n: number) {
   return n.toLocaleString("en-GB")
 }
 
-export function OverviewView({ brand, cafes }: { brand: Brand; cafes: Cafe[] }) {
-  const totalScans = cafes.reduce((n, c) => n + c.scansThisMonth, 0)
-  const activeBranches = cafes.filter((c) => c.status === "live").length
+function computeDelta(current: number, prev: number): number | undefined {
+  if (prev <= 0) return undefined
+  const pct = ((current - prev) / prev) * 100
+  return Math.round(pct * 10) / 10
+}
+
+function formatRenewalLabel(iso: string | null | undefined): string {
+  if (!iso) return "No renewal date on file"
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return "No renewal date on file"
+  return `Renews ${d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`
+}
+
+export function OverviewView({
+  brand,
+  cafes,
+  metrics,
+}: {
+  brand: Brand
+  cafes: Cafe[]
+  metrics: ApiMetrics | null
+}) {
+  const totalScans = metrics?.total_scans_30d ?? 0
+  const prevScans = metrics?.total_scans_prev_30d ?? 0
+  const activeBranches = metrics?.active_cafes ?? 0
+  const totalBranches = metrics?.total_cafes ?? cafes.length
+
+  const scansDelta = computeDelta(totalScans, prevScans)
+  const loading = metrics === null && cafes.length === 0
 
   const recent = cafes
     .slice()
@@ -22,18 +49,16 @@ export function OverviewView({ brand, cafes }: { brand: Brand; cafes: Cafe[] }) 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <MetricCard
           label="Total scans"
-          value={formatNumber(totalScans)}
-          unit="this month"
-          delta={18.4}
+          value={loading ? "—" : formatNumber(totalScans)}
+          unit="last 30 days"
+          delta={scansDelta}
           icon={Scan}
           accent="emerald"
         />
         <MetricCard
           label="Active branches"
-          value={String(activeBranches)}
-          unit={`/ ${cafes.length}`}
-          delta={4.2}
-          deltaLabel="vs. last quarter"
+          value={loading ? "—" : String(activeBranches)}
+          unit={`/ ${totalBranches}`}
           icon={Store}
           accent="violet"
         />
@@ -41,8 +66,7 @@ export function OverviewView({ brand, cafes }: { brand: Brand; cafes: Cafe[] }) 
           label="Current plan"
           value={brand.plan}
           unit={brand.planPrice}
-          delta={0}
-          deltaLabel="Renews 1 May"
+          deltaLabel={formatRenewalLabel(brand.currentPeriodEnd ?? metrics?.renews_at)}
           icon={Sparkles}
           accent="amber"
         />
@@ -63,7 +87,9 @@ export function OverviewView({ brand, cafes }: { brand: Brand; cafes: Cafe[] }) 
           <CardContent className="pt-0">
             {recent.length === 0 ? (
               <div className="flex h-24 items-center justify-center rounded-md border border-dashed border-border text-[12.5px] text-muted-foreground">
-                No branches yet. Add your first location to start collecting scans.
+                {cafes.length === 0
+                  ? "No branches yet. Add your first location to start collecting scans."
+                  : "No scans yet in the last 30 days."}
               </div>
             ) : (
               <ul className="divide-y divide-border">
@@ -124,9 +150,6 @@ export function OverviewView({ brand, cafes }: { brand: Brand; cafes: Cafe[] }) 
                   : "Stamps are locked to your own cafes. Best for established chains."}
               </div>
             </div>
-            <Button variant="outline" size="sm" className="h-8 w-full text-xs">
-              Change scheme type
-            </Button>
           </CardContent>
         </Card>
       </div>
