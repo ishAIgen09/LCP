@@ -65,8 +65,8 @@ export function LoginView({
               <Coffee className="h-[18px] w-[18px]" strokeWidth={2.25} />
             </div>
             <div className="text-left leading-tight">
-              <div className="text-[15px] font-semibold tracking-tight">Indie Loop</div>
-              <div className="text-[11px] text-muted-foreground">Business App</div>
+              <div className="text-[15px] font-semibold tracking-tight">Local Coffee Perks</div>
+              <div className="text-[11px] text-muted-foreground">For the regulars</div>
             </div>
           </div>
           <h1 className="font-heading text-[26px] font-semibold tracking-tight">
@@ -88,7 +88,7 @@ export function LoginView({
         )}
 
         <p className="mt-10 text-center text-[11px] text-muted-foreground">
-          © 2026 The Indie Coffee Loop · Secure Portal
+          © 2026 Local Coffee Perks · Secure Portal
         </p>
       </div>
     </div>

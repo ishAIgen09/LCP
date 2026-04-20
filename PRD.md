@@ -142,3 +142,24 @@ No fixed dates. Each phase is gated on its exit criteria, not a calendar. Phase 
 
 ### Out of first release (future versions)
 - Analytics dashboards, marketing/push notifications, native mobile apps, multi-tier rewards, gift cards, franchise/chain support, referral mechanics.
+
+### 📍 CONSUMER APP: "Explore Local" Directory & Discovery
+- **Goal:** Allow users to discover local independent cafes based on proximity and specific amenities, bridging the gap between loyalty and discovery.
+- **Features & UI Components:**
+  - **List View:** Display participating cafes sorted by distance from the user's current location.
+  - **Smart Filters:** A filter system allowing users to search by B2B-selected USP tags (e.g., 🐕 Dog Friendly, 💻 Laptop Friendly, 🥛 Alternative Milks, 🥐 Pastries).
+  - **Detailed Cafe Profile:** Each listing must include:
+    - Cover Picture (Vibe shot)
+    - Operating Hours (Open/Close times)
+    - Phone Number (Click-to-call functionality)
+    - Website URL (Click-to-open in browser)
+  - **Seamless Navigation:** A "Get Directions" button that automatically passes the address to the user's native mapping app (Apple Maps or Google Maps).
+  - **Live Promotions:** Visually highlight any active custom offers the cafe is running.
+
+### 🏪 B2B DASHBOARD: Custom Offers Engine & Onboarding
+- **Goal:** Give merchants the flexibility to run custom promotions to drive footfall, and easily categorize their shop for the consumer directory.
+- **Features & UI Components:**
+  - **Onboarding Checklist:** Merchants tick their specific amenities during sign-up to populate their Consumer App profile tags.
+  - **Offers Management Tab:** - Quick-select templates (e.g., "Double Stamps", "50% off pastries").
+    - A custom free-text field for unique, brand-specific promotions.
+  - **Integration:** Active offers are pushed immediately to the Consumer App's "Explore" tab.

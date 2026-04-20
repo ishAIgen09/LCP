@@ -23,8 +23,8 @@ export function BillingCancelView({
             <Coffee className="h-[18px] w-[18px]" strokeWidth={2.25} />
           </div>
           <div className="text-left leading-tight">
-            <div className="text-[15px] font-semibold tracking-tight">Indie Loop</div>
-            <div className="text-[11px] text-muted-foreground">Business App</div>
+            <div className="text-[15px] font-semibold tracking-tight">Local Coffee Perks</div>
+            <div className="text-[11px] text-muted-foreground">For the regulars</div>
           </div>
         </div>
 

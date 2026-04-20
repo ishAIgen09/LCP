@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Modal, Pressable, Text, View } from "react-native";
 import { MapPin, Sparkles } from "lucide-react-native";
 
@@ -11,6 +12,15 @@ export type RewardPayload = {
   freeDrinkUnlocked?: boolean;
 };
 
+const DISMISS_PHRASES = [
+  "Cheers!",
+  "Got it!",
+  "Get in!",
+  "Tasty!",
+  "Sweet!",
+  "Bring it on!",
+];
+
 export function RewardModal({
   visible,
   payload,
@@ -20,6 +30,10 @@ export function RewardModal({
   payload: RewardPayload | null;
   onClose: () => void;
 }) {
+  const dismissLabel = useMemo(
+    () => DISMISS_PHRASES[Math.floor(Math.random() * DISMISS_PHRASES.length)],
+    [payload],
+  );
   if (!payload) return null;
   const { stampsEarned, cafeName, cafeAddress, newBalance, freeDrinkUnlocked } =
     payload;
@@ -162,7 +176,7 @@ export function RewardModal({
               className="text-base font-semibold"
               style={{ color: COLOR.accentInk, letterSpacing: 0.3 }}
             >
-              Sweet!
+              {dismissLabel}
             </Text>
           </Pressable>
         </Pressable>

@@ -30,12 +30,17 @@ export type Brand = {
   currentPeriodEnd?: string | null
 }
 
+export type FoodHygieneRating = "1" | "2" | "3" | "4" | "5" | "Awaiting Inspection"
+
 export type Cafe = {
   id: string
   name: string
   address: string
   scansThisMonth: number
   status: "live" | "paused"
+  amenities: string[]
+  phone: string | null
+  foodHygieneRating: FoodHygieneRating
 }
 
 // The current owner's brand. In a real build this would come from the
@@ -59,6 +64,9 @@ export const initialCafes: Cafe[] = [
     address: "14 Rivington St, London EC2A 3DU",
     scansThisMonth: 1_842,
     status: "live",
+    amenities: [],
+    phone: null,
+    foodHygieneRating: "Awaiting Inspection",
   },
   {
     id: "c-02",
@@ -66,6 +74,9 @@ export const initialCafes: Cafe[] = [
     address: "3 Pancras Sq, London N1C 4AG",
     scansThisMonth: 2_214,
     status: "live",
+    amenities: [],
+    phone: null,
+    foodHygieneRating: "Awaiting Inspection",
   },
   {
     id: "c-03",
@@ -73,6 +84,9 @@ export const initialCafes: Cafe[] = [
     address: "133 Rye Ln, London SE15 4BQ",
     scansThisMonth: 967,
     status: "live",
+    amenities: [],
+    phone: null,
+    foodHygieneRating: "Awaiting Inspection",
   },
   {
     id: "c-04",
@@ -80,5 +94,8 @@ export const initialCafes: Cafe[] = [
     address: "22 Ship St, Brighton BN1 1AD",
     scansThisMonth: 534,
     status: "paused",
+    amenities: [],
+    phone: null,
+    foodHygieneRating: "Awaiting Inspection",
   },
 ]

@@ -33,8 +33,11 @@ export function OverviewView({
 }) {
   const totalScans = metrics?.total_scans_30d ?? 0
   const prevScans = metrics?.total_scans_prev_30d ?? 0
-  const activeBranches = metrics?.active_cafes ?? 0
-  const totalBranches = metrics?.total_cafes ?? cafes.length
+  // Bind strictly to the fetched list so the top card always agrees with the
+  // cafe cards rendered below. The backend `metrics.active_cafes` can drift
+  // (pre-inspection subscription states, background-refresh timing) so we
+  // pick the view-local truth instead of the server's projection.
+  const branchCount = cafes.length
 
   const scansDelta = computeDelta(totalScans, prevScans)
   const loading = metrics === null && cafes.length === 0
@@ -57,8 +60,8 @@ export function OverviewView({
         />
         <MetricCard
           label="Active branches"
-          value={loading ? "—" : String(activeBranches)}
-          unit={`/ ${totalBranches}`}
+          value={loading ? "—" : String(branchCount)}
+          unit={branchCount === 1 ? "location" : "locations"}
           icon={Store}
           accent="violet"
         />
@@ -130,7 +133,7 @@ export function OverviewView({
             <CardTitle className="text-[15px] tracking-tight">Loyalty scheme</CardTitle>
             <CardDescription>
               {brand.schemeType === "global"
-                ? "You're part of the shared Indie Loop network."
+                ? "You're part of the shared Local Coffee Perks network."
                 : "You're running a private walled-garden scheme."}
             </CardDescription>
           </CardHeader>
@@ -146,7 +149,7 @@ export function OverviewView({
               </div>
               <div className="mt-1.5 text-[13.5px] leading-snug text-foreground">
                 {brand.schemeType === "global"
-                  ? "Customers can earn stamps at any Indie Loop cafe. Great for discovery."
+                  ? "Customers can earn stamps at any cafe in the network. Great for discovery."
                   : "Stamps are locked to your own cafes. Best for established chains."}
               </div>
             </div>

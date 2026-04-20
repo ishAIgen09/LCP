@@ -6,6 +6,7 @@ import type { Brand } from "@/lib/mock"
 const sectionTitles: Record<string, { title: string; sub: string }> = {
   overview: { title: "Overview", sub: "Network health across your brand." },
   locations: { title: "Locations", sub: "Physical branches enrolled under your brand." },
+  promotions: { title: "Promotions & Offers", sub: "Schedule discounts, happy hours, and stamp boosters." },
   billing: { title: "Billing", sub: "Subscription, invoices, and payment method." },
   settings: { title: "Settings", sub: "Brand profile and loyalty scheme." },
 }
@@ -29,7 +30,7 @@ export function Topbar({
           </h1>
           <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-            {brand.schemeType === "global" ? "Global · Indie Loop" : "Private · Walled Garden"}
+            {brand.schemeType === "global" ? "Global · Open Network" : "Private · Walled Garden"}
           </span>
         </div>
         <p className="truncate text-[12px] text-muted-foreground">{meta.sub}</p>

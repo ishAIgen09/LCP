@@ -1,23 +1,43 @@
 import re
 import secrets
+import sys
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
+
+# Windows' default console encoding is cp1252, which chokes on emoji / any
+# non-Latin-1 character in `print()`. Reconfigure stdout+stderr to UTF-8 at
+# import time so dev-log prints (🚨 OTP banners, etc.) don't raise
+# UnicodeEncodeError and crash the request handler. No-op on macOS/Linux.
+for _stream in (sys.stdout, sys.stderr):
+    reconfigure = getattr(_stream, "reconfigure", None)
+    if reconfigure is not None:
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError):
+            # Non-reconfigurable stream (e.g. redirected to a non-text sink).
+            pass
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_active_cafe, get_admin_session
 from app.auth_routes import router as auth_router
+from app.b2b_routes import router as b2b_router
 from app.billing import router as billing_router
-from app.consumer_auth import router as consumer_auth_router
+from app.consumer_auth import (
+    consumer_router as consumer_api_router,
+    router as consumer_auth_router,
+)
 from app.database import get_session, settings
 from app.models import (
     Brand,
     Cafe,
     LedgerEventType,
+    Offer,
     SchemeType,
     StampLedger,
     SubscriptionStatus,
@@ -32,10 +52,15 @@ from app.schemas import (
     BrandProfile,
     BrandResponse,
     BrandUpdate,
+    CafeAmenitiesUpdate,
     CafeCreate,
     CafeResponse,
     CafeScans,
+    CafeUpdate,
     MetricsResponse,
+    OfferCreate,
+    OfferResponse,
+    OfferUpdate,
     RedeemRequest,
     RedeemResponse,
     StampRequest,
@@ -48,13 +73,48 @@ from app.security import hash_password
 TILL_CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 REWARD_THRESHOLD = 10
 
-app = FastAPI(title="The Indie Coffee Loop API", version="0.2.0")
+app = FastAPI(
+    title="Local Coffee Perks API",
+    version="0.2.0",
+    # Disable the 307 redirect FastAPI would otherwise issue when a client
+    # hits `/api/admin/cafes/` instead of `/api/admin/cafes`. In theory 307
+    # preserves method + body, but real-world proxies / tunnels / browser
+    # caches occasionally mangle it — the reported 405 on POST/DELETE fit
+    # that pattern. With redirects off, a stray trailing slash is a clean
+    # 404, never a method-dropping silent hop.
+    redirect_slashes=False,
+)
+
+# Route-registry banner on startup — any time uvicorn reloads, this prints the
+# full verb+path list for `/api/admin/cafes*`. If the user reports 405 again,
+# the uvicorn terminal window immediately shows whether the DELETE / PUT
+# route is actually live, or whether uvicorn is serving stale code.
+@app.on_event("startup")
+async def _log_cafe_routes() -> None:
+    print("\n== [startup] /api/admin/cafes routes ==", flush=True)
+    for route in app.routes:
+        methods = getattr(route, "methods", None)
+        path = getattr(route, "path", "")
+        if methods and "cafes" in path and "consumer" not in path:
+            verbs = ",".join(sorted(methods - {"HEAD"}))
+            print(f"  {verbs:20s}  {path}", flush=True)
+    print(
+        f"  redirect_slashes = {app.router.redirect_slashes}    "
+        f"CORS allow_methods = *\n",
+        flush=True,
+    )
+
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list(),
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    # Wildcard methods: Starlette's CORSMiddleware treats "*" as "echo the
+    # preflight's Access-Control-Request-Method verbatim", which side-steps
+    # any bugs where a future verb is added to the routes but forgotten here.
+    # Explicit list kept as a comment for discoverability.
+    # Prior list: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+    allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
     max_age=600,
@@ -352,11 +412,215 @@ async def create_cafe(
         contact_email=(payload.contact_email or brand.contact_email).strip(),
         store_number=normalized_store_number,
         pin_hash=hash_password(payload.pin) if payload.pin else None,
+        phone=payload.phone.strip() if payload.phone else None,
+        food_hygiene_rating=payload.food_hygiene_rating,
     )
     session.add(cafe)
     await session.commit()
     await session.refresh(cafe)
     return cafe
+
+
+@app.patch("/api/admin/cafes/{cafe_id}", response_model=CafeResponse)
+@app.put("/api/admin/cafes/{cafe_id}", response_model=CafeResponse)
+async def update_cafe(
+    cafe_id: UUID,
+    payload: CafeUpdate,
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> Cafe:
+    # PUT and PATCH both route here because CafeUpdate is partial-by-default
+    # — any field the client omits is left untouched. Giving the Edit dialog
+    # both verbs matches REST convention without forcing the client to send
+    # every field just to change one.
+
+    # Defensive ID guard — `session.get(Cafe, cafe_id)` already issues a
+    # `WHERE id = :id LIMIT 1` lookup, but we re-assert here to make the
+    # blast radius obvious to anyone reading this. Without a resolved row we
+    # refuse to commit: no bulk update can reach this function path.
+    if cafe_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing cafe_id on update request.",
+        )
+    cafe = await session.get(Cafe, cafe_id)
+    if cafe is None or cafe.brand_id != admin.brand_id:
+        # 404 (not 403) for cross-brand hits so we don't leak foreign UUIDs.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Cafe not found.",
+        )
+    assert cafe.id == cafe_id, "Row mismatch — refusing to commit."
+
+    if payload.address is not None:
+        trimmed = payload.address.strip()
+        if trimmed:
+            cafe.address = trimmed
+    if payload.phone is not None:
+        trimmed_phone = payload.phone.strip()
+        cafe.phone = trimmed_phone or None
+    if payload.food_hygiene_rating is not None:
+        cafe.food_hygiene_rating = payload.food_hygiene_rating
+    await session.commit()
+    await session.refresh(cafe)
+    return cafe
+
+
+async def _delete_cafe_impl(
+    cafe_id: UUID,
+    admin: AdminSession,
+    session: AsyncSession,
+) -> UUID:
+    # Shared delete body for both the REST DELETE and the RPC-style POST
+    # fallback. Same safety pattern: single-row lookup by PK, brand guard,
+    # assert, try/commit, surface FK RESTRICT as 409 instead of 500.
+    cafe = await session.get(Cafe, cafe_id)
+    if cafe is None or cafe.brand_id != admin.brand_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Cafe not found.",
+        )
+    assert cafe.id == cafe_id, "Row mismatch — refusing to delete."
+    await session.delete(cafe)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This location has scan history and can't be deleted. "
+                "Contact support to archive it instead."
+            ),
+        )
+    return cafe_id
+
+
+@app.post("/api/admin/cafes/{cafe_id}/delete")
+async def delete_cafe_rpc(
+    cafe_id: UUID,
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    # RPC-style POST fallback for clients / proxies / middlewares that
+    # silently drop the HTTP DELETE verb. Returns a plain success envelope
+    # so the frontend can treat this like any other POST.
+    deleted_id = await _delete_cafe_impl(cafe_id, admin, session)
+    return {"status": "success", "deleted_id": str(deleted_id)}
+
+
+@app.delete(
+    "/api/admin/cafes/{cafe_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_cafe(
+    cafe_id: UUID,
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    # Kept alongside the RPC-style POST fallback so clients that can use the
+    # proper DELETE verb still get a standards-compliant 204 No Content.
+    await _delete_cafe_impl(cafe_id, admin, session)
+
+
+@app.put("/api/admin/cafes/{cafe_id}/amenities", response_model=CafeResponse)
+async def update_cafe_amenities(
+    cafe_id: UUID,
+    payload: CafeAmenitiesUpdate,
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> Cafe:
+    cafe = await session.get(Cafe, cafe_id)
+    if cafe is None or cafe.brand_id != admin.brand_id:
+        # 404 (not 403) for cross-brand hits so we don't leak the existence of
+        # another brand's cafes to an attacker who guesses UUIDs.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Cafe not found.",
+        )
+    cafe.amenities = payload.amenities
+    await session.commit()
+    await session.refresh(cafe)
+    return cafe
+
+
+@app.get("/api/admin/offers", response_model=list[OfferResponse])
+async def list_admin_offers(
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> list[Offer]:
+    result = await session.execute(
+        select(Offer)
+        .where(Offer.brand_id == admin.brand_id)
+        .order_by(Offer.starts_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+@app.post(
+    "/api/admin/offers",
+    response_model=OfferResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_offer(
+    payload: OfferCreate,
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> Offer:
+    offer = Offer(
+        brand_id=admin.brand_id,
+        offer_type=payload.offer_type,
+        target=payload.target,
+        amount=payload.amount,
+        starts_at=payload.starts_at,
+        ends_at=payload.ends_at,
+    )
+    session.add(offer)
+    await session.commit()
+    await session.refresh(offer)
+    return offer
+
+
+@app.put("/api/admin/offers/{offer_id}", response_model=OfferResponse)
+async def update_offer(
+    offer_id: UUID,
+    payload: OfferUpdate,
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> Offer:
+    offer = await session.get(Offer, offer_id)
+    if offer is None or offer.brand_id != admin.brand_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Offer not found.",
+        )
+    offer.offer_type = payload.offer_type
+    offer.target = payload.target
+    offer.amount = payload.amount
+    offer.starts_at = payload.starts_at
+    offer.ends_at = payload.ends_at
+    await session.commit()
+    await session.refresh(offer)
+    return offer
+
+
+@app.delete(
+    "/api/admin/offers/{offer_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_offer(
+    offer_id: UUID,
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    offer = await session.get(Offer, offer_id)
+    if offer is None or offer.brand_id != admin.brand_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Offer not found.",
+        )
+    await session.delete(offer)
+    await session.commit()
 
 
 @app.post(
@@ -487,7 +751,9 @@ async def redeem_reward(
 
 app.include_router(auth_router)
 app.include_router(consumer_auth_router)
+app.include_router(consumer_api_router)
 app.include_router(billing_router)
+app.include_router(b2b_router)
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
 

@@ -8,12 +8,14 @@ import { BillingCancelView } from "@/views/BillingCancelView"
 import { BillingSuccessView } from "@/views/BillingSuccessView"
 import { OverviewView } from "@/views/OverviewView"
 import { LocationsView } from "@/views/LocationsView"
+import { PromotionsView } from "@/views/PromotionsView"
 import { BillingView } from "@/views/BillingView"
 import { SettingsView } from "@/views/SettingsView"
 import {
   initialBrand,
   type Brand,
   type Cafe,
+  type FoodHygieneRating,
   type Session,
 } from "@/lib/mock"
 import {
@@ -28,6 +30,7 @@ import {
   persistBrand,
   persistSession,
   updateAdminBrand,
+  updateCafeAmenities,
   type ApiMetrics,
 } from "@/lib/api"
 import "./App.css"
@@ -116,12 +119,48 @@ function App() {
   }
 
   const handleAddLocation = useCallback(
-    async (values: { name: string; address: string }): Promise<void> => {
+    async (values: {
+      name: string
+      address: string
+      phone?: string | null
+      food_hygiene_rating: FoodHygieneRating
+      amenityIds: string[]
+    }): Promise<string> => {
       if (session?.role !== "admin") {
         throw new ApiError(401, "Not signed in as admin.")
       }
-      await createCafe(session.token, values)
-      await refreshAdminData(session.token)
+      // 1. The actual create — this IS the work. If this throws, the user
+      //    sees the error and the cafe was never saved.
+      const cafe = await createCafe(session.token, {
+        name: values.name,
+        address: values.address,
+        phone: values.phone ?? null,
+        food_hygiene_rating: values.food_hygiene_rating,
+      })
+
+      // 2. Amenities live on a separate endpoint. Failure here must NOT be
+      //    surfaced as a failed create — the cafe is already persisted.
+      //    Log and move on; the user can edit amenities from the row's
+      //    Edit button once the list refreshes.
+      if (values.amenityIds.length > 0) {
+        try {
+          await updateCafeAmenities(session.token, cafe.id, values.amenityIds)
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn("[addLocation] amenities follow-up failed:", e)
+        }
+      }
+
+      // 3. Refresh is cosmetic — if it 405s / network-fails, the cafe list
+      //    will repopulate on the next tab switch. Don't throw past this.
+      try {
+        await refreshAdminData(session.token)
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn("[addLocation] refresh-after-create failed:", e)
+      }
+
+      return cafe.id
     },
     [session, refreshAdminData]
   )
@@ -200,8 +239,17 @@ function App() {
               <OverviewView brand={brand} cafes={cafes} metrics={metrics} />
             )}
             {nav === "locations" && (
-              <LocationsView cafes={cafes} onAdd={() => setAddLocationOpen(true)} />
+              <LocationsView
+                cafes={cafes}
+                onAdd={() => setAddLocationOpen(true)}
+                token={session.token}
+                onRefresh={() => refreshAdminData(session.token)}
+                onOptimisticRemove={(cafeId) =>
+                  setCafes((prev) => prev.filter((c) => c.id !== cafeId))
+                }
+              />
             )}
+            {nav === "promotions" && <PromotionsView token={session.token} />}
             {nav === "billing" && <BillingView brand={brand} token={session.token} />}
             {nav === "settings" && (
               <SettingsView brand={brand} onSave={handleUpdateBrand} />

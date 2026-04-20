@@ -128,7 +128,7 @@ export function LoginScreen({
                 className="mt-5 text-[11px] font-semibold uppercase"
                 style={{ color: COLOR.textDim, letterSpacing: 2 }}
               >
-                Indie Coffee Loop
+                Local Coffee Perks · For the regulars
               </Text>
               <Header mode={mode} email={trimmedEmail} />
             </View>

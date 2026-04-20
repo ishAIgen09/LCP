@@ -1,9 +1,9 @@
 import type { Session } from "./theme";
 
-// Local Windows Firewall blocked Python from serving on the LAN, so we're
-// tunnelling the dev backend via localtunnel instead. Swap this back to a
-// LAN IP or a resolver once the firewall rules are sorted.
-export const API_BASE_URL = "https://real-heads-rest.loca.lt";
+// Back on localtunnel for off-LAN testing. `Bypass-Tunnel-Reminder: true`
+// on every request skips localtunnel's HTML interstitial so the app gets
+// JSON straight from uvicorn.
+export const API_BASE_URL = "https://moody-frogs-slide.loca.lt";
 
 if (__DEV__) {
   // eslint-disable-next-line no-console
@@ -20,12 +20,24 @@ export class ApiError extends Error {
   }
 }
 
+// Headers applied to every backend request. `Accept: application/json`
+// tells any intermediary we only want JSON back — if we ever put a proxy
+// back in front, an HTML interstitial will 406 instead of silently
+// rendering and confusing the client.
+const DEFAULT_HEADERS: Record<string, string> = {
+  Accept: "application/json",
+  "Bypass-Tunnel-Reminder": "true",
+};
+
 async function postJSON<T>(path: string, body: unknown): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${API_BASE_URL}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        ...DEFAULT_HEADERS,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify(body),
     });
   } catch (e) {
@@ -52,12 +64,62 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
   return data as T;
 }
 
+async function getJSON<T>(path: string, token: string): Promise<T> {
+  // Cache-bust aggressively: React Native's fetch + any tunnel/proxy in front
+  // of the dev backend (localtunnel, Cloudflare, CDN) will happily serve a
+  // stale GET if we let them. The `?t=` query param busts URL-keyed caches;
+  // the no-cache headers cover the rest.
+  const sep = path.includes("?") ? "&" : "?";
+  const url = `${API_BASE_URL}${path}${sep}t=${Date.now()}`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "GET",
+      headers: {
+        ...DEFAULT_HEADERS,
+        Authorization: `Bearer ${token}`,
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        Pragma: "no-cache",
+      },
+    });
+  } catch (e) {
+    throw new ApiError(
+      0,
+      "Couldn't reach the server. Check your connection and try again.",
+    );
+  }
+
+  let data: any = null;
+  try {
+    data = await res.json();
+  } catch {
+    // ignore — handled below
+  }
+
+  if (!res.ok) {
+    const detail =
+      (data && (data.detail || data.message)) ||
+      `Request failed (${res.status}).`;
+    throw new ApiError(res.status, String(detail));
+  }
+
+  return data as T;
+}
+
 export function requestOtp(input: {
   email: string;
   firstName?: string;
   lastName?: string;
 }): Promise<{ ok: boolean }> {
-  return postJSON("/api/consumer/auth/request-otp", {
+  const path = "/api/consumer/auth/request-otp";
+  console.log("Attempting to hit URL:", `${API_BASE_URL}${path}`, {
+    email: input.email,
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+  });
+  return postJSON(path, {
     email: input.email,
     first_name: input.firstName ?? null,
     last_name: input.lastName ?? null,
@@ -72,4 +134,57 @@ export function verifyOtp(input: {
     email: input.email,
     code: input.code,
   });
+}
+
+export type LatestEarn = {
+  transaction_id: string;
+  cafe_name: string;
+  cafe_address: string;
+  stamps_earned: number;
+  free_drink_unlocked: boolean;
+  timestamp: string;
+};
+
+export type BalanceResponse = {
+  consumer_id: string;
+  stamp_balance: number;
+  threshold: number;
+  latest_earn: LatestEarn | null;
+};
+
+export function fetchBalance(token: string): Promise<BalanceResponse> {
+  return getJSON<BalanceResponse>("/api/consumer/me/balance", token);
+}
+
+export type DiscoverOffer = {
+  id: string;
+  offer_type: "percent" | "fixed" | "bogo" | "double_stamps";
+  target: "any_drink" | "all_pastries" | "food" | "merchandise" | "entire_order";
+  amount: string | number | null;
+  starts_at: string;
+  ends_at: string;
+};
+
+export type FoodHygieneRating =
+  | "1"
+  | "2"
+  | "3"
+  | "4"
+  | "5"
+  | "Awaiting Inspection";
+
+export type DiscoverCafe = {
+  id: string;
+  name: string;
+  address: string;
+  phone: string | null;
+  food_hygiene_rating: FoodHygieneRating;
+  amenities: string[];
+  live_offers: DiscoverOffer[];
+};
+
+export function fetchDiscoverCafes(
+  token: string,
+): Promise<DiscoverCafe[]> {
+  return getJSON<DiscoverCafe[]>("/api/consumer/cafes", token);
 }

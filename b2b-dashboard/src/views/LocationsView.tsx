@@ -1,4 +1,5 @@
-import { Plus } from "lucide-react"
+import { useState } from "react"
+import { Pencil, Plus, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import {
@@ -9,6 +10,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog"
+import { EditLocationDialog } from "@/components/EditLocationDialog"
+import { deleteCafe, humanizeError } from "@/lib/api"
 import type { Cafe } from "@/lib/mock"
 
 function formatNumber(n: number) {
@@ -28,10 +32,42 @@ function initialsFromName(name: string) {
 export function LocationsView({
   cafes,
   onAdd,
+  token,
+  onRefresh,
+  onOptimisticRemove,
 }: {
   cafes: Cafe[]
   onAdd: () => void
+  token: string
+  onRefresh: () => void | Promise<void>
+  onOptimisticRemove?: (cafeId: string) => void
 }) {
+  const [editing, setEditing] = useState<Cafe | null>(null)
+  const [deleting, setDeleting] = useState<Cafe | null>(null)
+
+  const handleConfirmDelete = async () => {
+    if (!deleting) return
+    try {
+      const idToRemove = deleting.id
+      await deleteCafe(token, idToRemove)
+      // Optimistic UI: drop the row from React state the moment the server
+      // acknowledges, so the table animates out without waiting for the
+      // full listCafes + metrics refresh roundtrip. `onRefresh` still fires
+      // afterwards to reconcile anything else that changed.
+      onOptimisticRemove?.(idToRemove)
+      try {
+        await onRefresh()
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn("[deleteCafe] refresh after delete failed:", e)
+      }
+    } catch (e) {
+      // Re-throw with a friendlier message so ConfirmDeleteDialog can display
+      // it without exposing the raw API shape.
+      throw new Error(humanizeError(e))
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -61,15 +97,18 @@ export function LocationsView({
               <TableHead className="h-10 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                 Scans (30d)
               </TableHead>
-              <TableHead className="h-10 pr-5 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              <TableHead className="h-10 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                 Status
+              </TableHead>
+              <TableHead className="h-10 pr-5 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                Actions
               </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {cafes.length === 0 && (
               <TableRow className="border-t border-border hover:bg-transparent">
-                <TableCell colSpan={4} className="py-10 text-center text-[12.5px] text-muted-foreground">
+                <TableCell colSpan={5} className="py-10 text-center text-[12.5px] text-muted-foreground">
                   No locations yet. Click <span className="font-medium text-foreground">Add New Location</span> to create your first branch.
                 </TableCell>
               </TableRow>
@@ -93,7 +132,7 @@ export function LocationsView({
                 <TableCell className="text-right font-mono text-[13px] font-semibold tabular-nums text-foreground">
                   {formatNumber(c.scansThisMonth)}
                 </TableCell>
-                <TableCell className="pr-5 text-right">
+                <TableCell className="text-right">
                   <span
                     className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium ${
                       c.status === "live"
@@ -109,11 +148,54 @@ export function LocationsView({
                     {c.status === "live" ? "Live" : "Paused"}
                   </span>
                 </TableCell>
+                <TableCell className="pr-5 text-right">
+                  <div className="inline-flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      className="h-8 gap-1.5 text-[12px] text-white shadow-sm"
+                      style={{ backgroundColor: "#C96E4B" }}
+                      onClick={() => setEditing(c)}
+                    >
+                      <Pencil className="h-3.5 w-3.5" strokeWidth={2.25} />
+                      Edit
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-8 gap-1.5 text-[12px] text-red-600 hover:bg-red-50 hover:text-red-700"
+                      onClick={() => setDeleting(c)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" strokeWidth={2.25} />
+                      Delete
+                    </Button>
+                  </div>
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
       </Card>
+
+      <EditLocationDialog
+        open={editing !== null}
+        onOpenChange={(v) => {
+          if (!v) setEditing(null)
+        }}
+        token={token}
+        cafe={editing}
+        onSaved={onRefresh}
+      />
+
+      <ConfirmDeleteDialog
+        open={deleting !== null}
+        onOpenChange={(v) => {
+          if (!v) setDeleting(null)
+        }}
+        title={`Delete ${deleting?.name ?? "location"}?`}
+        description="Are you sure you want to delete this location? This cannot be undone. Historical scan data, if any, will block deletion and we'll tell you so."
+        confirmLabel="Yes, delete"
+        onConfirm={handleConfirmDelete}
+      />
     </div>
   )
 }

@@ -59,7 +59,7 @@ async def create_checkout(
                 "price_data": {
                     "currency": "gbp",
                     "product_data": {
-                        "name": "The Indie Coffee Loop — Brand Subscription",
+                        "name": "Local Coffee Perks — Brand Subscription",
                     },
                     "recurring": {"interval": "month"},
                     "unit_amount": 500,

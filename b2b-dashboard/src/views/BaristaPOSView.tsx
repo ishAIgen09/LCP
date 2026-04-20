@@ -23,13 +23,18 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { RewardDialog } from "@/components/RewardDialog"
 import { cn } from "@/lib/utils"
-import { ApiError, redeem as apiRedeem, stamp as apiStamp } from "@/lib/api"
+import { ApiError, b2bScan } from "@/lib/api"
 import type { Session } from "@/lib/mock"
 
 const TILL_CODE_PATTERN = /^[A-Z0-9]{6}$/
-const SCAN_COOLDOWN_MS = 2500
+// Hard lockout applied after any accepted scan candidate. Blocks every scan
+// source (camera + simulate input) for the full window so the html5-qrcode
+// library's multi-frame fires + an over-eager barista can't double-stamp.
+const SCAN_LOCKOUT_MS = 3500
 const REWARD_RESOLVED_COOLDOWN_MS = 10_000
 const REWARD_THRESHOLD = 10
+const QUANTITY_OPTIONS = [1, 2, 3, 4, 5] as const
+type Quantity = (typeof QUANTITY_OPTIONS)[number]
 
 type ScannerState = "idle" | "starting" | "running" | "paused" | "error"
 
@@ -59,13 +64,13 @@ export function BaristaPOSView({
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [toast, setToast] = useState<Toast | null>(null)
   const [reward, setReward] = useState<{ tillCode: string; balance: number } | null>(null)
-  const [redeeming, setRedeeming] = useState(false)
   const [lastActivity, setLastActivity] = useState<LastActivity | null>(null)
   const [simInput, setSimInput] = useState("")
+  const [quantity, setQuantity] = useState<Quantity>(1)
 
   const scannerRef = useRef<Html5Qrcode | null>(null)
   const scannerPausedRef = useRef(false)
-  const lastScanRef = useRef<{ value: string; time: number }>({ value: "", time: 0 })
+  const lockoutUntilRef = useRef(0)
   const rewardResolvedRef = useRef<{ code: string; at: number }>({ code: "", at: 0 })
   const inFlightRef = useRef(false)
   const rewardOpenRef = useRef(false)
@@ -117,26 +122,43 @@ export function BaristaPOSView({
     async (tillCode: string) => {
       if (inFlightRef.current) return
       inFlightRef.current = true
-      setStatusLine(`Stamping ${tillCode}…`)
+      const qty = quantity
+      setStatusLine(`Scanning ${tillCode} · ${qty} drink${qty === 1 ? "" : "s"}…`)
       try {
-        const result = await apiStamp(session.venueApiKey, tillCode)
-        if (result.reward_earned || result.stamp_balance >= REWARD_THRESHOLD) {
-          setReward({ tillCode, balance: result.stamp_balance })
+        const result = await b2bScan(
+          session.venueApiKey,
+          session.venueApiKey,
+          tillCode,
+          qty
+        )
+        if (result.free_drinks_unlocked > 0) {
+          setReward({ tillCode, balance: result.new_balance })
           pauseScanner()
-          setStatusLine(`Reward available for ${tillCode} — awaiting barista action.`)
+          const drinks = result.free_drinks_unlocked
+          setStatusLine(
+            `🎉 ${drinks} free drink${drinks === 1 ? "" : "s"} unlocked for ${tillCode} — hand over.`
+          )
         } else {
-          setLastActivity({ kind: "stamp", tillCode, balance: result.stamp_balance })
-          setStatusLine(`Last: ${tillCode} → ${result.stamp_balance}/${REWARD_THRESHOLD}`)
-          showToast(`Stamp added · ${result.stamp_balance}/${REWARD_THRESHOLD}`, "success")
+          setLastActivity({ kind: "stamp", tillCode, balance: result.new_balance })
+          setStatusLine(
+            `Last: ${tillCode} → +${qty} stamp${qty === 1 ? "" : "s"} · balance ${result.new_balance}/${REWARD_THRESHOLD}`
+          )
+          showToast(
+            `+${qty} stamp${qty === 1 ? "" : "s"} · balance ${result.new_balance}/${REWARD_THRESHOLD}`,
+            "success"
+          )
         }
       } catch (e) {
         handleApiError(e, tillCode, "stamp")
+        // Release the lockout on errors so a typo or 404 doesn't wedge the
+        // scanner for 3.5s — the barista can correct and retry immediately.
+        lockoutUntilRef.current = 0
       } finally {
         inFlightRef.current = false
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session.venueApiKey, pauseScanner, showToast]
+    [quantity, session.venueApiKey, pauseScanner, showToast]
   )
 
   const handleApiError = useCallback(
@@ -179,9 +201,12 @@ export function BaristaPOSView({
       const code = (decodedText || "").trim().toUpperCase()
       const now = Date.now()
 
-      if (code === lastScanRef.current.value && now - lastScanRef.current.time < SCAN_COOLDOWN_MS) {
-        return
-      }
+      // Global lockout — swallows every candidate silently during the window
+      // so html5-qrcode's per-frame fires don't spam the API. No toast/status
+      // update on purpose: a busy-looking scanner would just annoy baristas.
+      if (now < lockoutUntilRef.current) return
+      if (inFlightRef.current) return
+
       if (
         code === rewardResolvedRef.current.code &&
         now - rewardResolvedRef.current.at < REWARD_RESOLVED_COOLDOWN_MS
@@ -200,7 +225,9 @@ export function BaristaPOSView({
         return
       }
 
-      lastScanRef.current = { value: code, time: now }
+      // Lock FIRST so a follow-up frame can't sneak through while the API
+      // call is in-flight. Successful scans extend the lockout via processScan.
+      lockoutUntilRef.current = now + SCAN_LOCKOUT_MS
       processScan(code)
     },
     [processScan]
@@ -270,39 +297,23 @@ export function BaristaPOSView({
     }
   }, [])
 
-  const onRedeem = useCallback(async () => {
+  // Redemption already happened inside /api/b2b/scan's rollover — this just
+  // acknowledges the barista handed over the drink and unpauses the scanner.
+  const onRedeem = useCallback(() => {
     if (!reward) return
-    setRedeeming(true)
-    try {
-      const result = await apiRedeem(session.venueApiKey, reward.tillCode)
-      rewardResolvedRef.current = { code: reward.tillCode, at: Date.now() }
-      setLastActivity({
-        kind: "redeem",
-        tillCode: reward.tillCode,
-        balance: result.stamp_balance,
-      })
-      setStatusLine(
-        `Redeemed ${reward.tillCode} → ${result.stamp_balance}/${REWARD_THRESHOLD}`
-      )
-      showToast(
-        `Reward redeemed · balance reset to ${result.stamp_balance}`,
-        "success",
-        3000
-      )
-      setReward(null)
-      resumeScanner()
-    } catch (e) {
-      handleApiError(e, reward.tillCode, "redeem")
-      // On 409 (stale balance) the original POS dismissed the modal; mirror that.
-      if (e instanceof ApiError && e.status === 409) {
-        rewardResolvedRef.current = { code: reward.tillCode, at: Date.now() }
-        setReward(null)
-        resumeScanner()
-      }
-    } finally {
-      setRedeeming(false)
-    }
-  }, [handleApiError, reward, resumeScanner, session.venueApiKey, showToast])
+    rewardResolvedRef.current = { code: reward.tillCode, at: Date.now() }
+    setLastActivity({
+      kind: "redeem",
+      tillCode: reward.tillCode,
+      balance: reward.balance,
+    })
+    setStatusLine(
+      `Redeemed ${reward.tillCode} → balance reset to ${reward.balance}/${REWARD_THRESHOLD}`
+    )
+    showToast(`Reward handed over · balance ${reward.balance}`, "success", 3000)
+    setReward(null)
+    resumeScanner()
+  }, [reward, resumeScanner, showToast])
 
   const onSaveForLater = useCallback(() => {
     if (!reward) return
@@ -383,13 +394,9 @@ export function BaristaPOSView({
               </span>
             </div>
 
-            <Viewport
-              readerId={readerId}
-              state={scannerState}
-              cameraError={cameraError}
-            />
-
-            <div className="mt-4 grid grid-cols-2 gap-2">
+            {/* Controls live ABOVE the camera so they're always in reach on a
+                tablet viewport without scrolling. Viewport follows underneath. */}
+            <div className="mt-1 grid grid-cols-2 gap-2">
               <Button
                 onClick={start}
                 disabled={scannerState === "running" || scannerState === "starting" || scannerState === "paused"}
@@ -407,6 +414,20 @@ export function BaristaPOSView({
                 <Square className="h-3.5 w-3.5" strokeWidth={2.25} />
                 Stop
               </Button>
+            </div>
+
+            <QuantitySelector
+              value={quantity}
+              onChange={setQuantity}
+              disabled={reward !== null}
+            />
+
+            <div className="mt-4">
+              <Viewport
+                readerId={readerId}
+                state={scannerState}
+                cameraError={cameraError}
+              />
             </div>
 
             <div
@@ -436,7 +457,7 @@ export function BaristaPOSView({
         open={reward !== null}
         tillCode={reward?.tillCode ?? ""}
         balance={reward?.balance ?? 0}
-        redeeming={redeeming}
+        redeeming={false}
         onRedeem={onRedeem}
         onSaveForLater={onSaveForLater}
       />
@@ -490,8 +511,11 @@ function Viewport({
   const showPausedOverlay = state === "paused"
   const showFrame = state === "running" || state === "paused"
 
+  // Perfect 288×288 square — width capped so aspect-square doesn't inflate
+  // to the full card width like the original `aspect-square w-full` did,
+  // but tall enough that the reticle arrows render in full.
   return (
-    <div className="relative aspect-square w-full overflow-hidden rounded-lg bg-neutral-950 ring-1 ring-foreground/10">
+    <div className="relative mx-auto aspect-square w-72 overflow-hidden rounded-lg bg-neutral-950 ring-1 ring-foreground/10">
       <div id={readerId} className="absolute inset-0" />
 
       {showFrame && (
@@ -610,6 +634,51 @@ function LastActivityCard({ activity }: { activity: LastActivity | null }) {
           {activity.balance}
           <span className="text-[12px] font-medium text-muted-foreground">/{REWARD_THRESHOLD}</span>
         </div>
+      </div>
+    </div>
+  )
+}
+
+function QuantitySelector({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: Quantity
+  onChange: (q: Quantity) => void
+  disabled: boolean
+}) {
+  return (
+    <div className="mt-4 rounded-lg border border-border bg-muted/30 px-3 py-2.5">
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+          Drinks bought
+        </span>
+        <span className="font-mono text-[12px] font-semibold tabular-nums text-foreground">
+          {value} × stamp{value === 1 ? "" : "s"}
+        </span>
+      </div>
+      <div className="grid grid-cols-5 gap-1.5">
+        {QUANTITY_OPTIONS.map((q) => {
+          const active = q === value
+          return (
+            <button
+              key={q}
+              type="button"
+              onClick={() => onChange(q)}
+              disabled={disabled}
+              className={cn(
+                "h-9 rounded-md border text-[13px] font-semibold tabular-nums transition",
+                active
+                  ? "border-foreground bg-foreground text-background"
+                  : "border-border bg-background text-foreground hover:bg-muted",
+                disabled && "cursor-not-allowed opacity-50"
+              )}
+            >
+              {q}
+            </button>
+          )
+        })}
       </div>
     </div>
   )

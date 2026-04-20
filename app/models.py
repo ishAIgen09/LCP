@@ -2,17 +2,20 @@ import enum
 import uuid
 from datetime import datetime
 
+from decimal import Decimal
+
 from sqlalchemy import (
     CHAR,
     CheckConstraint,
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     Text,
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import ENUM as PgEnum, TIMESTAMP, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, ENUM as PgEnum, TIMESTAMP, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -21,6 +24,11 @@ from app.database import Base
 class LedgerEventType(str, enum.Enum):
     EARN = "EARN"
     REDEEM = "REDEEM"
+
+
+class GlobalLedgerAction(str, enum.Enum):
+    EARNED = "earned"
+    REDEEMED = "redeemed"
 
 
 class SubscriptionStatus(str, enum.Enum):
@@ -53,6 +61,13 @@ subscription_status_enum = PgEnum(
 scheme_type_enum = PgEnum(
     SchemeType,
     name="scheme_type",
+    values_callable=lambda e: [m.value for m in e],
+    create_type=False,
+)
+
+global_ledger_action_enum = PgEnum(
+    GlobalLedgerAction,
+    name="global_ledger_action",
     values_callable=lambda e: [m.value for m in e],
     create_type=False,
 )
@@ -116,6 +131,23 @@ class Cafe(Base):
     contact_email: Mapped[str] = mapped_column(Text, nullable=False)
     store_number: Mapped[str | None] = mapped_column(Text, unique=True)
     pin_hash: Mapped[str | None] = mapped_column(Text)
+    phone: Mapped[str | None] = mapped_column(Text)
+    # UK FSA rating. "Awaiting Inspection" is the pre-audit default and is a
+    # first-class value (not a sentinel). The DB CHECK constraint + the
+    # pydantic Literal in schemas.py keep the two sides in sync.
+    food_hygiene_rating: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=text("'Awaiting Inspection'"),
+    )
+    # Stable AmenityId strings (see b2b-dashboard/src/lib/amenities.ts). The
+    # valid set is enforced at the API boundary, not in the DB, so evolving
+    # the catalog doesn't require a schema migration.
+    amenities: Mapped[list[str]] = mapped_column(
+        ARRAY(Text),
+        nullable=False,
+        server_default=text("'{}'::text[]"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -254,4 +286,94 @@ class StampLedger(Base):
             "cafe_id",
             text("created_at DESC"),
         ),
+    )
+
+
+class GlobalLedger(Base):
+    __tablename__ = "global_ledger"
+
+    transaction_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    consumer_id: Mapped[str] = mapped_column(
+        CHAR(6),
+        ForeignKey("users.till_code", ondelete="RESTRICT", onupdate="CASCADE"),
+        nullable=False,
+    )
+    venue_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("cafes.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    action_type: Mapped[GlobalLedgerAction] = mapped_column(
+        global_ledger_action_enum, nullable=False
+    )
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(
+        "timestamp",
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+    )
+
+    __table_args__ = (
+        CheckConstraint("quantity >= 1", name="global_ledger_quantity_positive"),
+        CheckConstraint(
+            r"consumer_id ~ '^[A-Z0-9]{6}$'",
+            name="global_ledger_consumer_id_format",
+        ),
+        Index(
+            "idx_global_ledger_consumer_ts",
+            "consumer_id",
+            text('"timestamp" DESC'),
+        ),
+        Index(
+            "idx_global_ledger_venue_ts",
+            "venue_id",
+            text('"timestamp" DESC'),
+        ),
+        Index("idx_global_ledger_ts", text('"timestamp" DESC')),
+    )
+
+
+# Valid offer_type / target values — kept in sync with the DB CHECK constraints
+# in migrations/0005 and with b2b-dashboard/src/lib/offers.ts. The API layer
+# (schemas.py) treats these as the authoritative allow-list.
+OFFER_TYPES = ("percent", "fixed", "bogo", "double_stamps")
+OFFER_TARGETS = ("any_drink", "all_pastries", "food", "merchandise", "entire_order")
+
+
+class Offer(Base):
+    __tablename__ = "offers"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    brand_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("brands.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    offer_type: Mapped[str] = mapped_column(Text, nullable=False)
+    target: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    starts_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    ends_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+    )
+
+    __table_args__ = (
+        Index("idx_offers_brand_window", "brand_id", "starts_at", "ends_at"),
+        Index("idx_offers_live_window", "starts_at", "ends_at"),
     )

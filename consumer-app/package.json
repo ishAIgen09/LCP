@@ -9,8 +9,11 @@
     "web": "expo start --web"
   },
   "dependencies": {
+    "@expo-google-fonts/inter": "^0.4.2",
     "expo": "~54.0.33",
     "expo-constants": "~18.0.13",
+    "expo-font": "^55.0.6",
+    "expo-splash-screen": "^55.0.18",
     "expo-status-bar": "~3.0.9",
     "lucide-react-native": "^1.8.0",
     "nativewind": "^4.2.3",

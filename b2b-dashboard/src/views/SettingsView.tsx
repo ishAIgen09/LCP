@@ -185,7 +185,7 @@ export function SettingsView({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="global">Global Indie Loop</SelectItem>
+              <SelectItem value="global">Global · Open Network</SelectItem>
               <SelectItem value="private">Private Chain</SelectItem>
             </SelectContent>
           </Select>
@@ -201,7 +201,7 @@ export function SettingsView({
             <div className="flex items-center gap-2 text-[12.5px] font-semibold tracking-tight text-foreground">
               {draftScheme === "global" ? (
                 <>
-                  <Globe className="h-3.5 w-3.5" strokeWidth={2.25} /> Global · Indie Loop
+                  <Globe className="h-3.5 w-3.5" strokeWidth={2.25} /> Global · Open Network
                 </>
               ) : (
                 <>

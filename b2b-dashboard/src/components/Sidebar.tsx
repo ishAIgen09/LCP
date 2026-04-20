@@ -1,11 +1,12 @@
-import { LayoutDashboard, MapPin, CreditCard, Settings, Coffee, LogOut } from "lucide-react"
+import { LayoutDashboard, MapPin, CreditCard, Settings, Coffee, LogOut, Megaphone } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-export type NavKey = "overview" | "locations" | "billing" | "settings"
+export type NavKey = "overview" | "locations" | "promotions" | "billing" | "settings"
 
 const items: { key: NavKey; label: string; icon: typeof Coffee }[] = [
   { key: "overview", label: "Overview", icon: LayoutDashboard },
   { key: "locations", label: "Locations", icon: MapPin },
+  { key: "promotions", label: "Promotions", icon: Megaphone },
   { key: "billing", label: "Billing", icon: CreditCard },
   { key: "settings", label: "Settings", icon: Settings },
 ]
@@ -28,8 +29,8 @@ export function Sidebar({
           <Coffee className="h-4 w-4" strokeWidth={2.25} />
         </div>
         <div className="leading-tight">
-          <div className="text-sm font-semibold tracking-tight">Indie Loop</div>
-          <div className="text-[11px] text-muted-foreground">B2B Dashboard</div>
+          <div className="text-sm font-semibold tracking-tight">Local Coffee Perks</div>
+          <div className="text-[11px] text-muted-foreground">For the regulars</div>
         </div>
       </div>
 

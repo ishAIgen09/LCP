@@ -1,4 +1,4 @@
-import type { Session, Brand, Cafe, SchemeType } from "@/lib/mock"
+import type { Session, Brand, Cafe, FoodHygieneRating, SchemeType } from "@/lib/mock"
 
 const DEFAULT_BASE_URL = "http://localhost:8000"
 
@@ -53,15 +53,35 @@ export function humanizeError(e: unknown): string {
   return "Something went wrong."
 }
 
+const DEV = Boolean(
+  typeof import.meta !== "undefined" &&
+    (import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV,
+)
+
 async function request<T>(
-  method: "GET" | "POST" | "PATCH",
+  method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
   path: string,
   body?: unknown,
   headers?: Record<string, string>
 ): Promise<T> {
+  // NOTE: we deliberately do NOT strip trailing slashes here any more. An
+  // earlier belt-and-braces `.replace(/\/+$/, "")` silently rewrote
+  // `/api/admin/cafes/` (which is what a template with an empty id produces)
+  // into `/api/admin/cafes`, which 405s on DELETE because only GET+POST are
+  // registered there. That masked the real bug (empty cafeId). Let the URL
+  // go through verbatim so the failure mode matches the root cause.
+  const url = `${API_BASE_URL}${path}`
+  // Diagnostic breadcrumb — prints the exact method + URL the browser is
+  // about to send. If the user ever sees 405 again, the Network tab will
+  // show the literal request we fired and this console line will confirm
+  // method+path came out of React correctly (so the mismatch is env-side).
+  if (DEV) {
+    // eslint-disable-next-line no-console
+    console.info(`[api] → ${method} ${url}`)
+  }
   let res: Response
   try {
-    res = await fetch(`${API_BASE_URL}${path}`, {
+    res = await fetch(url, {
       method,
       headers: {
         "Content-Type": "application/json",
@@ -71,7 +91,16 @@ async function request<T>(
     })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
+    if (DEV) {
+      // eslint-disable-next-line no-console
+      console.warn(`[api] ✗ ${method} ${url} — network error: ${msg}`)
+    }
     throw new ApiError(0, `Network error: ${msg}`)
+  }
+
+  if (DEV) {
+    // eslint-disable-next-line no-console
+    console.info(`[api] ← ${res.status} ${method} ${url}`)
   }
 
   if (!res.ok) {
@@ -101,7 +130,7 @@ export type ApiMetrics = {
   renews_at: string | null
 }
 
-type ApiCafe = {
+export type ApiCafe = {
   id: string
   brand_id: string
   name: string
@@ -109,7 +138,21 @@ type ApiCafe = {
   address: string
   contact_email?: string
   store_number?: string | null
+  phone?: string | null
+  food_hygiene_rating?: FoodHygieneRating
+  amenities?: string[]
   created_at?: string
+}
+
+export type ApiOffer = {
+  id: string
+  brand_id: string
+  offer_type: "percent" | "fixed" | "bogo" | "double_stamps"
+  target: "any_drink" | "all_pastries" | "food" | "merchandise" | "entire_order"
+  amount: string | number | null
+  starts_at: string
+  ends_at: string
+  created_at: string
 }
 
 type AdminLoginResponse = {
@@ -138,6 +181,16 @@ export type RedeemResponse = {
   stamp_balance: number
   redeemed: boolean
   ledger_entry_id: string
+}
+
+export type B2BScanResponse = {
+  consumer_id: string
+  venue_id: string
+  stamps_earned: number
+  free_drinks_unlocked: number
+  new_balance: number
+  earned_transaction_id: string
+  redeemed_transaction_id: string | null
 }
 
 export function brandFromApi(b: ApiBrand): Brand {
@@ -207,6 +260,9 @@ export function cafeFromApi(apiCafe: ApiCafe, brandActive: boolean): Cafe {
     address: apiCafe.address,
     scansThisMonth: 0,
     status: brandActive ? "live" : "paused",
+    amenities: apiCafe.amenities ?? [],
+    phone: apiCafe.phone ?? null,
+    foodHygieneRating: apiCafe.food_hygiene_rating ?? "Awaiting Inspection",
   }
 }
 
@@ -269,12 +325,119 @@ export async function createCafe(
     address: string
     store_number?: string
     pin?: string
+    phone?: string | null
+    food_hygiene_rating?: FoodHygieneRating
   }
 ): Promise<ApiCafe> {
   return request<ApiCafe>(
     "POST",
     "/api/admin/cafes",
     values,
+    authHeader(token)
+  )
+}
+
+function requireCafeId(cafeId: string, caller: string): string {
+  // Guard against empty / undefined ids building a URL like
+  // `/api/admin/cafes/` — that request hits the list endpoint and 405s on
+  // anything except GET/POST. Failing fast here produces a clear dialog
+  // error instead of a misleading 405 in the Network tab.
+  const trimmed = typeof cafeId === "string" ? cafeId.trim() : ""
+  if (!trimmed) {
+    throw new Error(
+      `${caller}: missing cafe id — refusing to send a request to the list endpoint.`
+    )
+  }
+  return trimmed
+}
+
+export async function updateCafe(
+  token: string,
+  cafeId: string,
+  patch: {
+    address?: string
+    phone?: string | null
+    food_hygiene_rating?: FoodHygieneRating
+  }
+): Promise<ApiCafe> {
+  const id = requireCafeId(cafeId, "updateCafe")
+  // PUT, keyed by the cafe's id — the backend's handler is registered for
+  // both PUT and PATCH, so this stays REST-conventional. The body is still a
+  // partial patch: omitted fields are left untouched server-side.
+  return request<ApiCafe>(
+    "PUT",
+    `/api/admin/cafes/${id}`,
+    patch,
+    authHeader(token)
+  )
+}
+
+export async function deleteCafe(
+  token: string,
+  cafeId: string,
+): Promise<void> {
+  const id = requireCafeId(cafeId, "deleteCafe")
+  // RPC-style POST fallback. The REST DELETE endpoint still exists server-
+  // side, but some intermediary in the dev stack (Vite proxy / browser
+  // ext / Windows HTTP stack?) intermittently 405s on the DELETE verb.
+  // POST is the most reliable verb across every stack, so we use that.
+  // Response envelope: { status: "success", deleted_id: "<uuid>" }.
+  await request<{ status: string; deleted_id: string }>(
+    "POST",
+    `/api/admin/cafes/${id}/delete`,
+    {},
+    authHeader(token),
+  )
+}
+
+export async function updateCafeAmenities(
+  token: string,
+  cafeId: string,
+  amenities: string[]
+): Promise<ApiCafe> {
+  return request<ApiCafe>(
+    "PUT",
+    `/api/admin/cafes/${cafeId}/amenities`,
+    { amenities },
+    authHeader(token)
+  )
+}
+
+export async function listOffers(token: string): Promise<ApiOffer[]> {
+  return request<ApiOffer[]>(
+    "GET",
+    "/api/admin/offers",
+    undefined,
+    authHeader(token)
+  )
+}
+
+export async function createOffer(
+  token: string,
+  values: {
+    offer_type: ApiOffer["offer_type"]
+    target: ApiOffer["target"]
+    amount: number | null
+    starts_at: string
+    ends_at: string
+  }
+): Promise<ApiOffer> {
+  return request<ApiOffer>(
+    "POST",
+    "/api/admin/offers",
+    values,
+    authHeader(token)
+  )
+}
+
+export async function deleteOffer(
+  token: string,
+  offerId: string
+): Promise<void> {
+  await request<void>(
+    "DELETE",
+    `/api/admin/offers/${offerId}`,
+    undefined,
     authHeader(token)
   )
 }
@@ -299,6 +462,20 @@ export async function redeem(
     "POST",
     "/api/venues/redeem",
     { till_code: tillCode },
+    { "Venue-API-Key": venueApiKey }
+  )
+}
+
+export async function b2bScan(
+  venueApiKey: string,
+  venueId: string,
+  consumerId: string,
+  quantity: number
+): Promise<B2BScanResponse> {
+  return request<B2BScanResponse>(
+    "POST",
+    "/api/b2b/scan",
+    { consumer_id: consumerId, venue_id: venueId, quantity },
     { "Venue-API-Key": venueApiKey }
   )
 }
