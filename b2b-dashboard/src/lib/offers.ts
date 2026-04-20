@@ -35,6 +35,9 @@ export type Offer = {
   startTime: string     // HH:MM, 24h local
   endDate: string       // YYYY-MM-DD, local
   endTime: string       // HH:MM, 24h local
+  // null = applies to every cafe under the brand ("All Locations").
+  // string[] = scoped to those specific cafe ids.
+  targetCafeIds: string[] | null
   createdAt: number     // epoch ms, sourced from ApiOffer.created_at
 }
 
@@ -50,6 +53,7 @@ export function offerFromApi(a: ApiOffer): Offer {
     startTime: toLocalTime(starts),
     endDate: toLocalDate(ends),
     endTime: toLocalTime(ends),
+    targetCafeIds: a.target_cafe_ids ?? null,
     createdAt: new Date(a.created_at).getTime(),
   }
 }

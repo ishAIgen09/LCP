@@ -22,6 +22,8 @@ import {
   ApiError,
   cafeFromApi,
   createCafe,
+  createCheckout,
+  createPortalSession,
   getAdminMe,
   getAdminMetrics,
   listCafes,
@@ -129,6 +131,13 @@ function App() {
       if (session?.role !== "admin") {
         throw new ApiError(401, "Not signed in as admin.")
       }
+      // Snapshot the pre-create billing state. Per-cafe billing: if the
+      // brand doesn't already have an active sub, we need to redirect to
+      // Stripe Checkout *after* the cafe row lands. If they're already
+      // active, the backend auto-bumped the Stripe subscription quantity
+      // via sync_subscription_quantity — no redirect needed.
+      const wasActive = brand?.subscriptionStatus === "active"
+
       // 1. The actual create — this IS the work. If this throws, the user
       //    sees the error and the cafe was never saved.
       const cafe = await createCafe(session.token, {
@@ -151,8 +160,24 @@ function App() {
         }
       }
 
-      // 3. Refresh is cosmetic — if it 405s / network-fails, the cafe list
-      //    will repopulate on the next tab switch. Don't throw past this.
+      // 3a. Inactive brand — send them straight to Stripe Checkout. Don't
+      //     refresh first: we're about to navigate away, and the webhook
+      //     will flip the status to active on return.
+      if (!wasActive) {
+        try {
+          const { checkout_url } = await createCheckout(session.token)
+          window.location.href = checkout_url
+          return cafe.id
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn("[addLocation] checkout redirect failed:", e)
+          // Fall through to the refresh path — the cafe row is safe; the
+          // admin can retry via the Billing tab or re-open the dialog.
+        }
+      }
+
+      // 3b. Active brand — the backend already nudged the Stripe quantity.
+      //     Refresh is cosmetic; don't throw past it.
       try {
         await refreshAdminData(session.token)
       } catch (e) {
@@ -162,8 +187,16 @@ function App() {
 
       return cafe.id
     },
-    [session, refreshAdminData]
+    [session, brand, refreshAdminData]
   )
+
+  const handleOpenPortal = useCallback(async (): Promise<void> => {
+    if (session?.role !== "admin") {
+      throw new ApiError(401, "Not signed in as admin.")
+    }
+    const { checkout_url } = await createPortalSession(session.token)
+    window.location.href = checkout_url
+  }, [session])
 
   const handleUpdateBrand = useCallback(
     async (patch: {
@@ -236,7 +269,12 @@ function App() {
         <main className="flex-1 overflow-y-auto px-8 py-6">
           <div className="mx-auto w-full max-w-6xl">
             {nav === "overview" && (
-              <OverviewView brand={brand} cafes={cafes} metrics={metrics} />
+              <OverviewView
+                brand={brand}
+                cafes={cafes}
+                metrics={metrics}
+                onNavigate={setNav}
+              />
             )}
             {nav === "locations" && (
               <LocationsView
@@ -249,8 +287,16 @@ function App() {
                 }
               />
             )}
-            {nav === "promotions" && <PromotionsView token={session.token} />}
-            {nav === "billing" && <BillingView brand={brand} token={session.token} />}
+            {nav === "promotions" && (
+              <PromotionsView token={session.token} cafes={cafes} />
+            )}
+            {nav === "billing" && (
+              <BillingView
+                brand={brand}
+                token={session.token}
+                cafeCount={cafes.length}
+              />
+            )}
             {nav === "settings" && (
               <SettingsView brand={brand} onSave={handleUpdateBrand} />
             )}
@@ -263,6 +309,7 @@ function App() {
         onOpenChange={setAddLocationOpen}
         brand={brand}
         onSubmit={handleAddLocation}
+        onOpenPortal={handleOpenPortal}
       />
     </div>
   )

@@ -1,14 +1,18 @@
 import json
+import logging
 from uuid import UUID
 
 import stripe
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_admin_session
 from app.database import get_session, settings
-from app.models import Brand, SubscriptionStatus
+from app.models import Brand, Cafe, SubscriptionStatus
 from app.schemas import AdminSession, CheckoutResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/billing", tags=["billing"])
 
@@ -21,6 +25,83 @@ def _require_stripe_key() -> None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="STRIPE_SECRET_KEY is not configured.",
+        )
+
+
+async def _count_brand_cafes(session: AsyncSession, brand_id: UUID) -> int:
+    result = await session.execute(
+        select(func.count(Cafe.id)).where(Cafe.brand_id == brand_id)
+    )
+    return int(result.scalar_one())
+
+
+async def sync_subscription_quantity(
+    session: AsyncSession, brand: Brand
+) -> None:
+    """
+    Reconcile the brand's Stripe subscription quantity with its current cafe
+    count. Called as a side effect after cafe create / delete. Safe to call
+    when:
+      - Stripe isn't configured (no-op, logs a warning)
+      - Brand has no subscription yet (no-op — they'll checkout from the
+        next Add Location flow)
+      - Subscription count would go to 0 (skipped — Stripe doesn't love
+        zero-quantity items; the admin should cancel via the portal instead)
+
+    Failures NEVER bubble up. A divergence between Postgres cafe count and
+    Stripe quantity is recoverable (manual reconciliation or a future
+    backfill job). Blocking cafe creation on a transient Stripe hiccup is
+    not worth the UX cost.
+    """
+    if not settings.stripe_secret_key:
+        logger.warning("sync_subscription_quantity skipped: STRIPE_SECRET_KEY unset")
+        return
+    if not brand.stripe_subscription_id:
+        return
+    if brand.subscription_status != SubscriptionStatus.ACTIVE:
+        return
+
+    cafe_count = await _count_brand_cafes(session, brand.id)
+    if cafe_count <= 0:
+        logger.info(
+            "sync_subscription_quantity: cafe_count=0 for brand=%s, skipping "
+            "(admin should cancel via portal)",
+            brand.id,
+        )
+        return
+
+    try:
+        subscription = stripe.Subscription.retrieve(brand.stripe_subscription_id)
+        items = subscription.get("items", {}).get("data", [])
+        if not items:
+            logger.error(
+                "Subscription %s has no items — can't sync quantity",
+                brand.stripe_subscription_id,
+            )
+            return
+        item_id = items[0]["id"]
+        current_qty = items[0].get("quantity", 0)
+        if current_qty == cafe_count:
+            return
+        stripe.SubscriptionItem.modify(
+            item_id,
+            quantity=cafe_count,
+            proration_behavior="create_prorations",
+        )
+        logger.info(
+            "Stripe quantity synced: brand=%s %d → %d",
+            brand.id,
+            current_qty,
+            cafe_count,
+        )
+    except stripe.StripeError as exc:
+        # Stripe-side failure. Cafe row already committed; surface in logs for
+        # manual reconciliation, don't raise.
+        logger.error(
+            "Stripe quantity sync failed for brand=%s subscription=%s: %s",
+            brand.id,
+            brand.stripe_subscription_id,
+            exc,
         )
 
 
@@ -51,6 +132,12 @@ async def create_checkout(
             detail="Admin session references an unknown brand.",
         )
 
+    # Per-cafe billing: seed the subscription with the brand's current cafe
+    # count (typically 1 — the admin just added their first location and got
+    # redirected here). Falls back to 1 if somehow called with 0 cafes so
+    # Stripe accepts the subscription.
+    cafe_count = max(await _count_brand_cafes(session, brand.id), 1)
+
     kwargs: dict = {
         "mode": "subscription",
         "payment_method_types": ["card"],
@@ -59,12 +146,12 @@ async def create_checkout(
                 "price_data": {
                     "currency": "gbp",
                     "product_data": {
-                        "name": "Local Coffee Perks — Brand Subscription",
+                        "name": "Local Coffee Perks — Per Location",
                     },
                     "recurring": {"interval": "month"},
                     "unit_amount": 500,
                 },
-                "quantity": 1,
+                "quantity": cafe_count,
             }
         ],
         "client_reference_id": str(brand.id),
@@ -82,6 +169,41 @@ async def create_checkout(
     checkout_session = stripe.checkout.Session.create(**kwargs)
 
     return CheckoutResponse(checkout_url=checkout_session.url)
+
+
+@router.post("/portal", response_model=CheckoutResponse)
+async def create_portal_session(
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> CheckoutResponse:
+    """
+    Open a Stripe Customer Portal session for the signed-in brand's admin.
+    Returns the same shape as /checkout ({ checkout_url }) so the frontend
+    can reuse its redirect helper.
+    """
+    _require_stripe_key()
+
+    brand = await session.get(Brand, admin.brand_id)
+    if brand is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin session references an unknown brand.",
+        )
+    if not brand.stripe_customer_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "No Stripe customer on file yet. Add your first location to "
+                "start a subscription."
+            ),
+        )
+
+    return_url = settings.frontend_base_url.rstrip("/") + "/billing"
+    portal_session = stripe.billing_portal.Session.create(
+        customer=brand.stripe_customer_id,
+        return_url=return_url,
+    )
+    return CheckoutResponse(checkout_url=portal_session.url)
 
 
 @router.post("/webhook")

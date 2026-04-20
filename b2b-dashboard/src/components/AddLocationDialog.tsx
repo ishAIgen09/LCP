@@ -1,5 +1,14 @@
 import { useMemo, useRef, useState } from "react"
-import { Check, Loader2, MapPin, Phone, Search, ShieldCheck } from "lucide-react"
+import {
+  Check,
+  CreditCard,
+  Info,
+  Loader2,
+  MapPin,
+  Phone,
+  Search,
+  ShieldCheck,
+} from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -66,6 +75,7 @@ export function AddLocationDialog({
   onOpenChange,
   brand,
   onSubmit,
+  onOpenPortal,
 }: {
   open: boolean
   onOpenChange: (v: boolean) => void
@@ -77,6 +87,10 @@ export function AddLocationDialog({
     food_hygiene_rating: FoodHygieneRating
     amenityIds: string[]
   }) => Promise<string>
+  // Called when the user clicks "Need to use a different card?" inside the
+  // per-cafe billing warning block. Parent (App.tsx) owns the API call and
+  // the window.location redirect so the dialog stays API-free.
+  onOpenPortal: () => Promise<void>
 }) {
   const [name, setName] = useState("")
 
@@ -96,6 +110,22 @@ export function AddLocationDialog({
   const [amenities, setAmenities] = useState<Set<AmenityId>>(new Set())
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [openingPortal, setOpeningPortal] = useState(false)
+
+  const openPortal = async () => {
+    if (submitting || openingPortal) return
+    setError(null)
+    setOpeningPortal(true)
+    try {
+      await onOpenPortal()
+      // onOpenPortal triggers a full-page redirect. If we return, it failed —
+      // fall through to the finally block so the link re-enables.
+    } catch (e) {
+      setError(humanizeError(e))
+    } finally {
+      setOpeningPortal(false)
+    }
+  }
 
   const searchWrapRef = useRef<HTMLDivElement | null>(null)
 
@@ -447,6 +477,52 @@ export function AddLocationDialog({
             </div>
           </div>
 
+          {/* Per-cafe billing notice — only active brands get auto-charged
+              on add. Inactive brands go through Stripe Checkout after the
+              create, so the £5 is disclosed there instead. */}
+          {brand.subscriptionStatus === "active" && (
+            <div className="rounded-md border border-amber-200 bg-amber-50/70 p-3">
+              <div className="flex items-start gap-2.5">
+                <Info
+                  className="mt-0.5 h-4 w-4 shrink-0 text-amber-700"
+                  strokeWidth={2.25}
+                />
+                <div className="min-w-0 flex-1 space-y-2">
+                  <p className="text-[12.5px] leading-snug text-amber-900">
+                    Adding this location will automatically increase your plan
+                    by{" "}
+                    <span className="font-semibold">£5/month</span>. This will
+                    be billed to your default payment method.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={openPortal}
+                    disabled={submitting || openingPortal}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 text-[11.5px] font-medium text-amber-900 underline-offset-4 hover:underline disabled:pointer-events-none disabled:opacity-60",
+                    )}
+                  >
+                    {openingPortal ? (
+                      <>
+                        <Loader2
+                          className="h-3 w-3 animate-spin"
+                          strokeWidth={2.25}
+                        />
+                        Opening Stripe portal…
+                      </>
+                    ) : (
+                      <>
+                        <CreditCard className="h-3 w-3" strokeWidth={2.25} />
+                        Need to use a different card? Update your billing
+                        details here.
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {error && (
             <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-[12px] text-destructive">
               {error}
@@ -466,10 +542,12 @@ export function AddLocationDialog({
             {submitting ? (
               <>
                 <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.25} />
-                Saving…
+                {brand.subscriptionStatus === "active" ? "Saving…" : "Redirecting…"}
               </>
-            ) : (
+            ) : brand.subscriptionStatus === "active" ? (
               "Add location"
+            ) : (
+              "Add & Continue to Payment"
             )}
           </Button>
         </DialogFooter>

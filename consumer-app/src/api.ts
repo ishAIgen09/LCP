@@ -3,7 +3,7 @@ import type { Session } from "./theme";
 // Back on localtunnel for off-LAN testing. `Bypass-Tunnel-Reminder: true`
 // on every request skips localtunnel's HTML interstitial so the app gets
 // JSON straight from uvicorn.
-export const API_BASE_URL = "https://moody-frogs-slide.loca.lt";
+export const API_BASE_URL = "https://slow-snails-yawn.loca.lt";
 
 if (__DEV__) {
   // eslint-disable-next-line no-console

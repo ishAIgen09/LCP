@@ -4,8 +4,10 @@ import {
   Calendar,
   Clock,
   Loader2,
+  MapPin,
   Megaphone,
   MessageSquareText,
+  Pencil,
   Sparkles,
   Tag,
   Trash2,
@@ -20,12 +22,18 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
+import { EditOfferDialog } from "@/components/EditOfferDialog"
+import {
+  OfferLocationTargeting,
+  type OfferLocationTargetingValue,
+} from "@/components/OfferLocationTargeting"
 import {
   createOffer,
   deleteOffer,
   humanizeError,
   listOffers,
 } from "@/lib/api"
+import type { Cafe } from "@/lib/mock"
 import {
   OFFER_TARGETS,
   OFFER_TYPES,
@@ -40,7 +48,13 @@ import {
 const LEAD_TIME_HOURS = 4
 const LEAD_TIME_MS = LEAD_TIME_HOURS * 60 * 60 * 1000
 
-export function PromotionsView({ token }: { token: string }) {
+export function PromotionsView({
+  token,
+  cafes,
+}: {
+  token: string
+  cafes: Cafe[]
+}) {
   // Form state
   const [type, setType] = useState<OfferType>("percent")
   const [target, setTarget] = useState<OfferTarget>("any_drink")
@@ -49,12 +63,16 @@ export function PromotionsView({ token }: { token: string }) {
   const [startTime, setStartTime] = useState<string>("14:00")
   const [endDate, setEndDate] = useState<string>(() => toDateInput(new Date()))
   const [endTime, setEndTime] = useState<string>("16:00")
+  // null = All Locations (default); string[] = Specific Locations selection.
+  const [targetCafeIds, setTargetCafeIds] =
+    useState<OfferLocationTargetingValue>(null)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [loading, setLoading] = useState(true)
 
   const [offers, setOffers] = useState<Offer[]>([])
+  const [editing, setEditing] = useState<Offer | null>(null)
   useEffect(() => {
     let cancelled = false
     setLoading(true)
@@ -87,6 +105,7 @@ export function PromotionsView({ token }: { token: string }) {
     setStartTime("14:00")
     setEndDate(today)
     setEndTime("16:00")
+    setTargetCafeIds(null)
   }
 
   const onCreate = async () => {
@@ -127,6 +146,13 @@ export function PromotionsView({ token }: { token: string }) {
       setError("The offer's end must be after its start.")
       return
     }
+    // Specific-locations mode with zero boxes ticked is a user trap — block it
+    // at the client since the backend will also coerce empty → NULL (= All),
+    // which is the opposite of the user's visible intent.
+    if (Array.isArray(targetCafeIds) && targetCafeIds.length === 0) {
+      setError("Pick at least one location, or switch to All Locations.")
+      return
+    }
 
     setSubmitting(true)
     try {
@@ -136,6 +162,7 @@ export function PromotionsView({ token }: { token: string }) {
         amount: amountKind === "none" ? null : Number(amount),
         starts_at: startsIso,
         ends_at: endsIso,
+        target_cafe_ids: targetCafeIds,
       })
       setOffers((prev) => [offerFromApi(created), ...prev])
       setSaved(true)
@@ -170,9 +197,10 @@ export function PromotionsView({ token }: { token: string }) {
       startTime: startTime || "00:00",
       endDate: endDate || startDate || toDateInput(new Date()),
       endTime: endTime || "00:00",
+      targetCafeIds,
       createdAt: Date.now(),
     }),
-    [type, target, amount, amountKind, startDate, startTime, endDate, endTime]
+    [type, target, amount, amountKind, startDate, startTime, endDate, endTime, targetCafeIds]
   )
 
   // Lead-time warning — soft, not blocking.
@@ -314,6 +342,16 @@ export function PromotionsView({ token }: { token: string }) {
               </p>
             </Step>
 
+            {/* STEP 4 */}
+            <Step number={4} title="Participating locations" icon={MapPin}>
+              <OfferLocationTargeting
+                cafes={cafes}
+                value={targetCafeIds}
+                onChange={setTargetCafeIds}
+                disabled={submitting}
+              />
+            </Step>
+
             {/* ERRORS / FEEDBACK */}
             {error && (
               <div className="mt-4 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-[12.5px] text-destructive">
@@ -393,19 +431,34 @@ export function PromotionsView({ token }: { token: string }) {
                       <div className="truncate text-[13px] font-medium text-foreground">
                         {describeOffer(o)}
                       </div>
-                      <div className="text-[11.5px] text-muted-foreground">
-                        {formatOfferWindow(o)}
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] text-muted-foreground">
+                        <span>{formatOfferWindow(o)}</span>
+                        <LocationScopeBadge
+                          targetCafeIds={o.targetCafeIds}
+                          totalCafes={cafes.length}
+                        />
                       </div>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => onDelete(o.id)}
-                      className="h-8 gap-1.5 text-muted-foreground hover:text-destructive"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" strokeWidth={2} />
-                      Remove
-                    </Button>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setEditing(o)}
+                        className="h-8 gap-1.5 text-muted-foreground hover:text-foreground"
+                      >
+                        <Pencil className="h-3.5 w-3.5" strokeWidth={2} />
+                        Edit
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => onDelete(o.id)}
+                        className="h-8 gap-1.5 text-muted-foreground hover:text-destructive"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" strokeWidth={2} />
+                        Remove
+                      </Button>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -438,6 +491,20 @@ export function PromotionsView({ token }: { token: string }) {
           <OfferPreview offer={previewOffer} />
         </div>
       </div>
+
+      <EditOfferDialog
+        open={editing !== null}
+        onOpenChange={(v) => !v && setEditing(null)}
+        token={token}
+        offer={editing}
+        cafes={cafes}
+        onSaved={(updated) => {
+          setOffers((prev) =>
+            prev.map((o) => (o.id === updated.id ? updated : o)),
+          )
+          setEditing(null)
+        }}
+      />
     </div>
   )
 }
@@ -631,4 +698,31 @@ function formatOfferWindow(o: Offer): string {
   const times = `${o.startTime}–${o.endTime}`
   if (o.startDate === o.endDate) return `${start} · ${times}`
   return `${start} ${o.startTime} → ${end} ${o.endTime}`
+}
+
+function LocationScopeBadge({
+  targetCafeIds,
+  totalCafes,
+}: {
+  targetCafeIds: string[] | null
+  totalCafes: number
+}) {
+  const isAll = targetCafeIds === null
+  const count = targetCafeIds?.length ?? totalCafes
+  const label = isAll
+    ? `All locations${totalCafes > 0 ? ` (${totalCafes})` : ""}`
+    : `${count} location${count === 1 ? "" : "s"}`
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-medium",
+        isAll
+          ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200"
+          : "bg-sky-50 text-sky-800 ring-1 ring-sky-200",
+      )}
+    >
+      <MapPin className="h-3 w-3" strokeWidth={2} />
+      {label}
+    </span>
+  )
 }

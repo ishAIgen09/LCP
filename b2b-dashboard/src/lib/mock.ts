@@ -28,6 +28,13 @@ export type Brand = {
   subscriptionStatus: "active" | "trialing" | "past_due" | "canceled"
   createdAt: string
   currentPeriodEnd?: string | null
+  // KYC fields (nullable — filled in from Settings at the admin's pace).
+  ownerFirstName: string | null
+  ownerLastName: string | null
+  ownerPhone: string | null
+  companyLegalName: string | null
+  companyAddress: string | null
+  companyRegistrationNumber: string | null
 }
 
 export type FoodHygieneRating = "1" | "2" | "3" | "4" | "5" | "Awaiting Inspection"
@@ -55,6 +62,12 @@ export const initialBrand: Brand = {
   planPrice: "£5 / month per cafe",
   subscriptionStatus: "active",
   createdAt: "2026-04-02",
+  ownerFirstName: null,
+  ownerLastName: null,
+  ownerPhone: null,
+  companyLegalName: null,
+  companyAddress: null,
+  companyRegistrationNumber: null,
 }
 
 export const initialCafes: Cafe[] = [

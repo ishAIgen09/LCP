@@ -397,4 +397,156 @@ Frontend architecture is three spokes: **Super-Admin** (hidden, platform staff),
 - No super-admin or "create brand" flow inside the Business App. Brand provisioning stays on the Super-Admin spoke (or out-of-band admin API) — never on the owner-facing Admin surface.
 - Phase 3b (Consumer PWA, SSE, map) is still gated — do NOT start until the user opens it explicitly for a specific feature.
 
+## 🆕 April 20 — 405 Fixes & CRUD Completion
+
+Phase 3a hardening + Phase 4 consumer polish. All items below are verified against code on disk (not recalled from memory).
+
+### 1. DB + Model + UI: amenities & food hygiene rating
+- `migrations/0005_add_amenities_and_offers.sql` → `cafes.amenities TEXT[]` (+ standalone `offers` table).
+- `migrations/0007_add_food_hygiene_rating.sql` → `cafes.food_hygiene_rating TEXT NOT NULL DEFAULT 'Awaiting Inspection'` with CHECK allow-list (`'1'..'5' | 'Awaiting Inspection'`).
+- SQLAlchemy model `app/models.py:138` (`food_hygiene_rating`) + `:146` (`amenities: Mapped[list[str]]`) — both mapped.
+- B2B UI: `AddLocationDialog` + `EditLocationDialog` expose a hygiene-rating `Select` above a 9-checkbox amenity grid (catalog in `b2b-dashboard/src/lib/amenities.ts`, mirrored in `consumer-app/src/amenities.ts`).
+
+### 2. 405 Method Not Allowed — fixed for Add & Edit Location
+Root causes found + resolved (five diagnosis passes, consolidated):
+- `app/main.py:85` → `FastAPI(redirect_slashes=False)` prevents 307 → method-mangling.
+- Update handler double-decorated: `@app.patch` **and** `@app.put` on `/api/admin/cafes/{cafe_id}` (`app/main.py:424-425`) so either verb routes.
+- Frontend `deleteCafe` / `updateCafe` guarded by `requireCafeId()` — empty ids fail fast instead of hitting the list route (which was the real DELETE 405).
+- CORS widened to `allow_methods=["*"]`; startup banner (`app/main.py:102`) logs registered `/api/admin/cafes*` routes on every uvicorn reload so staleness is visible.
+- Phantom "POST saves but UI shows error" traced to a follow-up `refreshAdminData` throwing through the dialog's single try/catch — post-create steps are now best-effort `console.warn`.
+
+**Status:** `POST` Add Location = 201 ✅. `PUT` Edit Location = 200 ✅ (hard-verified with real JWT via TestClient).
+
+### 3. Delete RPC workaround (POST instead of DELETE)
+The browser's DELETE verb was being blocked by an intermediary in the dev stack even after CORS was widened. Nuclear fix:
+- New endpoint `app/main.py:499` → `@app.post("/api/admin/cafes/{cafe_id}/delete")` returns `{"status":"success","deleted_id":"<uuid>"}`.
+- Both the new POST route and the original REST `DELETE /api/admin/cafes/{cafe_id}` call the shared `_delete_cafe_impl` (`app/main.py:469`), so behavior can't drift.
+- Frontend `deleteCafe` (`b2b-dashboard/src/lib/api.ts:375`) fires the POST variant; UI strips the row optimistically on 200, then reconciles via `refreshAdminData`.
+- E2E verified: click Trash → row vanishes → page refresh confirms DB removal.
+
+### 4. Consumer App UI polish
+- `consumer-app/src/FoodHygieneBadge.tsx` → native UK FSA sticker (black `#000000` + bright green `#00B140`). Numeric 1-5 renders 72px circle + 5-star row + `VERY GOOD`-style label; `Awaiting Inspection` keeps sticker chrome with a bordered panel.
+- `consumer-app/src/CafeDetailsModal.tsx` → full-screen slide-up with dynamic amenity chips (lucide icons, 9-id catalog matching b2b) + live-offer terracotta cards.
+- `consumer-app/src/ContactLocationModal.tsx` → nested modal behind the header "Cafe details" pill; name + address + phone (with "Not shared yet" empty state) + **Get Directions** (native `maps:` / `geo:` scheme with `https://www.google.com/maps/search/` web fallback via `Linking.canOpenURL` + try/catch).
+
+### 5. Offers CRUD — fully wired (Edit + RPC-POST delete)
+The `offers` surface now mirrors the cafe surface end-to-end — GET / POST / PUT / REST-DELETE / RPC-POST-delete, with Edit + Delete buttons per row in the B2B dashboard.
+
+- **Backend**
+  - `app/main.py` — `delete_offer` refactored into shared `_delete_offer_impl` (same pattern as `_delete_cafe_impl`).
+  - New RPC route: `@app.post("/api/admin/offers/{offer_id}/delete")` returning `{"status":"success","deleted_id":"<uuid>"}`.
+  - REST `DELETE /api/admin/offers/{offer_id}` kept alongside for standards-compliant clients; both paths call the shared impl so they can't drift.
+- **Frontend API (`b2b-dashboard/src/lib/api.ts`)**
+  - New `updateOffer(token, offerId, values)` → `PUT /api/admin/offers/{offerId}`.
+  - `deleteOffer` switched REST-DELETE → RPC-POST (`/delete` suffix) to match `deleteCafe`. Uniform across the dashboard — a 405 on any DELETE verb can't bite us here anymore.
+- **Frontend UI**
+  - New `b2b-dashboard/src/components/EditOfferDialog.tsx` — mirrors `EditLocationDialog` pattern. Seeds from the row's current `Offer`, re-uses the same amount/target/window validation as the create form, sends a full PUT body on save.
+  - `PromotionsView.tsx` — each scheduled-offer row now renders **Edit** (pencil) + **Remove** (trash) buttons side-by-side. Edit opens the dialog with pre-filled state; on save, the row in local state is swapped for the API response (no full refetch needed).
+- **Status:** Offers CRUD is 100% wired in the B2B dashboard — create, edit, and delete all round-trip to Postgres through the real FastAPI routes. No localStorage anywhere in the Promotions surface.
+
+### 6. Offer location targeting — All vs. Specific
+Brand owners can now scope an offer to either every cafe under the brand or a hand-picked subset.
+
+- **Migration 0008** (`migrations/0008_offer_target_cafes.sql`, applied) — `offers.target_cafe_ids UUID[] NULL`. **NULL = All Locations** (default, preserves existing behavior). A populated array scopes the offer to those cafe ids. UUID[] (not JSONB) to stay consistent with `cafes.amenities TEXT[]`.
+- **Backend**
+  - `app/models.py` — `Offer.target_cafe_ids` mapped as `ARRAY(UUID(as_uuid=True))`, nullable.
+  - `app/schemas.py` — `OfferCreate` / `OfferUpdate` / `OfferResponse` now carry `target_cafe_ids: list[UUID] | None`. Route handlers normalize empty-list → `None` so "Specific with zero ticked" can't silently mint an invisible offer.
+- **Frontend**
+  - New shared component `b2b-dashboard/src/components/OfferLocationTargeting.tsx` — radio (`All locations (N)` / `Specific locations`) + checkbox grid of cafe names with the same visual pattern as the amenities picker.
+  - `lib/api.ts` `ApiOffer`, `createOffer`, `updateOffer` gained `target_cafe_ids: string[] | null`.
+  - `lib/offers.ts` UI `Offer` type + `offerFromApi` now carry `targetCafeIds`.
+  - `PromotionsView.tsx` — accepts `cafes: Cafe[]` prop (wired in `App.tsx`), adds Step 4 "Participating locations" to the create form, rehydrates into Edit dialog. Each saved-offer row renders a `LocationScopeBadge` pill (emerald for "All locations", sky-blue for "N locations"). Client-side guard blocks submit when Specific-mode has zero boxes ticked.
+  - `EditOfferDialog.tsx` — accepts `cafes` prop, seeds `targetCafeIds` from `offer.targetCafeIds` on open, sends on save.
+- **Known gap — consumer feed filter not wired yet.** `GET /api/consumer/cafes` still attaches brand-wide offers to every cafe regardless of `target_cafe_ids`. This is a dashboard-authoring slice only — consumer visibility is the next task. Confirmed out of scope for this commit by the user prompt.
+- **models.sql not synced.** The reference `models.sql` at the repo root hasn't tracked migrations 0005–0008 (offers, amenities, phone, hygiene, target_cafe_ids). The live schema is fully defined by the numbered migration files per `reference_migration_runner.md`; `models.sql` should be regenerated from introspection or deprecated.
+
+### 7. Per-cafe Stripe billing (quantity-based) + Customer Portal
+Brands now pay **£5/month per active location**, not a flat fee. Adding a cafe bumps the Stripe subscription item quantity; deleting a cafe decrements it. The generic "Subscribe" button is gone — subscriptions start implicitly when the first location is added.
+
+**Backend (`app/billing.py`)**
+- New helper `sync_subscription_quantity(session, brand)` — retrieves the brand's subscription, modifies the first subscription item to match `COUNT(cafes WHERE brand_id=…)`. `proration_behavior="create_prorations"` so mid-cycle quantity changes prorate automatically. **Failures NEVER raise** — a transient Stripe blip must not block a cafe create. Divergence is logged for manual reconciliation.
+- New endpoint `POST /api/billing/portal` — `stripe.billing_portal.Session.create(customer=brand.stripe_customer_id, return_url=".../billing")`. Returns `CheckoutResponse` shape so the frontend can reuse its redirect helper. **Returns 400** if `brand.stripe_customer_id` is NULL (no customer yet — admin needs to add their first location first).
+- Checkout now seeds with the live cafe count (`quantity=max(cafe_count, 1)`) instead of hardcoding `1`, so if a brand somehow arrives at checkout with N existing cafes the subscription starts at the right quantity.
+
+**Backend (`app/main.py`)**
+- `create_cafe` calls `sync_subscription_quantity(session, brand)` after commit. Inactive brands short-circuit inside the helper (no-op). Active brands get the Stripe bump.
+- `_delete_cafe_impl` does the same after commit (skipped if new count == 0 — zero-qty subs are a portal-cancel concern).
+- Third startup banner block (`_log_billing_routes`) prints `/api/billing/*` routes on every uvicorn reload.
+
+**Frontend**
+- `lib/api.ts` — new `createPortalSession(token)` returning `{ checkout_url }` (backend reuses the CheckoutResponse shape).
+- `AddLocationDialog.tsx` — submit button text conditional on `brand.subscriptionStatus`: **"Add location"** when active, **"Add & Continue to Payment"** when not. Spinner label mirrors the split.
+- `App.tsx handleAddLocation` — captures `wasActive = brand?.subscriptionStatus === "active"` *before* the POST. If inactive after the cafe lands, calls `createCheckout` and `window.location.href = checkout_url`. If active, backend already synced Stripe quantity — just refreshes local state. Checkout redirect failures fall through to the refresh path so the cafe row isn't orphaned.
+- `BillingView.tsx` — **"Start a new Stripe checkout" button removed entirely**. "Download invoices" rewired to "Manage billing & invoices", calls `createPortalSession` and redirects. Plan card now reads **"£5 / month · per active location"** and shows `Billed for N locations · £N0.00/mo`. Inactive-brand banner redirects users to the Locations tab ("add your first location to begin"). No disable-guard on the portal button — the backend's 400 ("No Stripe customer on file yet. Add your first location…") surfaces in the existing inline error banner.
+
+**Status:** Three layers verified. Backend `py_compile` clean; frontend `tsc --build --force` clean; `/api/billing/portal` confirmed registered in the app router; `sync_subscription_quantity` importable and no-ops correctly when Stripe key is unset or sub_id is NULL. Ready for live Stripe test.
+
+### 7a. AddLocation billing transparency (active-brand warning + portal escape-hatch)
+Polish pass on the per-cafe billing flow — when an **already-active** brand opens Add Location, the dialog now explicitly discloses the £5/mo increase and offers a pre-save path to switch payment method.
+
+- `AddLocationDialog.tsx`
+  - New prop `onOpenPortal: () => Promise<void>` — parent owns the `createPortalSession` + `window.location.href` redirect so the dialog stays API-free.
+  - Conditional amber notice block (shown only when `brand.subscriptionStatus === "active"`): "Adding this location will automatically increase your plan by **£5/month**. This will be billed to your default payment method." Uses the `Info` lucide icon in amber-700.
+  - Below the notice: a terse underlined button "Need to use a different card? Update your billing details here." with a `CreditCard` icon. Click → `onOpenPortal()` → spinner state "Opening Stripe portal…" while the API round-trip resolves, then the parent full-page-redirects to the Stripe Customer Portal.
+  - Local `openingPortal` state guards against double-click; Dialog's main submit is blocked while the portal is opening (and vice versa).
+- `App.tsx`
+  - New `handleOpenPortal = useCallback(async () => { const { checkout_url } = await createPortalSession(session.token); window.location.href = checkout_url }, [session])` — wired to the dialog.
+  - `createPortalSession` added to the `lib/api` import list (was not previously used in App.tsx).
+- **Not shown for inactive brands.** They go through Stripe Checkout after cafe create anyway (separate disclosure flow), so duplicating the warning would be redundant.
+
+**Status:** `tsc --build --force` clean. No backend changes in this pass — `createPortalSession` and `/api/billing/portal` were already live from task 7.
+
+### 8. KYC fields + Overview "View all" navigation fix
+Final B2B sweep. Two unrelated items bundled: the dead "View all" button on the Overview dashboard, and the missing KYC/Stripe-compliance fields on Settings.
+
+**Navigation fix**
+- `OverviewView.tsx` — `onNavigate: (nav: NavKey) => void` prop added; the "View all" button next to "Top performing branches" is now `onClick={() => onNavigate("locations")}` instead of dead. `App.tsx` passes `onNavigate={setNav}`.
+
+**KYC — migration 0009 (`0009_add_brand_kyc_fields.sql`, applied)**
+- Six new nullable TEXT columns on `brands`: `owner_first_name`, `owner_last_name`, `owner_phone`, `company_legal_name`, `company_address`, `company_registration_number`. No CHECK constraints — these are free-form display fields; validation is at the API boundary.
+
+**Backend**
+- `app/models.py Brand` — six mapped `Mapped[str | None]` columns added.
+- `app/schemas.py`
+  - `BrandProfile` — six nullable KYC fields added to the response shape so the Settings form can prefill.
+  - `BrandUpdate` — same six as optional patch fields. Semantics: `None` = untouched; empty string = clear to NULL (handler normalizes).
+- `app/main.py update_admin_brand` — loop over the six field names, trim whitespace, coerce `""` → `None` before assignment, so the admin can both set and clear any KYC field via a single PATCH.
+
+**Frontend**
+- `lib/mock.ts Brand` — six new camelCase nullable fields (`ownerFirstName`, …, `companyRegistrationNumber`). `initialBrand` constant seeded with nulls.
+- `lib/api.ts` — `ApiBrand` + `brandFromApi` + `updateAdminBrand` patch signature all extended with the six snake_case fields.
+- `SettingsView.tsx` — **restructured from "one wide card + right sidebar" to "three stacked cards + shared action bar + right sidebar"**. New cards:
+  - **Owner Details** (UserRound icon) — first name, last name, phone
+  - **Legal & Compliance** (Building2 icon) — legal name, registered address, CRN/VAT (auto-uppercased, monospace)
+  - Existing **Brand profile** card stays on top.
+  - Save/Discard moved into a single shared footer row below all three cards, so the admin hits one Save regardless of which section they edited. Patch diff spans all 10 draft fields; error + "Saved." indicators live in the same footer.
+- All drafts re-seeded via the `useEffect([brand])` block so a parent refresh reflects in the form.
+
+**Status:** Migration 0009 applied to local dev DB. Backend `py_compile` + Pydantic round-trip (set, clear, read) all clean. Frontend `tsc --build --force` clean.
+
+---
+
+## End of day — 2026-04-20 wrap-up
+
+**B2B Dashboard is effectively feature-complete for the MVP scope.** Every surface the brand admin interacts with is wired to real FastAPI → Postgres: Overview, Locations (CRUD + edit + RPC-delete), Promotions (CRUD + location targeting), Billing (per-cafe subscription + portal), Settings (brand + KYC). No localStorage / mock data left in admin flows.
+
+### Today's architectural completions (2026-04-20 session)
+1. **Promotions CRUD + Location Targeting** — shared `OfferLocationTargeting` component; per-row `LocationScopeBadge` pill. Storage: `offers.target_cafe_ids UUID[] NULL` (migration 0008). *Not JSONB — chose native Postgres `UUID[]` for consistency with `cafes.amenities TEXT[]` and cheap `ANY()` membership checks. Same semantic as a JSON list of ids.* NULL = all, populated array = specific cafes.
+2. **Per-cafe Stripe billing + Customer Portal** — `quantity = COUNT(cafes)` model. `sync_subscription_quantity` helper fires post-commit on cafe create / delete (failures log-only, cafe commit wins). Generic "Subscribe" button gone; first cafe's "Add & Continue to Payment" triggers checkout. Active-brand Add Location shows an amber £5/mo disclosure + portal escape-hatch link. BillingView "Manage billing & invoices" → Stripe Customer Portal.
+3. **KYC fields** — migration 0009 adds 6 nullable TEXT columns: `owner_first_name`, `owner_last_name`, `owner_phone`, `company_legal_name`, `company_address`, `company_registration_number`. `BrandProfile` / `BrandUpdate` schemas + `update_admin_brand` handler (empty-string-clears-to-NULL) + SettingsView restructured into three stacked cards with a shared Save bar.
+4. **Nav fix** — Overview "View all" next to "Top performing branches" now routes to Locations via `onNavigate` prop.
+
+### Known gaps carried forward (flagged here so they don't get lost)
+- **Consumer feed filter for `target_cafe_ids` not wired.** `GET /api/consumer/cafes` still broadcasts brand-wide offers to every cafe. Next task when we touch the consumer API.
+- **KYC fields aren't pushed to Stripe** — they're stored in Postgres for our records and invoice display, but not yet propagated to the Stripe Customer object for merchant verification. Separate ticket if/when Stripe asks.
+- **`models.sql` at repo root is stale** — hasn't tracked migrations 0005–0009. Migrations are the source of truth; regenerate or deprecate next time someone touches it.
+- **Delete-to-zero cafes** doesn't cancel the Stripe subscription — admin must use the portal. Deliberate.
+
+### Next session — resume here
+Start with **one** of these two surfaces; both have been dormant while B2B got finished:
+- **Barista POS scanner** — harden the in-store scan + redeem flow. Prior smart-pause work is in commit `d616a40` (2026-04-18).
+- **Consumer App (React Native / Expo)** — Phase 4 MVP is up (commit `1c126eb`), but the Discover feed still ignores offer location targeting and the app is only reachable via localtunnel (`consumer-app/src/api.ts` currently points at `https://slow-snails-yawn.loca.lt`, rotates per session).
+
+Both are greenfield for new features; no blockers from today's B2B work.
+
 **Phase 3 (B2B Dashboard + Billing) is 100% closed as of 2026-04-18.** Every surface of the Business App is wired to real FastAPI endpoints. Gateway, POS scanner, dashboard reads (cafes, metrics, brand profile), dashboard writes (add-location, brand PATCH incl. scheme toggle), logout on both surfaces, AND a working end-to-end Stripe subscription flow: admin clicks Subscribe → `POST /api/billing/checkout` (JWT-authed) → Stripe hosted page → Stripe webhook on `checkout.session.completed` flips `subscription_status` to `active` and saves `stripe_customer_id` + `stripe_subscription_id` → Stripe redirects back to `/success?session_id=…` (or `/cancel`) on the Vite frontend, which refetches admin data and surfaces the new Active state. Admin + Store JWTs are per-audience, backed by bcrypt-hashed per-row credentials. Local dev DB seed: `admin@test.com`/`password123` + Store ID `001` / PIN `1234` against `Test Coffee Co — Flagship`. Discretionary next tracks (Phase 3b, store-cred UI, Customer Portal, hardening) are listed under "▶️ Very first step when we resume" — none are loose ends from Phase 3.

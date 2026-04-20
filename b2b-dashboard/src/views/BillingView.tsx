@@ -9,7 +9,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
-import { createCheckout, humanizeError } from "@/lib/api"
+import { createPortalSession, humanizeError } from "@/lib/api"
 import type { Brand } from "@/lib/mock"
 
 const STATUS_META: Record<
@@ -52,44 +52,40 @@ function formatRenewal(iso: string | null | undefined): string {
 export function BillingView({
   brand,
   token,
+  cafeCount,
 }: {
   brand: Brand
   token: string
+  cafeCount: number
 }) {
   const meta = STATUS_META[brand.subscriptionStatus]
   const StatusIcon = meta.icon
   const isActive = brand.subscriptionStatus === "active"
 
-  const [starting, setStarting] = useState(false)
+  const [opening, setOpening] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const openCheckout = async () => {
-    if (starting) return
+  const openPortal = async () => {
+    if (opening) return
     setError(null)
-    setStarting(true)
+    setOpening(true)
     try {
-      const { checkout_url } = await createCheckout(token)
+      const { checkout_url } = await createPortalSession(token)
       window.location.href = checkout_url
     } catch (e) {
       setError(humanizeError(e))
-      setStarting(false)
+      setOpening(false)
     }
   }
-
-  const ctaLabel = isActive
-    ? "Start a new Stripe checkout"
-    : brand.subscriptionStatus === "past_due"
-      ? "Resume subscription"
-      : brand.subscriptionStatus === "canceled"
-        ? "Re-subscribe"
-        : "Subscribe via Stripe"
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
       <Card className="lg:col-span-2">
         <CardHeader>
           <CardTitle className="text-[15px] tracking-tight">Subscription</CardTitle>
-          <CardDescription>Managed securely via Stripe.</CardDescription>
+          <CardDescription>
+            £5 / month per active location — managed securely via Stripe.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4 pt-0">
           <div className="rounded-lg border border-border bg-muted/30 p-4">
@@ -100,18 +96,29 @@ export function BillingView({
                 </div>
                 <div className="mt-1 flex items-baseline gap-2">
                   <span className="text-2xl font-semibold tracking-tight text-foreground">
-                    {brand.plan}
+                    £5
                   </span>
-                  <span className="text-sm text-muted-foreground">{brand.planPrice}</span>
+                  <span className="text-sm text-muted-foreground">
+                    / month · per active location
+                  </span>
                 </div>
                 <p className="mt-1.5 text-[12px] text-muted-foreground">
+                  Billed for{" "}
+                  <span className="font-medium text-foreground">
+                    {cafeCount} location{cafeCount === 1 ? "" : "s"}
+                  </span>
+                  {" · "}
+                  <span className="font-medium text-foreground">
+                    £{(cafeCount * 5).toFixed(2)}/mo
+                  </span>
+                  {" · "}
                   {formatRenewal(brand.currentPeriodEnd)}
                 </p>
               </div>
               <span
                 className={cn(
                   "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium",
-                  meta.tint
+                  meta.tint,
                 )}
               >
                 <StatusIcon className="h-3 w-3" strokeWidth={2.5} /> {meta.label}
@@ -125,8 +132,9 @@ export function BillingView({
               <div>
                 <div className="font-medium">Your brand isn't active yet.</div>
                 <p className="text-[11.5px] leading-snug text-amber-900/80">
-                  Your cafes are paused until a subscription is in place. Complete checkout to
-                  unlock the POS for all your stores.
+                  Subscriptions start automatically when you add your first
+                  location — head to the Locations tab and click Add Location
+                  to begin.
                 </p>
               </div>
             </div>
@@ -142,28 +150,25 @@ export function BillingView({
             <Button
               size="sm"
               className="h-9 gap-1.5"
-              onClick={openCheckout}
-              disabled={starting}
+              onClick={openPortal}
+              disabled={opening}
             >
-              {starting ? (
+              {opening ? (
                 <>
                   <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.25} />
-                  Redirecting…
+                  Opening portal…
                 </>
               ) : (
                 <>
                   <ExternalLink className="h-3.5 w-3.5" strokeWidth={2.25} />
-                  {ctaLabel}
+                  Manage billing & invoices
                 </>
               )}
             </Button>
-            <Button size="sm" variant="outline" className="h-9" disabled>
-              Download invoices
-            </Button>
           </div>
           <p className="text-[11px] text-muted-foreground">
-            Stripe Customer Portal (for invoice history + card updates from inside the dashboard)
-            is a follow-up. Billing state above is live from the backend.
+            The Stripe Customer Portal lets you update cards, download past
+            invoices, and cancel or pause the subscription.
           </p>
         </CardContent>
       </Card>

@@ -100,6 +100,15 @@ class Brand(Base):
         TIMESTAMP(timezone=True)
     )
     password_hash: Mapped[str | None] = mapped_column(Text)
+    # KYC / Stripe-compliance fields (migration 0009). All nullable — existing
+    # rows pre-date KYC collection; the admin fills these in at their own pace
+    # from Settings → Owner Details / Legal & Compliance.
+    owner_first_name: Mapped[str | None] = mapped_column(Text)
+    owner_last_name: Mapped[str | None] = mapped_column(Text)
+    owner_phone: Mapped[str | None] = mapped_column(Text)
+    company_legal_name: Mapped[str | None] = mapped_column(Text)
+    company_address: Mapped[str | None] = mapped_column(Text)
+    company_registration_number: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -366,6 +375,12 @@ class Offer(Base):
     )
     ends_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False
+    )
+    # NULL = applies to all brand cafes (default / existing behavior).
+    # Non-NULL list = only those specific cafe ids see the offer.
+    target_cafe_ids: Mapped[list[uuid.UUID] | None] = mapped_column(
+        ARRAY(UUID(as_uuid=True)),
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),

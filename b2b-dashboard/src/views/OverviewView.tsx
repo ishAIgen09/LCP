@@ -2,6 +2,7 @@ import { Scan, Store, Sparkles, ArrowUpRight } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { MetricCard } from "@/components/MetricCard"
+import type { NavKey } from "@/components/Sidebar"
 import type { Brand, Cafe } from "@/lib/mock"
 import type { ApiMetrics } from "@/lib/api"
 
@@ -26,10 +27,12 @@ export function OverviewView({
   brand,
   cafes,
   metrics,
+  onNavigate,
 }: {
   brand: Brand
   cafes: Cafe[]
   metrics: ApiMetrics | null
+  onNavigate: (nav: NavKey) => void
 }) {
   const totalScans = metrics?.total_scans_30d ?? 0
   const prevScans = metrics?.total_scans_prev_30d ?? 0
@@ -82,7 +85,12 @@ export function OverviewView({
               <CardTitle className="text-[15px] tracking-tight">Top performing branches</CardTitle>
               <CardDescription>Scans across the last 30 days.</CardDescription>
             </div>
-            <Button variant="outline" size="sm" className="h-8 text-xs">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs"
+              onClick={() => onNavigate("locations")}
+            >
               View all
               <ArrowUpRight className="ml-1 h-3.5 w-3.5" />
             </Button>

@@ -189,6 +189,14 @@ class BrandProfile(BaseModel):
     scheme_type: SchemeType
     subscription_status: SubscriptionStatus
     current_period_end: datetime | None = None
+    # KYC fields. Returned so the Settings form can prefill — nullable since
+    # existing brands pre-date KYC collection.
+    owner_first_name: str | None = None
+    owner_last_name: str | None = None
+    owner_phone: str | None = None
+    company_legal_name: str | None = None
+    company_address: str | None = None
+    company_registration_number: str | None = None
 
 
 class BrandUpdate(BaseModel):
@@ -196,6 +204,14 @@ class BrandUpdate(BaseModel):
     slug: str | None = Field(default=None, min_length=1, pattern=r"^[a-z0-9-]+$")
     contact_email: str | None = Field(default=None, min_length=3)
     scheme_type: SchemeType | None = None
+    # KYC fields. None = "not provided in this patch, leave untouched".
+    # Empty string = "clear this field" (handler coerces "" → NULL).
+    owner_first_name: str | None = None
+    owner_last_name: str | None = None
+    owner_phone: str | None = None
+    company_legal_name: str | None = None
+    company_address: str | None = None
+    company_registration_number: str | None = None
 
 
 class AdminMeResponse(BaseModel):
@@ -374,6 +390,11 @@ class OfferCreate(BaseModel):
     amount: Decimal | None = None
     starts_at: datetime
     ends_at: datetime
+    # None (or omitted) = applies to all brand cafes. A concrete list scopes
+    # the offer to those cafe ids only. Empty list is normalized to None by
+    # the route handler so "specific locations with none selected" can't
+    # silently create an invisible offer.
+    target_cafe_ids: list[UUID] | None = None
 
     @model_validator(mode="after")
     def _check(self) -> "OfferCreate":
@@ -389,6 +410,7 @@ class OfferUpdate(BaseModel):
     amount: Decimal | None = None
     starts_at: datetime
     ends_at: datetime
+    target_cafe_ids: list[UUID] | None = None
 
     @model_validator(mode="after")
     def _check(self) -> "OfferUpdate":
@@ -408,6 +430,7 @@ class OfferResponse(BaseModel):
     amount: Decimal | None
     starts_at: datetime
     ends_at: datetime
+    target_cafe_ids: list[UUID] | None = None
     created_at: datetime
 
 

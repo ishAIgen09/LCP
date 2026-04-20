@@ -119,6 +119,12 @@ type ApiBrand = {
   scheme_type: SchemeType
   subscription_status: "active" | "trialing" | "past_due" | "canceled" | "incomplete"
   current_period_end?: string | null
+  owner_first_name?: string | null
+  owner_last_name?: string | null
+  owner_phone?: string | null
+  company_legal_name?: string | null
+  company_address?: string | null
+  company_registration_number?: string | null
 }
 
 export type ApiMetrics = {
@@ -152,6 +158,8 @@ export type ApiOffer = {
   amount: string | number | null
   starts_at: string
   ends_at: string
+  // NULL (from API) = applies to all brand cafes. Array = scoped to those ids.
+  target_cafe_ids: string[] | null
   created_at: string
 }
 
@@ -207,6 +215,12 @@ export function brandFromApi(b: ApiBrand): Brand {
     subscriptionStatus: b.subscription_status === "incomplete" ? "past_due" : b.subscription_status,
     createdAt: new Date().toISOString().slice(0, 10),
     currentPeriodEnd: b.current_period_end ?? null,
+    ownerFirstName: b.owner_first_name ?? null,
+    ownerLastName: b.owner_last_name ?? null,
+    ownerPhone: b.owner_phone ?? null,
+    companyLegalName: b.company_legal_name ?? null,
+    companyAddress: b.company_address ?? null,
+    companyRegistrationNumber: b.company_registration_number ?? null,
   }
 }
 
@@ -298,6 +312,12 @@ export async function updateAdminBrand(
     slug?: string
     contact_email?: string
     scheme_type?: SchemeType
+    owner_first_name?: string
+    owner_last_name?: string
+    owner_phone?: string
+    company_legal_name?: string
+    company_address?: string
+    company_registration_number?: string
   }
 ): Promise<Brand> {
   const raw = await request<ApiBrand>(
@@ -315,6 +335,19 @@ export async function createCheckout(token: string): Promise<{ checkout_url: str
     "/api/billing/checkout",
     undefined,
     authHeader(token)
+  )
+}
+
+export async function createPortalSession(
+  token: string,
+): Promise<{ checkout_url: string }> {
+  // Backend returns the same CheckoutResponse shape ({ checkout_url }) so the
+  // frontend can reuse window.location.href = url for both flows.
+  return request<{ checkout_url: string }>(
+    "POST",
+    "/api/billing/portal",
+    undefined,
+    authHeader(token),
   )
 }
 
@@ -420,6 +453,7 @@ export async function createOffer(
     amount: number | null
     starts_at: string
     ends_at: string
+    target_cafe_ids: string[] | null
   }
 ): Promise<ApiOffer> {
   return request<ApiOffer>(
@@ -430,14 +464,37 @@ export async function createOffer(
   )
 }
 
+export async function updateOffer(
+  token: string,
+  offerId: string,
+  values: {
+    offer_type: ApiOffer["offer_type"]
+    target: ApiOffer["target"]
+    amount: number | null
+    starts_at: string
+    ends_at: string
+    target_cafe_ids: string[] | null
+  }
+): Promise<ApiOffer> {
+  return request<ApiOffer>(
+    "PUT",
+    `/api/admin/offers/${offerId}`,
+    values,
+    authHeader(token)
+  )
+}
+
 export async function deleteOffer(
   token: string,
   offerId: string
 ): Promise<void> {
-  await request<void>(
-    "DELETE",
-    `/api/admin/offers/${offerId}`,
-    undefined,
+  // RPC-style POST fallback mirroring deleteCafe — uniform across the
+  // dashboard so a 405 on any DELETE verb can never bite us here.
+  // Response envelope: { status: "success", deleted_id: "<uuid>" }.
+  await request<{ status: string; deleted_id: string }>(
+    "POST",
+    `/api/admin/offers/${offerId}/delete`,
+    {},
     authHeader(token)
   )
 }

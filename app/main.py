@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import get_active_cafe, get_admin_session
 from app.auth_routes import router as auth_router
 from app.b2b_routes import router as b2b_router
-from app.billing import router as billing_router
+from app.billing import router as billing_router, sync_subscription_quantity
 from app.consumer_auth import (
     consumer_router as consumer_api_router,
     router as consumer_auth_router,
@@ -103,6 +103,36 @@ async def _log_cafe_routes() -> None:
         f"CORS allow_methods = *\n",
         flush=True,
     )
+
+
+@app.on_event("startup")
+async def _log_offer_routes() -> None:
+    # Mirror of _log_cafe_routes for the Promotions surface. Offers endpoints
+    # are registered via @app.get/post/put/delete directly on `app` (no
+    # separate APIRouter), so if a verb is missing from this list the cause
+    # is a stale uvicorn process — not an un-included router.
+    print("== [startup] /api/admin/offers routes ==", flush=True)
+    for route in app.routes:
+        methods = getattr(route, "methods", None)
+        path = getattr(route, "path", "")
+        if methods and "offers" in path and "consumer" not in path:
+            verbs = ",".join(sorted(methods - {"HEAD"}))
+            print(f"  {verbs:20s}  {path}", flush=True)
+    print("", flush=True)
+
+
+@app.on_event("startup")
+async def _log_billing_routes() -> None:
+    # Mounted via APIRouter (app/billing.py) so these live under the billing
+    # prefix. If /portal doesn't show up here, the process is stale.
+    print("== [startup] /api/billing routes ==", flush=True)
+    for route in app.routes:
+        methods = getattr(route, "methods", None)
+        path = getattr(route, "path", "")
+        if methods and "billing" in path:
+            verbs = ",".join(sorted(methods - {"HEAD"}))
+            print(f"  {verbs:20s}  {path}", flush=True)
+    print("", flush=True)
 
 
 app.add_middleware(
@@ -285,6 +315,22 @@ async def update_admin_brand(
     if payload.scheme_type is not None:
         brand.scheme_type = payload.scheme_type
 
+    # KYC fields. Trim whitespace; coerce "" → NULL so the admin can clear
+    # a field by emptying its input. `None` means "not included in this
+    # patch — leave untouched" (pydantic default for omitted keys).
+    for field in (
+        "owner_first_name",
+        "owner_last_name",
+        "owner_phone",
+        "company_legal_name",
+        "company_address",
+        "company_registration_number",
+    ):
+        incoming = getattr(payload, field)
+        if incoming is not None:
+            trimmed = incoming.strip()
+            setattr(brand, field, trimmed if trimmed else None)
+
     await session.commit()
     await session.refresh(brand)
     return brand
@@ -418,6 +464,13 @@ async def create_cafe(
     session.add(cafe)
     await session.commit()
     await session.refresh(cafe)
+
+    # Per-cafe billing: if the brand already has an active subscription,
+    # bump the Stripe quantity to match the new total. Helper is tolerant
+    # of missing/inactive subscriptions — brands without one stay silent
+    # here and go through Checkout on their *first* cafe via the frontend.
+    await sync_subscription_quantity(session, brand)
+
     return cafe
 
 
@@ -481,6 +534,7 @@ async def _delete_cafe_impl(
             detail="Cafe not found.",
         )
     assert cafe.id == cafe_id, "Row mismatch — refusing to delete."
+    brand_id = cafe.brand_id
     await session.delete(cafe)
     try:
         await session.commit()
@@ -493,6 +547,14 @@ async def _delete_cafe_impl(
                 "Contact support to archive it instead."
             ),
         )
+
+    # Decrement Stripe quantity to match the new cafe count. Helper skips if
+    # the count would go to 0 — zero-quantity subscriptions are a support /
+    # portal-cancel concern, not an auto-decrement one.
+    brand = await session.get(Brand, brand_id)
+    if brand is not None:
+        await sync_subscription_quantity(session, brand)
+
     return cafe_id
 
 
@@ -567,6 +629,9 @@ async def create_offer(
     admin: AdminSession = Depends(get_admin_session),
     session: AsyncSession = Depends(get_session),
 ) -> Offer:
+    # Empty-list → NULL so "Specific Locations with zero boxes ticked" can't
+    # silently mint an offer that applies to nothing.
+    target_ids = payload.target_cafe_ids or None
     offer = Offer(
         brand_id=admin.brand_id,
         offer_type=payload.offer_type,
@@ -574,6 +639,7 @@ async def create_offer(
         amount=payload.amount,
         starts_at=payload.starts_at,
         ends_at=payload.ends_at,
+        target_cafe_ids=target_ids,
     )
     session.add(offer)
     await session.commit()
@@ -599,9 +665,43 @@ async def update_offer(
     offer.amount = payload.amount
     offer.starts_at = payload.starts_at
     offer.ends_at = payload.ends_at
+    offer.target_cafe_ids = payload.target_cafe_ids or None
     await session.commit()
     await session.refresh(offer)
     return offer
+
+
+async def _delete_offer_impl(
+    offer_id: UUID,
+    admin: AdminSession,
+    session: AsyncSession,
+) -> UUID:
+    # Shared delete body for both the REST DELETE and the RPC-style POST
+    # fallback. Mirrors _delete_cafe_impl: single-row lookup by PK, brand
+    # guard, assert, commit.
+    offer = await session.get(Offer, offer_id)
+    if offer is None or offer.brand_id != admin.brand_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Offer not found.",
+        )
+    assert offer.id == offer_id, "Row mismatch — refusing to delete."
+    await session.delete(offer)
+    await session.commit()
+    return offer_id
+
+
+@app.post("/api/admin/offers/{offer_id}/delete")
+async def delete_offer_rpc(
+    offer_id: UUID,
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    # RPC-style POST fallback for clients / proxies / middlewares that
+    # silently drop the HTTP DELETE verb. Same envelope shape as the cafe
+    # delete RPC so the frontend handles both uniformly.
+    deleted_id = await _delete_offer_impl(offer_id, admin, session)
+    return {"status": "success", "deleted_id": str(deleted_id)}
 
 
 @app.delete(
@@ -613,14 +713,9 @@ async def delete_offer(
     admin: AdminSession = Depends(get_admin_session),
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    offer = await session.get(Offer, offer_id)
-    if offer is None or offer.brand_id != admin.brand_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Offer not found.",
-        )
-    await session.delete(offer)
-    await session.commit()
+    # Kept alongside the RPC-style POST fallback so clients that can use the
+    # proper DELETE verb still get a standards-compliant 204 No Content.
+    await _delete_offer_impl(offer_id, admin, session)
 
 
 @app.post(
