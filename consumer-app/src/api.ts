@@ -3,7 +3,7 @@ import type { Session } from "./theme";
 // Back on localtunnel for off-LAN testing. `Bypass-Tunnel-Reminder: true`
 // on every request skips localtunnel's HTML interstitial so the app gets
 // JSON straight from uvicorn.
-export const API_BASE_URL = "https://slow-snails-yawn.loca.lt";
+export const API_BASE_URL = "https://yellow-poems-punch.loca.lt";
 
 if (__DEV__) {
   // eslint-disable-next-line no-console
@@ -147,8 +147,13 @@ export type LatestEarn = {
 
 export type BalanceResponse = {
   consumer_id: string;
+  // Total scoped balance (can exceed threshold — banking model).
   stamp_balance: number;
   threshold: number;
+  // Derived server-side for the X/10 progress display and the banked-rewards
+  // badge. Prefer these over raw stamp_balance to avoid "13/10" artifacts.
+  current_stamps: number;
+  banked_rewards: number;
   latest_earn: LatestEarn | null;
 };
 
@@ -187,4 +192,22 @@ export function fetchDiscoverCafes(
   token: string,
 ): Promise<DiscoverCafe[]> {
   return getJSON<DiscoverCafe[]>("/api/consumer/cafes", token);
+}
+
+// One row per GlobalLedger transaction (not per individual stamp). Sorted
+// newest-first by the server; the client just renders in order.
+export type HistoryEntry = {
+  transaction_id: string;
+  kind: "earn" | "redeem";
+  quantity: number;
+  cafe_name: string;
+  cafe_address: string;
+  timestamp: string;
+};
+
+export function fetchHistory(
+  token: string,
+  limit = 50,
+): Promise<HistoryEntry[]> {
+  return getJSON<HistoryEntry[]>(`/api/consumer/me/history?limit=${limit}`, token);
 }

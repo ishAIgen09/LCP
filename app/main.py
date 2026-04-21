@@ -36,6 +36,8 @@ from app.database import get_session, settings
 from app.models import (
     Brand,
     Cafe,
+    GlobalLedger,
+    GlobalLedgerAction,
     LedgerEventType,
     Offer,
     SchemeType,
@@ -57,6 +59,7 @@ from app.schemas import (
     CafeResponse,
     CafeScans,
     CafeUpdate,
+    CustomerStatusResponse,
     MetricsResponse,
     OfferCreate,
     OfferResponse,
@@ -807,32 +810,54 @@ async def redeem_reward(
     cafe: Cafe = Depends(get_active_cafe),
     session: AsyncSession = Depends(get_session),
 ) -> RedeemResponse:
+    # Mixed-Basket redeem: `quantity` = number of banked rewards to consume.
+    # Each reward burns REWARD_THRESHOLD stamps. Default 1 preserves legacy
+    # single-drink callers.
     brand = await session.get(Brand, cafe.brand_id)
     user, current_balance = await _lock_user_and_read_scoped_balance(
         session, payload.user_id, payload.till_code, brand
     )
 
-    if current_balance < REWARD_THRESHOLD:
+    qty = payload.quantity
+    required = qty * REWARD_THRESHOLD
+    if current_balance < required:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 f"Insufficient stamps: customer has {current_balance}, "
-                f"{REWARD_THRESHOLD} required to redeem."
+                f"{required} required to redeem {qty} reward"
+                f"{'s' if qty != 1 else ''}."
             ),
         )
 
-    entry = StampLedger(
-        customer_id=user.id,
-        cafe_id=cafe.id,
-        barista_id=payload.barista_id,
-        event_type=LedgerEventType.REDEEM,
-        stamp_delta=-REWARD_THRESHOLD,
+    # One REDEEM row per drink (the CHECK constraint pins stamp_delta = -10
+    # for REDEEM), same shape as the old auto-rollover path used.
+    entries = [
+        StampLedger(
+            customer_id=user.id,
+            cafe_id=cafe.id,
+            barista_id=payload.barista_id,
+            event_type=LedgerEventType.REDEEM,
+            stamp_delta=-REWARD_THRESHOLD,
+        )
+        for _ in range(qty)
+    ]
+    session.add_all(entries)
+
+    # Shadow ledger: one aggregated REDEEMED row for /me/history so the
+    # consumer sees "Redeemed 2 Free Drinks" as a single entry.
+    redeemed_row = GlobalLedger(
+        consumer_id=user.till_code,
+        venue_id=cafe.id,
+        action_type=GlobalLedgerAction.REDEEMED,
+        quantity=qty,
     )
-    session.add(entry)
+    session.add(redeemed_row)
     await session.flush()
 
-    new_balance = current_balance - REWARD_THRESHOLD
-    entry_id = entry.id
+    new_balance = current_balance - required
+    # Return the first entry's id (POS displays it as a receipt reference).
+    entry_id = entries[0].id
     user_id_out = user.id
     await session.commit()
 
@@ -840,7 +865,49 @@ async def redeem_reward(
         user_id=user_id_out,
         stamp_balance=new_balance,
         redeemed=True,
+        quantity_redeemed=qty,
         ledger_entry_id=entry_id,
+    )
+
+
+@app.get(
+    "/api/venues/customer/{till_code}",
+    response_model=CustomerStatusResponse,
+)
+async def venue_customer_status(
+    till_code: str,
+    cafe: Cafe = Depends(get_active_cafe),
+    session: AsyncSession = Depends(get_session),
+) -> CustomerStatusResponse:
+    """Pre-scan lookup: returns current stamps + banked rewards for this
+    customer, scoped to the authenticated venue's brand (Global vs Private
+    isolation rule applies — same as /me/balance)."""
+    normalized = (till_code or "").strip().upper()
+    if not re.fullmatch(r"^[A-Z0-9]{6}$", normalized):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="till_code must be 6 uppercase alphanumeric characters.",
+        )
+    user = (
+        await session.execute(select(User).where(User.till_code == normalized))
+    ).scalar_one_or_none()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Customer not found.",
+        )
+    brand = await session.get(Brand, cafe.brand_id)
+    balance = int(
+        (
+            await session.execute(_scoped_balance_stmt(user.id, brand))
+        ).scalar_one()
+    )
+    return CustomerStatusResponse(
+        user_id=user.id,
+        till_code=user.till_code,
+        current_stamps=balance % REWARD_THRESHOLD,
+        banked_rewards=balance // REWARD_THRESHOLD,
+        threshold=REWARD_THRESHOLD,
     )
 
 

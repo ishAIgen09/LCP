@@ -147,14 +147,35 @@ class StampResponse(BaseModel):
 
 
 class RedeemRequest(StampRequest):
-    pass
+    # Number of banked rewards to consume in this call. Each redemption
+    # burns REWARD_THRESHOLD (10) stamps. Default 1 preserves the legacy
+    # single-drink redeem callers; Mixed-Basket POS passes N to burn N
+    # banked rewards atomically.
+    quantity: int = Field(default=1, ge=1, le=20)
 
 
 class RedeemResponse(BaseModel):
     user_id: UUID
     stamp_balance: int
     redeemed: bool
+    # Number of rewards actually consumed this call (matches request.quantity
+    # on success).
+    quantity_redeemed: int = 1
     ledger_entry_id: UUID
+
+
+class CustomerStatusResponse(BaseModel):
+    # Returned by GET /api/venues/customer/{till_code} for the POS pre-scan
+    # lookup. Scoped to the authenticated venue's brand (Global vs Private
+    # isolation applies — same rule as _scoped_balance_stmt).
+    user_id: UUID
+    till_code: str
+    # Derived fields: current_stamps = total_scoped_balance % 10
+    #                 banked_rewards = total_scoped_balance // 10
+    # Exposed explicitly so the POS doesn't have to do the modular math.
+    current_stamps: int
+    banked_rewards: int
+    threshold: int
 
 
 class CheckoutRequest(BaseModel):
@@ -318,14 +339,38 @@ class LatestEarnPayload(BaseModel):
 
 class ConsumerBalanceResponse(BaseModel):
     consumer_id: str
+    # Total scoped balance (can be >= threshold — Mixed-Basket POS no longer
+    # auto-rolls rewards; they bank until explicitly redeemed). Preserved as
+    # a backcompat field; new clients should prefer current_stamps +
+    # banked_rewards below.
     stamp_balance: int
     threshold: int
+    # Derived: current_stamps = stamp_balance % threshold
+    #          banked_rewards = stamp_balance // threshold
+    # Computed server-side so the app doesn't have to do the modular math
+    # and can't accidentally show "17/10" when balance accumulates past 10.
+    current_stamps: int = 0
+    banked_rewards: int = 0
     # Set to the most recent EARNED global_ledger row for this consumer, or
     # None if they've never been stamped. The mobile app diffs
     # `latest_earn.transaction_id` across polls and fires the reward modal
-    # when it changes — server-authoritative so auto-rollover (which
-    # *decreases* stamp_balance) still triggers a celebration.
+    # when it changes. NOTE (2026-04-21 banking pivot): `free_drink_unlocked`
+    # is now false on plain stamp scans — only fires when an explicit redeem
+    # happens in the same scan. A `latest_redeem` field for the new
+    # celebration trigger is a follow-up.
     latest_earn: LatestEarnPayload | None = None
+
+
+class ConsumerHistoryEntry(BaseModel):
+    # One row per GlobalLedger transaction (not per StampLedger stamp).
+    # `kind` is derived from GlobalLedgerAction at handler time so the client
+    # doesn't have to know the enum's string form ("EARNED" / "REDEEMED").
+    transaction_id: UUID
+    kind: Literal["earn", "redeem"]
+    quantity: int
+    cafe_name: str
+    cafe_address: str
+    timestamp: datetime
 
 
 # -----------------------------------------------------------------------------

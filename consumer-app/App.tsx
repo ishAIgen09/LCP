@@ -1,7 +1,7 @@
 import "./global.css";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Platform, Pressable, ScrollView, StatusBar, Text, View } from "react-native";
+import { ActivityIndicator, AppState, type AppStateStatus, Platform, Pressable, ScrollView, StatusBar, Text, View } from "react-native";
 import {
   SafeAreaProvider,
   SafeAreaView,
@@ -23,6 +23,7 @@ import {
   House,
   MapPin,
   Quote,
+  ShieldCheck,
   Sparkles,
   User as UserIcon,
 } from "lucide-react-native";
@@ -37,6 +38,7 @@ import {
   fetchDiscoverCafes,
   type DiscoverCafe,
   type DiscoverOffer,
+  type FoodHygieneRating,
 } from "./src/api";
 import { formatOfferHeadline, formatOfferWindow } from "./src/offers";
 import { COLOR, FONT, type Session } from "./src/theme";
@@ -163,7 +165,7 @@ function AppShell() {
             onReward={handleReward}
           />
         )}
-        {tab === "history" && <HistoryScreen />}
+        {tab === "history" && <HistoryScreen session={session} />}
         {tab === "discover" && <DiscoverView session={session} />}
         {tab === "profile" && (
           <ProfileView session={session} onSignOut={() => setSession(null)} />
@@ -202,53 +204,91 @@ function HomeView({
   }, [firstName]);
 
   // Live stamp balance — polls /api/consumer/me/balance every 3s while Home
-  // is mounted. Ref-guarded mutex prevents overlapping fetches from stacking
-  // on a slow tunnel; errors are swallowed so a transient blip keeps the
-  // last-good value on screen. The fetch itself is cache-busted inside
-  // getJSON (`?t=…` + Cache-Control no-cache) — don't re-add it here.
+  // is mounted AND the app is foregrounded. Ref-guarded mutex prevents
+  // overlapping fetches from stacking on a slow tunnel; errors are swallowed
+  // so a transient blip keeps the last-good value on screen. The fetch
+  // itself is cache-busted inside getJSON (`?t=…` + Cache-Control no-cache).
   const [stampsEarned, setStampsEarned] = useState(0);
   const pollBusyRef = useRef(false);
-  // Celebration trigger: server returns `latest_earn.transaction_id` on
-  // every balance poll. We fire the RewardModal once per new transaction id.
-  // `null` (pre-first-poll) and the first observed id are seeded silently so
-  // opening the app doesn't replay the last celebration. Using transaction_id
-  // (not balance delta) handles auto-rollover correctly — a scan that takes
-  // the balance 9 → 0 still celebrates because it's a brand-new earn row.
-  const lastEarnIdRef = useRef<string | null>(null);
-  const seededRef = useRef(false);
+
+  // Celebration trigger (2026-04-22): **delta detection** on current_stamps
+  // + banked_rewards. Replaces the old transaction_id approach, which broke
+  // under the banking pivot (latest_earn.free_drink_unlocked was unreliable
+  // because REDEEMED rows now come from a separate transaction).
+  //
+  // Rule: if EITHER current_stamps > previous OR banked_rewards > previous,
+  // the customer earned something since the last poll → fire RewardModal.
+  // `freeDrinkUnlocked` derives from banked_rewards going up (the scan
+  // pushed them past the threshold). Pure redeems (banked goes DOWN) are
+  // correctly silent — barista-initiated, customer is already aware.
+  //
+  // Null sentinels for the pre-first-poll state mean the initial fetch
+  // seeds silently instead of celebrating on app-open.
+  const prevCurrentRef = useRef<number | null>(null);
+  const prevBankedRef = useRef<number | null>(null);
+
+  // AppState gating — stop polling when the app is backgrounded. Saves
+  // battery + avoids piling up stale requests against a localtunnel URL
+  // that might have rotated while the user was away. `useState` (not a ref)
+  // so the effect below re-runs when the status flips.
+  const [appActive, setAppActive] = useState<boolean>(
+    AppState.currentState === "active",
+  );
   useEffect(() => {
+    const sub = AppState.addEventListener(
+      "change",
+      (next: AppStateStatus) => setAppActive(next === "active"),
+    );
+    return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
+    if (!appActive) {
+      console.log("[poll] app backgrounded, pausing");
+      return;
+    }
     let cancelled = false;
     const poll = async () => {
       if (pollBusyRef.current) return;
       pollBusyRef.current = true;
-      console.log("Polling stamps...");
       try {
         const res = await fetchBalance(session.token);
-        if (!cancelled) {
-          console.log(
-            `[poll] stamp_balance=${res.stamp_balance} latest_earn=${res.latest_earn?.transaction_id ?? "none"}`,
-          );
-          setStampsEarned(res.stamp_balance);
+        if (cancelled) return;
+        console.log(
+          `[poll] current=${res.current_stamps}/${res.threshold} banked=${res.banked_rewards} latest_earn=${res.latest_earn?.transaction_id ?? "none"}`,
+        );
+        // Banking pivot (2026-04-21): balances can exceed threshold now.
+        // Use current_stamps for the X/10 progress display.
+        setStampsEarned(res.current_stamps);
 
-          const incomingId = res.latest_earn?.transaction_id ?? null;
-          if (!seededRef.current) {
-            lastEarnIdRef.current = incomingId;
-            seededRef.current = true;
-          } else if (
-            incomingId !== null &&
-            incomingId !== lastEarnIdRef.current &&
-            res.latest_earn
-          ) {
-            lastEarnIdRef.current = incomingId;
-            onReward({
-              stampsEarned: res.latest_earn.stamps_earned,
-              cafeName: res.latest_earn.cafe_name,
-              cafeAddress: res.latest_earn.cafe_address,
-              newBalance: res.stamp_balance,
-              freeDrinkUnlocked: res.latest_earn.free_drink_unlocked,
-            });
-          }
+        // Delta detection.
+        const prevCurrent = prevCurrentRef.current;
+        const prevBanked = prevBankedRef.current;
+        const seeded = prevCurrent !== null && prevBanked !== null;
+        const currentUp = seeded && res.current_stamps > prevCurrent!;
+        const bankedUp = seeded && res.banked_rewards > prevBanked!;
+        if (seeded && (currentUp || bankedUp) && res.latest_earn) {
+          // Compute actual earn from the deltas, not from
+          // latest_earn.stamps_earned. Under banking, crossing the
+          // threshold resets current_stamps (e.g. 8 → 1), so
+          //   total = (banked_new - banked_prev) * 10
+          //         + (current_new - current_prev)
+          // is the signed stamp change. Celebration fires only when
+          // it's positive, so this is always >= 1.
+          const stampsEarnedDelta =
+            (res.banked_rewards - prevBanked!) * 10 +
+            (res.current_stamps - prevCurrent!);
+          onReward({
+            stampsEarned: Math.max(1, stampsEarnedDelta),
+            cafeName: res.latest_earn.cafe_name,
+            cafeAddress: res.latest_earn.cafe_address,
+            newBalance: res.current_stamps,
+            // Crossed the threshold iff banked_rewards went up.
+            freeDrinkUnlocked: bankedUp,
+          });
         }
+        prevCurrentRef.current = res.current_stamps;
+        prevBankedRef.current = res.banked_rewards;
       } catch (e) {
         console.log(
           `[poll] error: ${e instanceof Error ? e.message : String(e)}`,
@@ -263,7 +303,7 @@ function HomeView({
       cancelled = true;
       clearInterval(id);
     };
-  }, [session.token, onReward]);
+  }, [session.token, onReward, appActive]);
 
   const pct = Math.min(stampsEarned / STAMPS_TARGET, 1);
   const remaining = Math.max(STAMPS_TARGET - stampsEarned, 0);
@@ -743,6 +783,8 @@ function DiscoverCafeCard({
         </Text>
       </View>
 
+      <HygienePill rating={cafe.food_hygiene_rating} />
+
       {knownAmenities.length > 0 && (
         <View className="mt-3 flex-row flex-wrap">
           {knownAmenities.map((a) => {
@@ -778,14 +820,18 @@ function DiscoverCafeCard({
         <View
           className="mt-3 rounded-2xl p-3"
           style={{
-            backgroundColor: "rgba(228,185,127,0.06)",
+            // Terracotta accent (per product spec) — differentiates "active
+            // offer on this location" from the amber amenity chips above,
+            // and matches the B2B dashboard's offer colour so baristas and
+            // customers see the same visual language.
+            backgroundColor: "rgba(201,110,75,0.08)",
             borderWidth: 1,
-            borderColor: "rgba(228,185,127,0.2)",
+            borderColor: "rgba(201,110,75,0.28)",
           }}
         >
           <Text
             className="text-[10px] font-semibold uppercase"
-            style={{ color: COLOR.accent, letterSpacing: 1.5 }}
+            style={{ color: COLOR.terracotta, letterSpacing: 1.5 }}
           >
             Live offer{cafe.live_offers.length > 1 ? "s" : ""}
           </Text>
@@ -812,6 +858,43 @@ function DiscoverOfferRow({ offer }: { offer: DiscoverOffer }) {
         style={{ color: COLOR.textDim }}
       >
         {formatOfferWindow(offer)}
+      </Text>
+    </View>
+  );
+}
+
+// Compact hygiene indicator for the Discover list. The full FSA sticker
+// (FoodHygieneBadge) is deliberately reserved for the CafeDetailsModal —
+// on a scroll-y list, the sticker's stark black/green is too loud. This
+// pill echoes the amenity-chip treatment so the card reads as a single
+// visual rhythm: rating · amenities · offer.
+function HygienePill({ rating }: { rating: FoodHygieneRating }) {
+  const isAwaiting = rating === "Awaiting Inspection";
+  const label = isAwaiting ? "Awaiting inspection" : `Hygiene · ${rating}/5`;
+  return (
+    <View
+      className="mt-2 flex-row self-start items-center rounded-full px-2.5 py-1"
+      style={{
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderWidth: 1,
+        borderColor: COLOR.border,
+      }}
+      accessibilityLabel={
+        isAwaiting
+          ? "Food hygiene rating: awaiting inspection"
+          : `Food hygiene rating: ${rating} out of 5`
+      }
+    >
+      <ShieldCheck size={11} color={COLOR.roastedAlmond} strokeWidth={2.2} />
+      <Text
+        className="ml-1.5 text-[10.5px]"
+        style={{
+          color: COLOR.textMuted,
+          fontFamily: FONT.semibold,
+          letterSpacing: 0.3,
+        }}
+      >
+        {label}
       </Text>
     </View>
   );

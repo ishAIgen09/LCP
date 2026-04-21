@@ -511,15 +511,38 @@ export async function stamp(
   )
 }
 
+export type CustomerStatusResponse = {
+  user_id: string
+  till_code: string
+  current_stamps: number
+  banked_rewards: number
+  threshold: number
+}
+
+export async function getCustomerStatus(
+  venueApiKey: string,
+  tillCode: string,
+): Promise<CustomerStatusResponse> {
+  return request<CustomerStatusResponse>(
+    "GET",
+    `/api/venues/customer/${encodeURIComponent(tillCode)}`,
+    undefined,
+    { "Venue-API-Key": venueApiKey },
+  )
+}
+
 export async function redeem(
   venueApiKey: string,
-  tillCode: string
+  tillCode: string,
+  quantity: number = 1,
 ): Promise<RedeemResponse> {
+  // Mixed-Basket: quantity = number of banked rewards to consume. Default 1
+  // keeps any legacy single-drink caller working untouched.
   return request<RedeemResponse>(
     "POST",
     "/api/venues/redeem",
-    { till_code: tillCode },
-    { "Venue-API-Key": venueApiKey }
+    { till_code: tillCode, quantity },
+    { "Venue-API-Key": venueApiKey },
   )
 }
 

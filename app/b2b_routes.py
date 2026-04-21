@@ -1,22 +1,24 @@
-"""B2B POS scan endpoint with rollover and Shadow Ledger writes.
+"""B2B POS scan endpoint + Shadow Ledger write.
 
-Phase 4 (Consumer App, 2026-04-19): the Barista POS now submits one scan event
-carrying a `quantity` (drinks bought). We atomically:
+Mixed-Basket pivot (2026-04-21): auto-rollover is GONE from this endpoint.
+Balances now accumulate uncapped; rewards bank until explicitly consumed
+via POST /api/venues/redeem (with a quantity body param). This is what lets
+the Mid-Order Intercept POS ask the barista "use one now or save for later?"
+— before the pivot the answer was forced ("auto-redeemed on the 10th stamp").
 
-1. Insert `quantity` individual +1 EARN rows into `stamp_ledger` (one per stamp
-   — preserves the existing scheme-scoped `SUM(stamp_delta)` balance-read path
-   and the CHECK constraint `stamp_delta = 1` for EARN rows).
-2. Compute `free_drinks = (balance_before + quantity) // 10` and, if > 0,
-   insert `free_drinks` individual -10 REDEEM rows into `stamp_ledger`.
-3. Insert one aggregated `earned` row into `global_ledger` with
-   quantity = stamps bought, and (if rollover fired) one aggregated
-   `redeemed` row with quantity = number of free drinks.
+We atomically:
+1. Insert `quantity` individual +1 EARN rows into `stamp_ledger` (one per
+   stamp — preserves the CHECK constraint `stamp_delta = 1` for EARN rows).
+2. Insert one aggregated EARNED row into `global_ledger` so the consumer's
+   /me/history feed shows the scan as a single entry.
 
-The two ledgers serve different purposes: `stamp_ledger` is the event log that
-produces the balance (one row per stamp, immutable, CHECK-constrained), while
-`global_ledger` is the platform-wide activity feed that keeps one row per
-logical POS action — easier to list, analytics-friendly, and keyed by the
-6-char till_code directly.
+No REDEEM rows are written here — that path now lives exclusively in
+/api/venues/redeem. `free_drinks_unlocked` in the response is kept in the
+shape for backcompat and is always 0 under the new model.
+
+The two ledgers serve different purposes: `stamp_ledger` is the event log
+(one row per stamp, immutable, CHECK-constrained), while `global_ledger` is
+the platform-wide activity feed that keeps one row per logical POS action.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -33,8 +35,6 @@ from app.models import (
     StampLedger,
 )
 from app.schemas import B2BScanRequest, B2BScanResponse
-
-REWARD_THRESHOLD = 10
 
 router = APIRouter(prefix="/api/b2b", tags=["b2b"])
 
@@ -66,11 +66,9 @@ async def b2b_scan(
     )
 
     quantity = payload.quantity
-    total_after_earn = current_balance + quantity
-    free_drinks = total_after_earn // REWARD_THRESHOLD
-    new_balance = total_after_earn % REWARD_THRESHOLD
+    new_balance = current_balance + quantity  # uncapped — banking semantics
 
-    # 1. Stamp ledger: one +1 EARN row per stamp bought.
+    # Stamp ledger: one +1 EARN row per stamp bought.
     session.add_all(
         [
             StampLedger(
@@ -83,21 +81,7 @@ async def b2b_scan(
         ]
     )
 
-    # 2. Stamp ledger: one -10 REDEEM row per free drink unlocked by rollover.
-    if free_drinks > 0:
-        session.add_all(
-            [
-                StampLedger(
-                    customer_id=user.id,
-                    cafe_id=cafe.id,
-                    event_type=LedgerEventType.REDEEM,
-                    stamp_delta=-REWARD_THRESHOLD,
-                )
-                for _ in range(free_drinks)
-            ]
-        )
-
-    # 3. Global (shadow) ledger: aggregated rows — one earned, one redeemed.
+    # Global (shadow) ledger: one aggregated EARNED row for this transaction.
     earned_row = GlobalLedger(
         consumer_id=user.till_code,
         venue_id=cafe.id,
@@ -106,27 +90,19 @@ async def b2b_scan(
     )
     session.add(earned_row)
 
-    redeemed_row: GlobalLedger | None = None
-    if free_drinks > 0:
-        redeemed_row = GlobalLedger(
-            consumer_id=user.till_code,
-            venue_id=cafe.id,
-            action_type=GlobalLedgerAction.REDEEMED,
-            quantity=free_drinks,
-        )
-        session.add(redeemed_row)
-
     await session.flush()
     earned_transaction_id = earned_row.transaction_id
-    redeemed_transaction_id = redeemed_row.transaction_id if redeemed_row else None
     await session.commit()
 
     return B2BScanResponse(
         consumer_id=user.till_code,
         venue_id=cafe.id,
         stamps_earned=quantity,
-        free_drinks_unlocked=free_drinks,
+        # Kept in the response shape for old clients; always 0 under the
+        # banking model. Rollover is now a barista decision via the
+        # Mid-Order Intercept POS flow.
+        free_drinks_unlocked=0,
         new_balance=new_balance,
         earned_transaction_id=earned_transaction_id,
-        redeemed_transaction_id=redeemed_transaction_id,
+        redeemed_transaction_id=None,
     )

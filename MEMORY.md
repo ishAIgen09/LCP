@@ -549,4 +549,238 @@ Start with **one** of these two surfaces; both have been dormant while B2B got f
 
 Both are greenfield for new features; no blockers from today's B2B work.
 
+---
+
+## 9. Scanner prototype (`ScannerView.tsx`) — Universal Scanner approach
+
+New standalone view at `b2b-dashboard/src/views/ScannerView.tsx` demonstrating the dual-input pattern the user defined. **Prototype — not wired into navigation.** The production POS surface remains `BaristaPOSView.tsx` (764 lines, real `b2bScan` integration, reward dialog, scan-lockout).
+
+**Universal Scanner pattern**
+- **Mode tab bar:** Camera vs. Keyboard / USB Scanner. Switching modes tears down the camera cleanly (`stopCamera` runs from a mode-effect + unmount cleanup).
+- **Camera path:** `html5-qrcode` (`^2.3.8`, already in deps). Start/Stop controls, decoded codes are normalized (`.trim().toUpperCase()`) and matched against `/^[A-Z0-9]{6}$/` — invalid payloads are ignored so consumer-app QR codes (the only intended scannable) pass while random QRs don't. `scannedRef` mirror prevents the decode callback from firing twice if the library emits multiple frames between pause and state commit.
+- **Keyboard / USB path:** single `<Input>` with `maxLength={6}`, monospace + letter-spacing, explicit `onKeyDown` handler catching `Enter`. USB keyboard-wedge scanners stream the 6 chars + Enter at high speed and hit the same path as manual typing. The `<form>`-submit alternative (used in `BaristaPOSView.tsx`) works too, but the explicit keydown is robust in any layout.
+
+**Scan → Action overlay**
+- Fixed-position modal-style sheet (bottom-aligned on mobile, centered on desktop) over the scanner pane.
+- Displays: large monospaced Customer ID, current-stamps tile (placeholder "—" with "fetched after stamp" subtitle — no pre-stamp balance endpoint wired into this prototype; real flow would fetch or just let the scan response return the new balance like `BaristaPOSView` does), and a giant +/- stepper (1–10, defaults to 1).
+- **Confirm button** = tall, satisfying, two-line label "Confirm & Add N Stamp(s)". Currently fires `console.log("[ScannerView] confirm", {tillCode, stampsToAdd})` per spec — wire to `b2bScan` when promoting.
+- **Cancel / Rescan** button clears state and resumes the paused camera (or just closes the overlay in keyboard mode).
+
+**Findings flagged — user premises that didn't match the code**
+1. **Alphanumeric ID generation was already correct.** `TILL_CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"` in both `app/main.py:73` and `app/consumer_auth.py:62`, generated via `secrets.choice` × 6 (~2.18B combinations). DB enforces via `users.till_code CHAR(6)` + `CHECK (till_code ~ '^[A-Z0-9]{6}$')` at `app/models.py:196`. No backend change made.
+2. **`BaristaPOSView.tsx` already exists** and covers every feature the user asked for (camera + keyboard dual-input, scan-lockout, quantity picker, real API) — just in a quantity-before-scan layout instead of a scan-then-overlay layout. This ScannerView is the scan-first UX variant, kept as a separate file so the production POS isn't disrupted.
+
+**Duplicated helper flagged (not touched):** `TILL_CODE_ALPHABET` and `_generate_till_code` are defined in both `app/main.py` and `app/consumer_auth.py`. Not refactored per "no cleanup beyond task scope" — move to `app/security.py` or a new `app/ids.py` next time someone has a reason to touch both.
+
+**To promote ScannerView to production** *(DONE 2026-04-21 — see section 10 below)*
+1. ~~Add a NavKey entry + registration in `App.tsx` routing~~ — kept the existing store-session routing; the new UX is now the default POS.
+2. ~~Replace the `console.log`~~ — real `b2bScan` wired.
+3. ~~Copy the 3.5-second `SCAN_LOCKOUT_MS`~~ — carried over.
+
+## 10. POS consolidation — ScannerView merged into BaristaPOSView
+
+2026-04-21. Promoted the scan-first dual-input UX from the prototype into the production POS and deleted the parallel file.
+
+**What changed**
+- `BaristaPOSView.tsx` **rewritten** with the new UX: mode tabs (Camera / Keyboard-USB) → scan → **Action overlay** (Customer ID + current-stamps placeholder + ± stepper 1–10 + giant Confirm + Cancel/Rescan). Old quantity-before-scan layout retired.
+- `ScannerView.tsx` **deleted** — no parallel file, no drift.
+- Store-session routing unchanged: `App.tsx:249-250` still routes `session.role === "store"` → `<BaristaPOSView />`. No navigation work needed.
+
+**What was preserved from the original BaristaPOSView**
+- Header (Coffee mark, cafe name, store-number pill, Sign out).
+- `SCAN_LOCKOUT_MS = 3500` — applied **after** a successful Confirm (not on initial scan), so the camera can't re-capture the same QR before the customer moves their phone away. Errors do NOT apply the lockout, so a typo or 404 doesn't wedge the scanner.
+- `REWARD_RESOLVED_COOLDOWN_MS = 10_000` — same till code can't re-trigger for 10s after a reward resolution (Redeem or Save-for-later).
+- `inFlightRef` guard against double-firing `b2bScan` (e.g. double-tap on Confirm).
+- `RewardDialog` — fires when `result.free_drinks_unlocked > 0`. `onRedeem` / `onSaveForLater` handlers set `rewardResolvedRef` and resume the camera (if camera mode).
+- Full API-error → toast mapping: 401 (invalid key), 402 (billing), 404 (unknown till code), 409 (rejected), 422 (invalid format), catch-all.
+
+**Real API wiring**
+- `confirmAddStamps` → `await b2bScan(session.venueApiKey, session.venueApiKey, scannedCode, stampsToAdd)`. *Note: the existing convention passes `session.venueApiKey` twice — once as the `Venue-API-Key` header and once as the `venue_id` body field. Preserved as-is from the old view; not a consolidation-task concern.*
+- Success (no rollover) → success toast (`+N stamps · balance X/10`), overlay closes, camera resumes (if camera mode).
+- Success (rollover) → `setReward(...)` opens the RewardDialog; overlay closes.
+- Error → error toast, **overlay stays open** so the barista can fix the code and retry or Cancel.
+
+**Scan-first lockout semantics (new)**
+- Old flow: lockout gate was set on every valid decode before the API call.
+- New flow: the **overlay itself** is the gate — while `scannedCode !== null`, `handleDecoded` early-returns. `scannedRef.current` (mirror) + `rewardOpenRef.current` + `inFlightRef.current` + `lockoutUntilRef.current` form a four-layer defense against double-stamps.
+
+**Typecheck:** `npx tsc --build --force` clean.
+
+**To test (manual mode)**
+1. Boot backend + frontend. Log in to the Store surface (`001` / `1234` against the local seed).
+2. Switch to the **Keyboard / USB Scanner** tab.
+3. Type a valid till code (grab one from `SELECT till_code FROM users LIMIT 5;` in psql) → press **Enter** → overlay appears.
+4. Adjust the stepper (±) → **Confirm & Add N Stamps** → success toast + overlay closes.
+5. Error path: type `ZZZZZZ` → **Enter** → inline "6-character code" error. Or type a valid-format-but-nonexistent code → **Confirm** → toast: "Customer not found." Overlay stays open, barista can correct and retry.
+6. Reward path: add enough stamps on one customer to roll over → RewardDialog pops instead of toast.
+7. **Camera mode:** switch tab → **Start camera** → scan a consumer-app QR → same overlay. After Confirm succeeds, the camera stays paused for 3.5s before resuming, preventing double-stamps.
+
+---
+
+## 11. Consumer app — live data wiring (2026-04-21)
+
+Three real gaps closed + one correctness bug fixed. `get_consumer_session`, the `fetchBalance` wrapper, and the HomeView's balance display were already wired; only flagged here for future-me not to duplicate.
+
+### Correctness fix: `/me/balance` now brand-scoped (was a bug)
+- **Before:** `SELECT SUM(stamp_delta) WHERE customer_id = X` — summed stamps across every brand, violating the Global-vs-Private isolation rule.
+- **After:** Uses the existing `_scoped_balance_stmt(user_id, scanning_brand)` helper from `app/main.py` (deferred import to dodge the cycle, same pattern as `app/b2b_routes.py:62`). The scanning brand is derived from the consumer's latest EARNED `global_ledger` row — so the shown `stamp_balance` always reflects the pool of their most recent earn.
+- **Semantics:** Global-brand earn → balance is the pooled sum across all global-scheme brands. Private-brand earn → balance is scoped to that brand's own cafes only. No earns yet → 0 (correct — no active pool). This matches what the till showed them at the last scan, so the `X/10` in the app and the reward-rollover modal stay consistent.
+
+### `/api/consumer/cafes` — target_cafe_ids filter applied
+- **Before:** Every live offer fetched by brand was attached to every cafe under that brand, broadcast-style, ignoring `target_cafe_ids`.
+- **After:** Offer attaches to a cafe iff `target_cafe_ids IS NULL` (broadcast) OR the cafe's id is in the array. Filtering is done in Python after fetching (list is tiny per brand), keeping the query simple and avoiding array-containment SQL.
+- Closes the "Consumer feed filter" gap flagged in the 2026-04-20 EOD wrap-up.
+
+### New endpoint: `GET /api/consumer/me/history?limit=50`
+- Reads from `global_ledger` (row-per-transaction shadow table), **not** `stamp_ledger` — so "+3 stamps at Cafe X" renders as one row instead of three.
+- Response shape (`ConsumerHistoryEntry`): `transaction_id`, `kind: "earn" | "redeem"` (derived from `GlobalLedgerAction`), `quantity`, `cafe_name`, `cafe_address`, `timestamp`.
+- `limit` param clamped to [1, 200], default 50. Sorted `timestamp DESC` via the existing `idx_global_ledger_consumer_ts` index.
+- Auth: `Depends(get_consumer_session)` — anonymous callers 401.
+
+### Frontend
+- `consumer-app/src/api.ts` — new `fetchHistory(token, limit=50)` returning `HistoryEntry[]`.
+- `consumer-app/App.tsx` — `<HistoryScreen />` now receives `session` as a prop.
+- `consumer-app/src/HistoryScreen.tsx` — `MOCK_HISTORY` array deleted; replaced with `useEffect(fetchHistory)` + `loading` / `empty` / `error` branches. `balanceAfter` display dropped (the ledger rows don't carry a running balance without a window function; not worth adding for a history-tab concern). Row title is now quantity-aware ("Earned 3 stamps" / "Redeemed 1 Free Drink"). Added a local `formatWhen()` that reproduces the old "Today · 08:12 / Yesterday / N days ago / Last week" cadence without a date library.
+
+### Verification
+- `py_compile app/consumer_auth.py app/schemas.py` — clean.
+- Route registration confirmed: `GET /api/consumer/me/balance`, `GET /api/consumer/me/history`, `GET /api/consumer/cafes`.
+- `npx tsc --noEmit` in consumer-app (single tsconfig, no project references, so this is a real check) — clean.
+- Pydantic round-trip for `ConsumerHistoryEntry` (earn + redeem) and `ConsumerBalanceResponse` (empty) — OK.
+
+### To test
+1. Restart uvicorn. Point Expo at the current tunnel URL (`consumer-app/src/api.ts:6`).
+2. Open the mobile app → Home shows the scoped balance for the latest-earn brand. A brand-new user shows `0/10`.
+3. Tap the **History** tab → loading spinner → real ledger rows (or empty-state card if the user has no activity yet).
+4. Have a B2B admin POS add stamps to this consumer → pull-to-refresh isn't wired, but switching tabs and back re-fetches.
+5. Promotions edge case: create an offer scoped to a specific cafe in the B2B dashboard → DiscoverView should show that offer **only** on that cafe, not siblings under the same brand. Inverse: broadcast offer (All Locations) should still show on every cafe under the brand.
+6. Balance isolation check: if your test user has earns at both a Global and a Private brand, the number shown should match the pool of the *most recent* earn, not the cross-brand sum.
+
+---
+
+## 12. Mixed-Basket POS — banking pivot + Mid-Order Intercept (2026-04-21)
+
+**Architectural pivot.** `/api/b2b/scan` no longer auto-rollovers; rewards now bank until explicitly consumed via `/api/venues/redeem`. Without this change, "Save for later" in the intercept dialog would be a no-op (the 10th stamp was always force-redeemed in-transaction). The consumer app and the scoped balance helper both had to move with this change.
+
+### Backend — banking model
+
+- **`app/b2b_routes.py::b2b_scan`** — auto-rollover logic removed entirely. Stamp ledger still writes one +1 EARN row per stamp. Global ledger writes one aggregated EARNED row. `free_drinks_unlocked` is now always `0` in the response (kept in the shape for backcompat). Balance can exceed `REWARD_THRESHOLD`.
+- **`app/schemas.py::RedeemRequest`** — new `quantity: int = Field(default=1, ge=1, le=20)`. Default preserves legacy single-drink callers.
+- **`app/schemas.py::RedeemResponse`** — new `quantity_redeemed` field echoing what was consumed.
+- **`app/main.py::redeem_reward`** — accepts `quantity`, validates `balance >= quantity * 10` (409 otherwise), inserts N `-10` REDEEM rows, writes one aggregated REDEEMED row to `global_ledger` so `/me/history` renders "Redeemed 2 Free Drinks" as a single entry.
+- **New `GET /api/venues/customer/{till_code}`** (`app/main.py`) — secured by `get_active_cafe`. Returns `CustomerStatusResponse` with `user_id`, `till_code`, `current_stamps` (mod threshold), `banked_rewards` (div threshold), `threshold`. 404 on unknown till, 422 on malformed.
+- **`app/schemas.py::ConsumerBalanceResponse`** — gained `current_stamps` + `banked_rewards` derived fields. Clients should prefer these over raw `stamp_balance` for X/10 progress displays (old code would render "13/10" once banking starts accumulating).
+- **`app/consumer_auth.py::/me/balance`** — populates the two new fields from the scoped balance.
+
+### Known regression (flagged, not fixed in this slice)
+- **Consumer celebration modal stops firing on stamp scans.** Old path: `latest_earn.free_drink_unlocked` was true whenever the same-timestamp EARNED + REDEEMED rows co-existed (auto-rollover path). Under banking, REDEEMED rows come from a separate `/venues/redeem` call in a separate transaction, so the timestamp-equality check never matches. Modal only fires on explicit redeems going forward — and only by coincidence (timestamps rarely match). Proper fix: add a `latest_redeem` payload with its own transaction_id and have the mobile app watch that alongside `latest_earn`. Follow-up ticket.
+
+### Frontend — `b2b-dashboard/src/lib/api.ts`
+- `redeem(venueApiKey, tillCode, quantity = 1)` — quantity threaded through to backend.
+- New `getCustomerStatus(venueApiKey, tillCode)` + `CustomerStatusResponse` type.
+
+### Frontend — `BaristaPOSView.tsx` (full rewrite)
+- **Pre-scan fetch:** on camera decode or manual Enter, `scannedCode` state is set and a `useEffect` fires `getCustomerStatus`. Overlay renders a loading tile while the fetch resolves; error state shows an inline message with a Cancel / Rescan escape.
+- **Dual steppers:**
+  - **"Paid drinks (add stamps)"** — range 0–10. Default: 1 if `banked_rewards === 0`, else 0 (banking-heavy customers are more likely to be redeeming than earning).
+  - **"Free drinks (redeem rewards)"** — range 0..`banked_rewards`. Disabled with "No banked rewards" hint if banked is 0.
+- **Confirm button** disabled unless at least one stepper is > 0 and customer status has loaded.
+- **Mid-Order Intercept** — fires when `stampsToAdd > 0 AND (current_stamps + stampsToAdd) >= threshold`. Uses a shadcn `Dialog` with two calls-to-action: "Yes, make 1 drink free" (folds one stamp into a reward redeem → executes combined basket) / "No — save for later" (fires the scan as-is; balance banks past threshold).
+- **Execute order** — `b2bScan` first, then `redeem`. Matters for the intercept-yes case: the newly-added stamps have to land before the reward consumption has the 10 needed. Both calls are serialised in `executeTransaction`.
+- **Combined success toast** — `+N stamps · M rewards redeemed` (only the relevant pieces rendered).
+- **Error resilience** — API failures keep the overlay open so the barista can adjust and retry; no lockout applied on error (same pattern as the pre-pivot POS).
+- **`RewardDialog` removed** — the old auto-rollover "Redeem / Save for later?" modal is obsolete; the Mid-Order Intercept fires pre-scan instead.
+
+### Consumer app update (minimal)
+- **`consumer-app/App.tsx`** — poll loop now consumes `res.current_stamps` (not `res.stamp_balance`) for the HomeView progress. Prevents "13/10" once banking accumulates.
+- **`consumer-app/src/api.ts::BalanceResponse`** — added `current_stamps` + `banked_rewards` fields.
+
+### Verification
+- `py_compile app/main.py app/b2b_routes.py app/schemas.py app/consumer_auth.py` — clean.
+- Routes confirmed registered: `POST /api/venues/stamp`, `POST /api/venues/redeem`, `GET /api/venues/customer/{till_code}`.
+- `npx tsc --build --force` in b2b-dashboard + `npx tsc --noEmit` in consumer-app — both clean.
+- Pydantic round-trip: `RedeemRequest` (default + custom quantity + quantity=0 rejection), `CustomerStatusResponse`, `ConsumerBalanceResponse` (banking case: total=27, current=7, banked=2) — all correct.
+
+### Scenarios to test
+1. **Pure earn, no threshold crossing.** Customer at 3/10, banked 0. Add 2 stamps. No intercept. Toast: `+2 stamps`. Customer now 5/10 banked 0.
+2. **Earn crossing threshold, "Yes make one free".** Customer at 8/10 banked 0. Add 3 stamps → intercept → Yes. Executes `b2bScan(2)` then `redeem(1)`. Customer now 1/10 banked 0. Toast: `+2 stamps · 1 reward redeemed`.
+3. **Earn crossing threshold, "No save for later".** Customer at 8/10 banked 0. Add 3 stamps → intercept → No. Executes `b2bScan(3)`. Customer now 1/10 banked 1. Toast: `+3 stamps`.
+4. **Pure redeem, no new stamps.** Customer at 3/10 banked 2. Paid stepper 0, free stepper 2. No intercept (stamps=0). Executes `redeem(2)`. Customer now 3/10 banked 0. Toast: `2 rewards redeemed`.
+5. **Mixed manual: both steppers > 0, no threshold.** Customer at 2/10 banked 1. Paid 2, free 1. No intercept (2+2 < 10). Executes `b2bScan(2)` then `redeem(1)`. Customer now 4/10 banked 0. Toast: `+2 stamps · 1 reward redeemed`.
+6. **Insufficient stamps edge case.** Manually set `rewardsToRedeem` past `banked_rewards` — max caps on the stepper should prevent this, but if backend receives it anyway: 409 "Insufficient stamps".
+7. **Consumer app mobile** — pull /me/balance for a user with balance >= 10. App shows `current_stamps/10` (e.g. `3/10`) rather than `13/10`. Banked count is available via `res.banked_rewards` for future UI.
+
+### 12a. Intercept threshold — strictly `> 10` (Buy 10, get 11th free)
+Math correction the same day: the intercept fired on `sum >= 10`, which treated "Current 0, Add 10" as a crossing event and offered the 10th drink free — effectively a "Buy 9, get 10th free" scheme. Correct semantic is "Buy 10, get 11th free": only a sum **strictly greater** than the threshold means the customer is ordering an 11th-drink-eligible-for-free in *this* transaction.
+
+- **Before (wrong):** `current_stamps + stampsToAdd >= REWARD_THRESHOLD`
+- **After (correct):** `current_stamps + stampsToAdd > REWARD_THRESHOLD`
+- Location: `BaristaPOSView.tsx shouldIntercept()`.
+
+**Behavior matrix after the fix:**
+| current | add | sum | intercept? | outcome if yes | outcome if no |
+|---|---|---|---|---|---|
+| 0 | 10 | 10 | **NO** | — (no crossing) | `+10 stamps`, banks 1 reward |
+| 8 | 2 | 10 | **NO** | — (no crossing) | `+2 stamps`, banks 1 reward |
+| 8 | 3 | 11 | **YES** | 2 paid + 1 free → balance 0/10, 0 banked | `+3 stamps`, lands at 1/10 banked 1 |
+| 0 | 11 | 11 | **YES** | 10 paid + 1 free → balance 0/10, 0 banked | `+11 stamps`, lands at 1/10 banked 1 |
+
+`handleInterceptYes` math (`stampsToAdd - 1`, `rewardsToRedeem + 1`) was already correct for the `sum = threshold + 1` case and matched the dialog's singular "make 1 drink free" copy. No change there.
+
+**Stepper visual polish (same commit):** the "Free drinks" stepper stays rendered even when `banked_rewards === 0` so the barista always knows the feature exists; it now gets `opacity-50` + muted number colour when disabled so the greyed-out state reads at a glance. The Paid stepper is always interactive.
+
+**Verification:** `npx tsc --build --force` clean.
+
+**To test**
+- **Scenario 1 (no intercept, banking):** customer at 0/10 → Paid=10 → Confirm → **no dialog appears** → toast `+10 stamps`. Balance now 0/10 with 1 banked. Before the fix, this would have intercepted and offered the 10th drink free.
+- **Scenario 2 (intercept):** customer at 8/10 → Paid=3 → Confirm → Intercept dialog fires → **Yes** executes `b2bScan(2)` + `redeem(1)`, toast `+2 stamps · 1 reward redeemed`, balance 0/10 banked 0. **No** executes `b2bScan(3)`, toast `+3 stamps`, balance 1/10 banked 1.
+- **Scenario 3 (UI clarity):** a customer with `banked_rewards=0` → open overlay → Free-drinks stepper is visible, greyed out at opacity-50, +/– buttons disabled, "No banked rewards" hint beneath.
+
+---
+
+## 13. Discover polish + Live Confetti (smart polling, 2026-04-22)
+
+### Audit findings (scope reality check)
+- **Backend `target_cafe_ids` filter** — *already shipped* in task 11 (2026-04-21). No-op for this slice.
+- **"DiscoverScreen Coming Soon placeholder"** — premise wrong. A full-featured `DiscoverView` (inline in `consumer-app/App.tsx:552`) with `fetchDiscoverCafes`, loading/error/empty states, terracotta retry button, and `CafeDetailsModal` nav already existed from prior sessions. The real gaps on the card were the missing hygiene indicator + offers using the *amber* (amenity) accent instead of the spec's terracotta.
+- **Smart polling** — a 3s `/me/balance` poll (`BALANCE_POLL_MS = 3000`) was already wired in `HomeView`, but keyed on `latest_earn.transaction_id` rather than the delta the user now wants, and had no AppState foreground gate.
+
+### What actually shipped
+
+1. **`DiscoverCafeCard` polish**
+   - New `HygienePill` subcomponent — compact `ShieldCheck` + "Hygiene · N/5" (or "Awaiting inspection") chip that echoes the amenity-chip treatment. The full FSA sticker (`FoodHygieneBadge`) stays reserved for the `CafeDetailsModal` where it has room to breathe.
+   - Offers block recoloured from amber → **terracotta** (`rgba(201,110,75,0.08)` bg, `rgba(201,110,75,0.28)` border, `COLOR.terracotta` label). Matches the product spec and the B2B dashboard's offer colour so baristas and customers see the same visual language.
+   - `ShieldCheck` added to the lucide-react-native import block; `FoodHygieneRating` added to the `./src/api` type imports.
+
+2. **Live Confetti — delta-based celebration trigger**
+   - **Replaces** the previous `latest_earn.transaction_id` gate, which was unreliable after the banking pivot (task 12) made `free_drink_unlocked` always false.
+   - Two refs: `prevCurrentRef`, `prevBankedRef`. Null sentinels for pre-first-poll so the initial fetch seeds silently (no "welcome back" misfire).
+   - Trigger: `current_stamps > prev` **OR** `banked_rewards > prev` — pure redeems (banked goes down) stay correctly silent since that action was barista-initiated.
+   - `stampsEarnedDelta = (banked_new - banked_prev) * 10 + (current_new - current_prev)` — handles the threshold-crossing case where `current_stamps` resets (e.g. 8 → 1) but `banked_rewards` ticks up (0 → 1), total earn = 3. Always ≥ 1 when the celebration fires.
+   - `freeDrinkUnlocked = bankedUp` — the "🎉 free drink unlocked" variant of the RewardModal fires iff the scan crossed the threshold.
+
+3. **AppState-gated polling**
+   - `AppState.addEventListener("change", …)` updates a `[appActive, setAppActive]` state (not a ref — want the effect to re-run on the flip).
+   - The poll `useEffect` now depends on `appActive`. Backgrounded → logs `[poll] app backgrounded, pausing` and returns early, clearing the interval. Foreground → re-runs the effect, fires an immediate poll, re-installs the 3s interval.
+   - Saves battery and avoids piling stale requests against a rotated localtunnel URL after long idle.
+
+### Verification
+- `npx tsc --noEmit` in consumer-app — clean.
+- Manual logic walk-through:
+  - Earn 2 at 3/10: delta_current=+2, delta_banked=0 → celebrate, freeDrinkUnlocked=false, stampsEarned=2.
+  - Earn 3 at 8/10 (crosses): current 8→1, banked 0→1 → celebrate, freeDrinkUnlocked=true, stampsEarned=(1)*10 + (1-8) = 3. ✓
+  - Barista redeems 1 (banked 1→0): delta_current=0, delta_banked=-1 → **no** celebrate. ✓
+  - App foregrounds after 20min idle: initial poll seeds refs, doesn't celebrate. ✓
+
+### Known / flagged (unchanged from task 12)
+- **Mixed-basket transient:** if the barista fires +N stamps + -M redeem close together, a poll may catch only the post-state where both deltas are zero. The modal won't fire. Rare in practice; belt-and-braces fix would be adding a `latest_redeem` payload alongside `latest_earn` and diffing that too. Not done in this slice.
+
+### To test
+- "Tunnel killer" deployment first (replace the localtunnel URL with a stable backend), otherwise the 3s poll bleeds stale requests.
+- Sign in on the mobile app → have a barista stamp +2 → Home's card progress animates to the new count within ~3s AND the RewardModal pops with "+2 stamps at X".
+- Have the barista redeem 1 → Home's banked count updates silently (no modal).
+- Home, stamp the customer to cross the threshold (8 → 11 total) → modal pops with the "🎉 free drink unlocked" variant.
+- Background the app (home button) → console shows `[poll] app backgrounded, pausing`. Return → immediate re-poll, polling resumes.
+- Discover tab → each cafe card now shows the compact hygiene pill under the address; any live offer block uses terracotta accent.
+
 **Phase 3 (B2B Dashboard + Billing) is 100% closed as of 2026-04-18.** Every surface of the Business App is wired to real FastAPI endpoints. Gateway, POS scanner, dashboard reads (cafes, metrics, brand profile), dashboard writes (add-location, brand PATCH incl. scheme toggle), logout on both surfaces, AND a working end-to-end Stripe subscription flow: admin clicks Subscribe → `POST /api/billing/checkout` (JWT-authed) → Stripe hosted page → Stripe webhook on `checkout.session.completed` flips `subscription_status` to `active` and saves `stripe_customer_id` + `stripe_subscription_id` → Stripe redirects back to `/success?session_id=…` (or `/cancel`) on the Vite frontend, which refetches admin data and surfaces the new Active state. Admin + Store JWTs are per-audience, backed by bcrypt-hashed per-row credentials. Local dev DB seed: `admin@test.com`/`password123` + Store ID `001` / PIN `1234` against `Test Coffee Co — Flagship`. Discretionary next tracks (Phase 3b, store-cred UI, Customer Portal, hardening) are listed under "▶️ Very first step when we resume" — none are loose ends from Phase 3.

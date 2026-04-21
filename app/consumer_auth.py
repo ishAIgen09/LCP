@@ -33,18 +33,19 @@ from app import tokens
 from app.auth import ConsumerSession, get_consumer_session
 from app.database import get_session
 from app.models import (
+    Brand,
     Cafe,
     ConsumerOTP,
     GlobalLedger,
     GlobalLedgerAction,
     Offer,
-    StampLedger,
     User,
 )
 from app.schemas import (
     ConsumerAuthResponse,
     ConsumerBalanceResponse,
     ConsumerCafePayload,
+    ConsumerHistoryEntry,
     ConsumerOfferPayload,
     ConsumerProfile,
     ConsumerRequestOTP,
@@ -245,23 +246,16 @@ async def consumer_balance(
     consumer: ConsumerSession = Depends(get_consumer_session),
     session: AsyncSession = Depends(get_session),
 ) -> ConsumerBalanceResponse:
-    raw_balance = int(
-        (
-            await session.execute(
-                select(func.coalesce(func.sum(StampLedger.stamp_delta), 0)).where(
-                    StampLedger.customer_id == consumer.user_id
-                )
-            )
-        ).scalar_one()
-    )
-
     # Pick up the latest EARNED global_ledger row + its cafe. The mobile app
     # uses this transaction_id as a fire-once key for the celebratory modal.
     # `consumer_id` on global_ledger is the till_code (CHAR(6)), not the UUID.
+    # We ALSO join in the Brand so the balance sum below can be scoped by
+    # the scheme type of the latest-earn's brand.
     latest_earn_row = (
         await session.execute(
-            select(GlobalLedger, Cafe)
+            select(GlobalLedger, Cafe, Brand)
             .join(Cafe, Cafe.id == GlobalLedger.venue_id)
+            .join(Brand, Brand.id == Cafe.brand_id)
             .where(
                 GlobalLedger.consumer_id == consumer.consumer_id,
                 GlobalLedger.action_type == GlobalLedgerAction.EARNED,
@@ -271,9 +265,32 @@ async def consumer_balance(
         )
     ).first()
 
+    # Brand-scoped balance. Strictly isolated per the business rule:
+    #   Global scheme → pooled across every Global-scheme brand
+    #   Private scheme → only that one brand's cafes
+    # The shown number always reflects the pool their LAST earn belongs to,
+    # so the "X/10" in the app matches what the till just showed them. Brand-
+    # new users with no earns see 0 (correct — they have no active pool).
+    #
+    # Deferred import: _scoped_balance_stmt lives in app.main and main imports
+    # this router, so a module-level `from app.main import ...` would cycle.
+    # b2b_routes.py uses the same pattern.
+    from app.main import _scoped_balance_stmt
+
+    scoped_balance = 0
+    if latest_earn_row is not None:
+        _earn, _cafe, earn_brand = latest_earn_row
+        scoped_balance = int(
+            (
+                await session.execute(
+                    _scoped_balance_stmt(consumer.user_id, earn_brand)
+                )
+            ).scalar_one()
+        )
+
     latest_earn: LatestEarnPayload | None = None
     if latest_earn_row is not None:
-        earn, cafe = latest_earn_row
+        earn, cafe, _earn_brand = latest_earn_row
         # A rollover is a REDEEMED row committed in the same scan transaction
         # as the EARNED row. `now()` in Postgres returns the transaction start
         # time, so the two rows share an identical `timestamp` — equality is a
@@ -299,10 +316,48 @@ async def consumer_balance(
 
     return ConsumerBalanceResponse(
         consumer_id=consumer.consumer_id,
-        stamp_balance=raw_balance,
+        stamp_balance=scoped_balance,
         threshold=REWARD_THRESHOLD,
+        # Derived under the banking model (no more auto-rollover; balance
+        # can exceed threshold). Clients should prefer current_stamps for
+        # the X/10 progress display so it never shows "13/10".
+        current_stamps=scoped_balance % REWARD_THRESHOLD,
+        banked_rewards=scoped_balance // REWARD_THRESHOLD,
         latest_earn=latest_earn,
     )
+
+
+# Recent activity for the mobile History tab. Reads from global_ledger
+# (row-per-transaction shadow table) rather than stamp_ledger, so "+3 stamps
+# at Cafe X" renders as one entry instead of three. Caller-capped `limit`
+# defaults to 50 and is clamped to [1, 200] to keep the payload predictable.
+@consumer_router.get("/me/history", response_model=list[ConsumerHistoryEntry])
+async def consumer_history(
+    limit: int = 50,
+    consumer: ConsumerSession = Depends(get_consumer_session),
+    session: AsyncSession = Depends(get_session),
+) -> list[ConsumerHistoryEntry]:
+    safe_limit = max(1, min(limit, 200))
+    rows = (
+        await session.execute(
+            select(GlobalLedger, Cafe)
+            .join(Cafe, Cafe.id == GlobalLedger.venue_id)
+            .where(GlobalLedger.consumer_id == consumer.consumer_id)
+            .order_by(GlobalLedger.timestamp.desc())
+            .limit(safe_limit)
+        )
+    ).all()
+    return [
+        ConsumerHistoryEntry(
+            transaction_id=ledger.transaction_id,
+            kind="earn" if ledger.action_type == GlobalLedgerAction.EARNED else "redeem",
+            quantity=ledger.quantity,
+            cafe_name=cafe.name,
+            cafe_address=cafe.address,
+            timestamp=ledger.timestamp,
+        )
+        for ledger, cafe in rows
+    ]
 
 
 # Discover feed. One row per cafe across every brand that's enrolled, paired
@@ -318,8 +373,12 @@ async def consumer_cafes(
         await session.execute(select(Cafe).order_by(Cafe.name.asc()))
     ).scalars().all()
 
+    # Live offers for every brand in the set. We fetch the raw Offer rows
+    # (keeping target_cafe_ids) so we can do the per-cafe targeting filter in
+    # Python — cleaner than a cross-join with array containment for a list
+    # that's typically tiny (<50 live offers per brand).
     brand_ids = {cafe.brand_id for cafe in cafe_rows}
-    offers_by_brand: dict[uuid.UUID, list[ConsumerOfferPayload]] = {}
+    offers_by_brand: dict[uuid.UUID, list[Offer]] = {}
     if brand_ids:
         now = datetime.now(timezone.utc)
         live_offers = (
@@ -334,7 +393,19 @@ async def consumer_cafes(
             )
         ).scalars().all()
         for offer in live_offers:
-            offers_by_brand.setdefault(offer.brand_id, []).append(
+            offers_by_brand.setdefault(offer.brand_id, []).append(offer)
+
+    def _offers_for_cafe(cafe: Cafe) -> list[ConsumerOfferPayload]:
+        # Location targeting: an offer attaches to this cafe iff
+        #   target_cafe_ids IS NULL  (broadcast across the brand)
+        #   OR cafe.id appears in target_cafe_ids  (scoped subset includes us)
+        # No FK on array elements — an orphan id (from a deleted cafe) simply
+        # won't match and gets silently dropped, which is the right behavior.
+        out: list[ConsumerOfferPayload] = []
+        for offer in offers_by_brand.get(cafe.brand_id, []):
+            if offer.target_cafe_ids is not None and cafe.id not in offer.target_cafe_ids:
+                continue
+            out.append(
                 ConsumerOfferPayload(
                     id=offer.id,
                     offer_type=offer.offer_type,
@@ -344,6 +415,7 @@ async def consumer_cafes(
                     ends_at=offer.ends_at,
                 )
             )
+        return out
 
     return [
         ConsumerCafePayload(
@@ -353,7 +425,7 @@ async def consumer_cafes(
             phone=cafe.phone,
             food_hygiene_rating=cafe.food_hygiene_rating,
             amenities=list(cafe.amenities or []),
-            live_offers=offers_by_brand.get(cafe.brand_id, []),
+            live_offers=_offers_for_cafe(cafe),
         )
         for cafe in cafe_rows
     ]
