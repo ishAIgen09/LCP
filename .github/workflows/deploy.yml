@@ -1,0 +1,49 @@
+name: Deploy to DigitalOcean Droplet
+
+on:
+  push:
+    branches:
+      - main
+  # Lets you re-trigger a deploy from the GitHub UI without pushing a new commit.
+  workflow_dispatch:
+
+# Only one deploy to main runs at a time. If another push arrives mid-deploy,
+# it queues (cancel-in-progress=false). Prevents two concurrent `docker compose
+# up --build` on the same droplet stomping on each other.
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: SSH + rebuild on droplet
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: SSH into droplet and redeploy
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          port: ${{ secrets.DROPLET_PORT || '22' }}
+          # Abort the whole job on the first non-zero exit inside `script:`.
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            cd "${{ secrets.DROPLET_PATH }}"
+
+            echo "→ fetching latest origin/main"
+            git fetch --prune origin
+            git reset --hard origin/main
+
+            echo "→ building + starting containers"
+            docker compose up -d --build
+
+            echo "→ pruning dangling images"
+            docker image prune -f
+
+            echo "→ deploy complete — current service state:"
+            docker compose ps

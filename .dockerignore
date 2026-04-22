@@ -1,0 +1,50 @@
+# VCS + editor state
+.git
+.gitignore
+.gitattributes
+.vscode
+.idea
+*.swp
+*.swo
+
+# Python caches + local envs
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.tox
+.venv
+venv
+env
+
+# Frontend projects — NOT part of the backend image.
+# These dirs together drag in ~250MB+ of node_modules; excluding them is
+# the single biggest win for build speed.
+consumer-app
+b2b-dashboard
+node_modules
+
+# Local env files — secrets must never bake into an image.
+.env
+.env.local
+.env.*.local
+
+# Markdown + design artefacts — not needed at runtime.
+*.md
+brand-moodboard.html
+
+# Docker + CI config — referenced by the build system, not needed inside.
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml
+.github
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Local logs
+*.log
