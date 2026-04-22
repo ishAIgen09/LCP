@@ -1,3 +1,8 @@
 .env
 __pycache__/
 *.pyc
+
+# Build artifacts / dependencies / local-only docs
+node_modules/
+*.tsbuildinfo
+MEMORY.md

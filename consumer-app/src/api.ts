@@ -1,9 +1,9 @@
 import type { Session } from "./theme";
 
-// Back on localtunnel for off-LAN testing. `Bypass-Tunnel-Reminder: true`
-// on every request skips localtunnel's HTML interstitial so the app gets
-// JSON straight from uvicorn.
-export const API_BASE_URL = "https://yellow-poems-punch.loca.lt";
+// Production DO droplet running the FastAPI backend + postgres via
+// docker compose. Plain http:// until TLS is added — on Android this
+// requires usesCleartextTraffic=true, on iOS an ATS exception.
+export const API_BASE_URL = "http://178.62.123.228:8000";
 
 if (__DEV__) {
   // eslint-disable-next-line no-console
@@ -26,7 +26,6 @@ export class ApiError extends Error {
 // rendering and confusing the client.
 const DEFAULT_HEADERS: Record<string, string> = {
   Accept: "application/json",
-  "Bypass-Tunnel-Reminder": "true",
 };
 
 async function postJSON<T>(path: string, body: unknown): Promise<T> {
