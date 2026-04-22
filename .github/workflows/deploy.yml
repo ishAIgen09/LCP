@@ -39,6 +39,14 @@ jobs:
             git fetch --prune origin
             git reset --hard origin/main
 
+            # .env is intentionally NOT tracked in git (holds secrets).
+            # Persistent copy at /root/.env-lcp-production is restored into
+            # the repo working tree here, since `reset --hard` would
+            # otherwise leave compose without env vars.
+            echo "→ restoring .env from persistent location"
+            cp /root/.env-lcp-production .env
+            chmod 600 .env
+
             echo "→ building + starting containers"
             docker compose up -d --build
 
