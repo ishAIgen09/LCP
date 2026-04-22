@@ -110,15 +110,7 @@ export function requestOtp(input: {
   firstName?: string;
   lastName?: string;
 }): Promise<{ ok: boolean }> {
-  const path = "/api/consumer/auth/request-otp";
-  console.log("Attempting to hit URL:", `${API_BASE_URL}${path}`, {
-    email: input.email,
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
-  });
-  return postJSON(path, {
+  return postJSON("/api/consumer/auth/request-otp", {
     email: input.email,
     first_name: input.firstName ?? null,
     last_name: input.lastName ?? null,

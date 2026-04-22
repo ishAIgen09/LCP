@@ -6,6 +6,7 @@ import {
   Pressable,
   ScrollView,
   Text,
+  TouchableOpacity,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -35,36 +36,38 @@ export function ContactLocationModal({
   const onOpenDirections = async () => {
     if (!cafe) return;
     setLinkingError(null);
-    // Universal search URL — the native map app handles it on both platforms,
-    // and modern iOS/Android rewrite it to Apple/Google Maps respectively.
-    // The geo:/maps: schemes are tried first because they skip the browser
-    // hop when a native map app is installed.
     const encoded = encodeURIComponent(cafe.address);
+    // iOS: maps.apple.com universal link — iOS intercepts it into the Maps
+    // app without needing LSApplicationQueriesSchemes in Info.plist, and
+    // degrades to a web page anywhere else. The old `maps:?q=` scheme is
+    // malformed (missing 0,0 coord pair) and was throwing "Unable to open
+    // URL" on some devices.
+    // Android: geo:0,0?q= is the canonical geo scheme any installed maps
+    // app handles.
     const nativeUrl = Platform.select({
-      ios: `maps:?q=${encoded}`,
+      ios: `http://maps.apple.com/?q=${encoded}`,
       android: `geo:0,0?q=${encoded}`,
       default: undefined,
     });
     const webUrl = `https://www.google.com/maps/search/?api=1&query=${encoded}`;
 
-    const tryOpen = async (url: string) => {
-      const supported = await Linking.canOpenURL(url);
-      if (!supported) return false;
-      await Linking.openURL(url);
-      return true;
+    // Swallow per-attempt errors so one malformed scheme doesn't surface a
+    // user-visible error before the fallback has had a chance. Only the
+    // final "both failed" branch sets linkingError.
+    const tryOpen = async (url: string): Promise<boolean> => {
+      try {
+        const supported = await Linking.canOpenURL(url);
+        if (!supported) return false;
+        await Linking.openURL(url);
+        return true;
+      } catch {
+        return false;
+      }
     };
 
-    try {
-      if (nativeUrl && (await tryOpen(nativeUrl))) return;
-      if (await tryOpen(webUrl)) return;
-      setLinkingError("Couldn't open a map app on this device.");
-    } catch (e) {
-      setLinkingError(
-        e instanceof Error
-          ? `Map couldn't open: ${e.message}`
-          : "Map couldn't open.",
-      );
-    }
+    if (nativeUrl && (await tryOpen(nativeUrl))) return;
+    if (await tryOpen(webUrl)) return;
+    setLinkingError("Couldn't open a map app on this device.");
   };
 
   const onCallPhone = async () => {
@@ -201,43 +204,19 @@ export function ContactLocationModal({
             />
           )}
 
-          <Pressable
+          <TouchableOpacity
             onPress={onOpenDirections}
+            activeOpacity={0.8}
             accessibilityRole="button"
             accessibilityLabel={`Get directions to ${cafe.name}`}
-            style={({ pressed }) => ({
-              marginTop: 20,
-              height: 52,
-              borderRadius: 16,
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "center",
-              backgroundColor: COLOR.terracotta,
-              opacity: pressed ? 0.85 : 1,
-              shadowColor: COLOR.terracotta,
-              shadowOffset: { width: 0, height: 10 },
-              shadowOpacity: 0.35,
-              shadowRadius: 18,
-              elevation: 6,
-            })}
           >
-            <Navigation
-              size={16}
-              color={COLOR.terracottaInk}
-              strokeWidth={2.4}
+            <InfoRow
+              icon={<Navigation size={16} color={COLOR.roastedAlmond} strokeWidth={2.2} />}
+              label="Directions"
+              value="Get Directions"
+              trailing="Tap to open map"
             />
-            <Text
-              style={{
-                marginLeft: 10,
-                fontFamily: FONT.semibold,
-                fontSize: 15,
-                color: COLOR.terracottaInk,
-                letterSpacing: 0.3,
-              }}
-            >
-              Get Directions
-            </Text>
-          </Pressable>
+          </TouchableOpacity>
 
           {linkingError ? (
             <Text

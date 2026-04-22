@@ -244,7 +244,7 @@ function HomeView({
 
   useEffect(() => {
     if (!appActive) {
-      console.log("[poll] app backgrounded, pausing");
+      if (__DEV__) console.log("[poll] app backgrounded, pausing");
       return;
     }
     let cancelled = false;
@@ -254,9 +254,11 @@ function HomeView({
       try {
         const res = await fetchBalance(session.token);
         if (cancelled) return;
-        console.log(
-          `[poll] current=${res.current_stamps}/${res.threshold} banked=${res.banked_rewards} latest_earn=${res.latest_earn?.transaction_id ?? "none"}`,
-        );
+        if (__DEV__) {
+          console.log(
+            `[poll] current=${res.current_stamps}/${res.threshold} banked=${res.banked_rewards} latest_earn=${res.latest_earn?.transaction_id ?? "none"}`,
+          );
+        }
         // Banking pivot (2026-04-21): balances can exceed threshold now.
         // Use current_stamps for the X/10 progress display.
         setStampsEarned(res.current_stamps);
@@ -290,9 +292,11 @@ function HomeView({
         prevCurrentRef.current = res.current_stamps;
         prevBankedRef.current = res.banked_rewards;
       } catch (e) {
-        console.log(
-          `[poll] error: ${e instanceof Error ? e.message : String(e)}`,
-        );
+        if (__DEV__) {
+          console.log(
+            `[poll] error: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
       } finally {
         pollBusyRef.current = false;
       }
@@ -377,7 +381,7 @@ function HomeView({
               className="mt-1 text-[15px] font-medium"
               style={{ color: COLOR.text }}
             >
-              Scan or read aloud at the counter
+              Scan at the counter
             </Text>
           </View>
           <View
@@ -410,7 +414,7 @@ function HomeView({
         </View>
 
         <View
-          className="mt-4 items-center rounded-2xl py-3"
+          className="mt-4 items-center rounded-2xl px-4 py-3"
           style={{
             backgroundColor: COLOR.bg,
             borderWidth: 1,
@@ -418,13 +422,18 @@ function HomeView({
           }}
         >
           <Text
-            className="text-[10px] font-semibold uppercase"
-            style={{ color: COLOR.textDim, letterSpacing: 2 }}
+            className="text-[12px]"
+            style={{
+              color: COLOR.textDim,
+              fontFamily: FONT.medium,
+              letterSpacing: 0.2,
+              textAlign: "center",
+            }}
           >
-            Member Code · Read Aloud
+            Scanner not working? Give this code to the barista:
           </Text>
           <Text
-            className="mt-1.5"
+            className="mt-2"
             style={{
               color: COLOR.text,
               fontFamily: MONO_FONT,
@@ -635,12 +644,22 @@ function DiscoverView({ session }: { session: Session }) {
       </Text>
 
       {cafes === null ? (
-        <Text
-          className="mt-6 text-[13px]"
-          style={{ color: COLOR.textDim }}
+        <View
+          style={{
+            marginTop: 48,
+            alignItems: "center",
+            justifyContent: "center",
+            paddingVertical: 32,
+          }}
         >
-          Loading cafés…
-        </Text>
+          <ActivityIndicator color={COLOR.accent} size="small" />
+          <Text
+            className="mt-3 text-[12px]"
+            style={{ color: COLOR.textDim, letterSpacing: 0.2 }}
+          >
+            Loading cafés…
+          </Text>
+        </View>
       ) : error ? (
         <View
           className="mt-6 rounded-2xl p-4"

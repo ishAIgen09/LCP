@@ -1,10 +1,9 @@
 import { useState } from "react";
-import { Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { Modal, Pressable, ScrollView, Text, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   ChevronRight,
   Coffee,
-  Info,
   MapPin,
   Megaphone,
   Sparkles,
@@ -54,7 +53,7 @@ export function CafeDetailsModal({
             paddingBottom: 8,
             flexDirection: "row",
             alignItems: "center",
-            justifyContent: "space-between",
+            justifyContent: "flex-start",
           }}
         >
           <Pressable
@@ -85,47 +84,6 @@ export function CafeDetailsModal({
             >
               Close
             </Text>
-          </Pressable>
-
-          <Pressable
-            onPress={() => setContactOpen(true)}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="Open contact and location details"
-            style={({ pressed }) => ({
-              height: 36,
-              paddingLeft: 12,
-              paddingRight: 8,
-              flexDirection: "row",
-              alignItems: "center",
-              borderRadius: 999,
-              backgroundColor: COLOR.terracotta,
-              opacity: pressed ? 0.85 : 1,
-              shadowColor: COLOR.terracotta,
-              shadowOffset: { width: 0, height: 6 },
-              shadowOpacity: 0.35,
-              shadowRadius: 12,
-              elevation: 4,
-            })}
-          >
-            <Info size={13} color={COLOR.terracottaInk} strokeWidth={2.4} />
-            <Text
-              style={{
-                marginLeft: 6,
-                fontFamily: FONT.semibold,
-                fontSize: 12,
-                color: COLOR.terracottaInk,
-                letterSpacing: 0.3,
-              }}
-            >
-              Cafe details
-            </Text>
-            <ChevronRight
-              size={14}
-              color={COLOR.terracottaInk}
-              strokeWidth={2.4}
-              style={{ marginLeft: 2 }}
-            />
           </Pressable>
         </View>
 
@@ -170,6 +128,38 @@ export function CafeDetailsModal({
           </View>
 
           <AmenitiesSection amenities={knownAmenities} />
+
+          <TouchableOpacity
+            onPress={() => setContactOpen(true)}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel={`Open contact and location details for ${cafe.name}`}
+            style={{
+              marginTop: 28,
+              marginBottom: 16,
+              padding: 16,
+              borderRadius: 12,
+              backgroundColor: COLOR.surface,
+              borderWidth: 1,
+              borderColor: COLOR.border,
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
+            <Text
+              style={{
+                fontFamily: FONT.semibold,
+                fontSize: 15,
+                color: COLOR.text,
+                letterSpacing: -0.1,
+              }}
+            >
+              Contact & Location
+            </Text>
+            <ChevronRight size={20} color={COLOR.textMuted} strokeWidth={2.2} />
+          </TouchableOpacity>
+
           <OffersSection offers={cafe.live_offers} />
         </ScrollView>
 
