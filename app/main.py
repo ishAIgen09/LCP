@@ -61,6 +61,7 @@ from app.schemas import (
     CafeUpdate,
     CustomerStatusResponse,
     AdminOverviewResponse,
+    AdminPlatformCafeResponse,
     MetricsResponse,
     OfferCreate,
     OfferResponse,
@@ -450,6 +451,40 @@ async def admin_overview(
         total_stamps_issued=total_stamps_issued,
         total_rewards_redeemed=total_rewards_redeemed,
     )
+
+
+# SECURITY — same unauthenticated posture as /api/admin/overview.
+# Platform-scoped (NOT brand-filtered) — deliberately parked under
+# /api/admin/platform/ to avoid the existing brand-scoped
+# /api/admin/cafes at line ~407 which requires an admin JWT.
+# Future super-admin endpoints (customers, transactions, billing)
+# should sit under the same /api/admin/platform/* namespace.
+@app.get("/api/admin/platform/cafes", response_model=list[AdminPlatformCafeResponse])
+async def platform_cafes(
+    session: AsyncSession = Depends(get_session),
+) -> list[AdminPlatformCafeResponse]:
+    # Single join pass — the super-admin table needs both sides so we
+    # fetch them together instead of N+1-ing brand lookups.
+    rows = (
+        await session.execute(
+            select(Cafe, Brand)
+            .join(Brand, Brand.id == Cafe.brand_id)
+            .order_by(Cafe.name.asc())
+        )
+    ).all()
+    return [
+        AdminPlatformCafeResponse(
+            id=cafe.id,
+            name=cafe.name,
+            address=cafe.address,
+            brand_id=brand.id,
+            brand_name=brand.name,
+            scheme_type=brand.scheme_type,
+            subscription_status=brand.subscription_status,
+            created_at=cafe.created_at,
+        )
+        for cafe, brand in rows
+    ]
 
 
 @app.get("/api/admin/cafes", response_model=list[CafeResponse])

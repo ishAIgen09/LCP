@@ -264,6 +264,21 @@ class AdminOverviewResponse(BaseModel):
     total_rewards_redeemed: int
 
 
+# One row of the super-admin Cafes table. Flattens the cafe+brand join so
+# the frontend doesn't have to reconstruct the relationship client-side.
+# `scheme_type` drives the Plan Type pill (global→LCP+, private→Private);
+# `subscription_status` drives the Status pill colour.
+class AdminPlatformCafeResponse(BaseModel):
+    id: UUID
+    name: str
+    address: str
+    brand_id: UUID
+    brand_name: str
+    scheme_type: SchemeType
+    subscription_status: SubscriptionStatus
+    created_at: datetime
+
+
 class CafeProfile(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

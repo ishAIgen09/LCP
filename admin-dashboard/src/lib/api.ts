@@ -17,6 +17,26 @@ export type AdminOverview = {
   total_rewards_redeemed: number;
 };
 
+export type SchemeType = "global" | "private";
+
+export type SubscriptionStatus =
+  | "trialing"
+  | "active"
+  | "past_due"
+  | "canceled"
+  | "incomplete";
+
+export type AdminCafe = {
+  id: string;
+  name: string;
+  address: string;
+  brand_id: string;
+  brand_name: string;
+  scheme_type: SchemeType;
+  subscription_status: SubscriptionStatus;
+  created_at: string;
+};
+
 async function getJSON<T>(path: string): Promise<T> {
   let res: Response;
   try {
@@ -42,4 +62,11 @@ async function getJSON<T>(path: string): Promise<T> {
 
 export function fetchOverview(): Promise<AdminOverview> {
   return getJSON<AdminOverview>("/api/admin/overview");
+}
+
+// Platform-wide cafe list. Namespaced under /api/admin/platform/ because
+// /api/admin/cafes is already taken by the brand-scoped B2B endpoint
+// that requires a brand-admin JWT.
+export function fetchCafes(): Promise<AdminCafe[]> {
+  return getJSON<AdminCafe[]>("/api/admin/platform/cafes");
 }
