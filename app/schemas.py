@@ -254,6 +254,16 @@ class MetricsResponse(BaseModel):
     renews_at: datetime | None = None
 
 
+# Platform-wide KPIs for the Super Admin Dashboard's Overview tab. Distinct
+# from MetricsResponse above (which is brand-scoped for the B2B merchant
+# dashboard) — these counts span every tenant on the platform.
+class AdminOverviewResponse(BaseModel):
+    total_customers: int
+    total_cafes: int
+    total_stamps_issued: int
+    total_rewards_redeemed: int
+
+
 class CafeProfile(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -60,6 +60,7 @@ from app.schemas import (
     CafeScans,
     CafeUpdate,
     CustomerStatusResponse,
+    AdminOverviewResponse,
     MetricsResponse,
     OfferCreate,
     OfferResponse,
@@ -401,6 +402,53 @@ async def admin_metrics(
         total_cafes=total_cafes,
         per_cafe_30d=per_cafe,
         renews_at=brand.current_period_end,
+    )
+
+
+# SECURITY — intentionally unauthenticated for the MVP admin-dashboard
+# scaffold. The super-admin frontend gates on a localStorage flag only;
+# there's no JWT-backed platform-admin role yet (see admin-dashboard
+# commit 736e651). Do NOT expose this endpoint publicly until that role
+# and its token flow land. For now it's fine because the droplet's only
+# reachable on :8000 from known origins (CORS_ORIGINS), but anyone who
+# knows the URL can hit it. Wrap with Depends(get_super_admin_session)
+# the moment that dep exists.
+@app.get("/api/admin/overview", response_model=AdminOverviewResponse)
+async def admin_overview(
+    session: AsyncSession = Depends(get_session),
+) -> AdminOverviewResponse:
+    # Four independent COUNT(*)s. Sequential awaits are fine here —
+    # postgres sessions don't pipeline in SQLAlchemy async, and parallel
+    # gather() would just serialise on the same connection anyway.
+    total_customers = int(
+        (await session.execute(select(func.count()).select_from(User))).scalar_one()
+    )
+    total_cafes = int(
+        (await session.execute(select(func.count()).select_from(Cafe))).scalar_one()
+    )
+    total_stamps_issued = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(StampLedger)
+                .where(StampLedger.event_type == LedgerEventType.EARN)
+            )
+        ).scalar_one()
+    )
+    total_rewards_redeemed = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(StampLedger)
+                .where(StampLedger.event_type == LedgerEventType.REDEEM)
+            )
+        ).scalar_one()
+    )
+    return AdminOverviewResponse(
+        total_customers=total_customers,
+        total_cafes=total_cafes,
+        total_stamps_issued=total_stamps_issued,
+        total_rewards_redeemed=total_rewards_redeemed,
     )
 
 

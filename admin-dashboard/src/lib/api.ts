@@ -1,0 +1,45 @@
+// Admin-dashboard API client. Points at the droplet by default. Override
+// via a local `.env.local` with `VITE_API_BASE_URL=http://localhost:8000`
+// when running the backend locally.
+//
+// No auth header is attached today — the super-admin JWT scope doesn't
+// exist yet and /api/admin/overview is intentionally open at the scaffold
+// level (see the SECURITY comment on the backend route). When auth lands,
+// inject an `Authorization: Bearer …` header in the fetch options below.
+const API_BASE_URL =
+  (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
+  "http://178.62.123.228:8000";
+
+export type AdminOverview = {
+  total_customers: number;
+  total_cafes: number;
+  total_stamps_issued: number;
+  total_rewards_redeemed: number;
+};
+
+async function getJSON<T>(path: string): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}${path}`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+    });
+  } catch {
+    throw new Error("Couldn't reach the API — check your connection.");
+  }
+  if (!res.ok) {
+    let detail = `Request failed (${res.status}).`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.detail === "string") detail = body.detail;
+    } catch {
+      // fall through to the generic message
+    }
+    throw new Error(detail);
+  }
+  return (await res.json()) as T;
+}
+
+export function fetchOverview(): Promise<AdminOverview> {
+  return getJSON<AdminOverview>("/api/admin/overview");
+}
