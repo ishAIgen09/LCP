@@ -37,6 +37,23 @@ export type AdminCafe = {
   created_at: string;
 };
 
+export type LedgerEventType = "EARN" | "REDEEM";
+
+export type AdminTransaction = {
+  id: string;
+  created_at: string;
+  event_type: LedgerEventType;
+  stamp_delta: number;
+  customer_id: string;
+  customer_till_code: string;
+  customer_email: string | null;
+  cafe_id: string;
+  cafe_name: string;
+  brand_id: string;
+  brand_name: string;
+  scheme_type: SchemeType;
+};
+
 async function getJSON<T>(path: string): Promise<T> {
   let res: Response;
   try {
@@ -69,4 +86,12 @@ export function fetchOverview(): Promise<AdminOverview> {
 // that requires a brand-admin JWT.
 export function fetchCafes(): Promise<AdminCafe[]> {
   return getJSON<AdminCafe[]>("/api/admin/platform/cafes");
+}
+
+// Platform-wide ledger feed. Default cap of 500 matches the backend's
+// default; pass a larger number up to 5000 for a deeper history pull.
+export function fetchTransactions(limit = 500): Promise<AdminTransaction[]> {
+  return getJSON<AdminTransaction[]>(
+    `/api/admin/platform/transactions?limit=${encodeURIComponent(limit)}`,
+  );
 }

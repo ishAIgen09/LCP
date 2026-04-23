@@ -279,6 +279,25 @@ class AdminPlatformCafeResponse(BaseModel):
     created_at: datetime
 
 
+# One row of the super-admin Transactions table. Flat shape (stamp_ledger
+# joined with users + cafes + brands) so the frontend can render without
+# re-joining client-side. `event_type` drives the Earn/Redeem pill colour,
+# `scheme_type` drives the LCP+/Private pill.
+class AdminTransactionResponse(BaseModel):
+    id: UUID
+    created_at: datetime
+    event_type: str  # 'EARN' | 'REDEEM'  (value of LedgerEventType enum)
+    stamp_delta: int
+    customer_id: UUID
+    customer_till_code: str
+    customer_email: str | None
+    cafe_id: UUID
+    cafe_name: str
+    brand_id: UUID
+    brand_name: str
+    scheme_type: SchemeType
+
+
 class CafeProfile(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -5,15 +5,10 @@ import {
   Loader2,
   Pencil,
   Power,
-  Sparkles,
 } from "lucide-react";
 
-import {
-  fetchCafes,
-  type AdminCafe,
-  type SchemeType,
-  type SubscriptionStatus,
-} from "@/lib/api";
+import { PlanTypePill, StatusPill } from "@/components/Pills";
+import { fetchCafes, type AdminCafe } from "@/lib/api";
 
 export function CafesPage() {
   const [cafes, setCafes] = useState<AdminCafe[] | null>(null);
@@ -222,61 +217,3 @@ function CafeRow({
   );
 }
 
-function PlanTypePill({ scheme }: { scheme: SchemeType }) {
-  if (scheme === "global") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2.5 py-0.5 text-[11px] font-semibold tracking-wide text-amber-300 ring-1 ring-amber-500/30">
-        <Sparkles className="h-3 w-3" strokeWidth={2.4} />
-        LCP+
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center rounded-full bg-neutral-800 px-2.5 py-0.5 text-[11px] font-semibold tracking-wide text-neutral-300 ring-1 ring-neutral-700">
-      Private
-    </span>
-  );
-}
-
-// Tailwind needs literal class-name strings to keep them in the JIT
-// output — keep this lookup inline so every combination lands in the
-// generated CSS.
-const STATUS_STYLES: Record<
-  SubscriptionStatus,
-  { label: string; className: string }
-> = {
-  active: {
-    label: "Active",
-    className:
-      "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30",
-  },
-  trialing: {
-    label: "Trialing",
-    className:
-      "bg-yellow-500/15 text-yellow-300 ring-1 ring-yellow-500/30",
-  },
-  past_due: {
-    label: "Past due",
-    className: "bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/30",
-  },
-  canceled: {
-    label: "Canceled",
-    className:
-      "bg-neutral-800 text-neutral-400 ring-1 ring-neutral-700 line-through",
-  },
-  incomplete: {
-    label: "Incomplete",
-    className: "bg-neutral-800 text-neutral-400 ring-1 ring-neutral-700",
-  },
-};
-
-function StatusPill({ status }: { status: SubscriptionStatus }) {
-  const { label, className } = STATUS_STYLES[status];
-  return (
-    <span
-      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold tracking-wide ${className}`}
-    >
-      {label}
-    </span>
-  );
-}

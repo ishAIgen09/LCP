@@ -62,6 +62,7 @@ from app.schemas import (
     CustomerStatusResponse,
     AdminOverviewResponse,
     AdminPlatformCafeResponse,
+    AdminTransactionResponse,
     MetricsResponse,
     OfferCreate,
     OfferResponse,
@@ -484,6 +485,62 @@ async def platform_cafes(
             created_at=cafe.created_at,
         )
         for cafe, brand in rows
+    ]
+
+
+# SECURITY — unauth'd, same posture as the other /api/admin/platform/*
+# routes. Wrap with Depends(get_super_admin_session) once that role ships.
+#
+# Scannability endpoint for the Super Admin dashboard's Transactions tab:
+# full join of stamp_ledger with user, cafe, brand so the frontend renders
+# one row per ledger event without a client-side re-join.
+#
+# `limit` defaults to 500 — enough headroom for the MVP dataset while
+# keeping the response predictable. Clamped to [1, 5000]; past that
+# we'd want real pagination + cursor-style IDs, which the table UI
+# doesn't exercise yet.
+@app.get(
+    "/api/admin/platform/transactions",
+    response_model=list[AdminTransactionResponse],
+)
+async def platform_transactions(
+    limit: int = 500,
+    session: AsyncSession = Depends(get_session),
+) -> list[AdminTransactionResponse]:
+    safe_limit = max(1, min(limit, 5000))
+    rows = (
+        await session.execute(
+            select(StampLedger, User, Cafe, Brand)
+            .join(User, User.id == StampLedger.customer_id)
+            .join(Cafe, Cafe.id == StampLedger.cafe_id)
+            .join(Brand, Brand.id == Cafe.brand_id)
+            .order_by(StampLedger.created_at.desc())
+            .limit(safe_limit)
+        )
+    ).all()
+    return [
+        AdminTransactionResponse(
+            id=ledger.id,
+            created_at=ledger.created_at,
+            # Enum → raw string value so the frontend can switch on a
+            # plain "EARN"/"REDEEM" literal without importing the enum.
+            event_type=ledger.event_type.value
+            if hasattr(ledger.event_type, "value")
+            else str(ledger.event_type),
+            stamp_delta=ledger.stamp_delta,
+            customer_id=user.id,
+            # CHAR(6) columns can arrive space-padded depending on driver;
+            # strip defensively so the UI never shows "JFOEBE " with a
+            # trailing gap in monospace cells.
+            customer_till_code=user.till_code.strip(),
+            customer_email=user.email,
+            cafe_id=cafe.id,
+            cafe_name=cafe.name,
+            brand_id=brand.id,
+            brand_name=brand.name,
+            scheme_type=brand.scheme_type,
+        )
+        for ledger, user, cafe, brand in rows
     ]
 
 
