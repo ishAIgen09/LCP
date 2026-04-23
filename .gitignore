@@ -4,5 +4,6 @@ __pycache__/
 
 # Build artifacts / dependencies / local-only docs
 node_modules/
+dist/
 *.tsbuildinfo
 MEMORY.md
