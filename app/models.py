@@ -39,6 +39,11 @@ class SubscriptionStatus(str, enum.Enum):
     PAST_DUE = "past_due"
     CANCELED = "canceled"
     INCOMPLETE = "incomplete"
+    # Added 2026-04-23 (migration 0013). A cafe whose admin has clicked
+    # "Cancel plan" but whose current billing cycle hasn't ended yet —
+    # still paying, still live on the consumer app. Only transitions to
+    # CANCELED at period-end (sweeper job, TBD).
+    PENDING_CANCELLATION = "pending_cancellation"
 
 
 class SchemeType(str, enum.Enum):
@@ -85,7 +90,9 @@ class Brand(Base):
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     slug: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    contact_email: Mapped[str] = mapped_column(Text, nullable=False)
+    # Unique index enforced by migration 0014. Login routes look up the
+    # brand by email; duplicates would make admin_login ambiguous.
+    contact_email: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     scheme_type: Mapped[SchemeType] = mapped_column(
         scheme_type_enum,
         nullable=False,

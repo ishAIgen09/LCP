@@ -24,7 +24,8 @@ export type SubscriptionStatus =
   | "active"
   | "past_due"
   | "canceled"
-  | "incomplete";
+  | "incomplete"
+  | "pending_cancellation";
 
 export type AdminCafe = {
   id: string;
@@ -34,7 +35,21 @@ export type AdminCafe = {
   brand_name: string;
   scheme_type: SchemeType;
   subscription_status: SubscriptionStatus;
+  billing_status: SubscriptionStatus;
   created_at: string;
+};
+
+export type CafeStatsRange = "7d" | "30d" | "ytd" | "all";
+
+export type CafeStats = {
+  cafe_id: string;
+  cafe_name: string;
+  range: CafeStatsRange;
+  range_start: string | null;
+  range_end: string;
+  stamps_issued: number;
+  rewards_redeemed: number;
+  net_roi_pence: number;
 };
 
 export type LedgerEventType = "EARN" | "REDEEM";
@@ -130,8 +145,53 @@ export function fetchOverview(): Promise<AdminOverview> {
 // Platform-wide cafe list. Namespaced under /api/admin/platform/ because
 // /api/admin/cafes is already taken by the brand-scoped B2B endpoint
 // that requires a brand-admin JWT.
-export function fetchCafes(): Promise<AdminCafe[]> {
-  return getJSON<AdminCafe[]>("/api/admin/platform/cafes");
+
+export type CafeJoinedWindow = "last_7_days" | "last_30_days" | "all";
+
+export type CafeListFilter = {
+  status?: SubscriptionStatus | "all"; // "all" or unset → no filter
+  joined?: CafeJoinedWindow;
+};
+
+export function fetchCafes(filter?: CafeListFilter): Promise<AdminCafe[]> {
+  const params = new URLSearchParams();
+  if (filter?.status && filter.status !== "all") {
+    params.set("status", filter.status);
+  }
+  if (filter?.joined && filter.joined !== "all") {
+    params.set("joined", filter.joined);
+  }
+  const qs = params.toString();
+  return getJSON<AdminCafe[]>(
+    `/api/admin/platform/cafes${qs ? `?${qs}` : ""}`,
+  );
+}
+
+export type AdminBrand = {
+  id: string;
+  name: string;
+  slug: string;
+  scheme_type: SchemeType;
+  subscription_status: SubscriptionStatus;
+  // Brand responses vary across endpoints (some snake, some camel);
+  // this type covers the shape of POST /platform/brands.
+};
+
+export function createBrand(body: {
+  name: string;
+  scheme_type: SchemeType;
+  contact_email: string;
+}): Promise<AdminBrand> {
+  return sendJSON<AdminBrand>("POST", "/api/admin/platform/brands", body);
+}
+
+export function createPlatformCafe(body: {
+  brand_id: string;
+  name: string;
+  address: string;
+  store_number?: string;
+}): Promise<AdminCafe> {
+  return sendJSON<AdminCafe>("POST", "/api/admin/platform/cafes", body);
 }
 
 // Platform-wide ledger feed. Default cap of 500 matches the backend's
@@ -181,4 +241,23 @@ export function setCafeBillingStatus(
     `/api/admin/platform/cafes/${encodeURIComponent(cafeId)}/billing-status`,
     { status },
   );
+}
+
+export function fetchCafeStats(
+  cafeId: string,
+  range: CafeStatsRange,
+): Promise<CafeStats> {
+  return getJSON<CafeStats>(
+    `/api/admin/platform/cafes/${encodeURIComponent(
+      cafeId,
+    )}/stats?range=${encodeURIComponent(range)}`,
+  );
+}
+
+export type AiAgentReply = { reply: string };
+
+export function postAiAgent(message: string): Promise<AiAgentReply> {
+  return sendJSON<AiAgentReply>("POST", "/api/admin/platform/ai-agent", {
+    message,
+  });
 }

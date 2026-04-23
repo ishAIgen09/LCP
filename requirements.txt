@@ -9,3 +9,4 @@ python-dotenv
 stripe
 pyjwt
 bcrypt
+openai

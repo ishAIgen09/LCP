@@ -285,7 +285,12 @@ function BillingRow({
   isLast: boolean;
   onCancel: () => void;
 }) {
-  const disabled = row.billing_status === "canceled";
+  // Cancel button is disabled once the cafe is already out of "can still
+  // cancel" territory — either mid-grace-period (pending_cancellation)
+  // or fully expired (canceled).
+  const disabled =
+    row.billing_status === "canceled" ||
+    row.billing_status === "pending_cancellation";
   return (
     <tr
       className={
@@ -311,8 +316,8 @@ function BillingRow({
       </td>
       <td className="px-5 py-3 whitespace-nowrap text-neutral-400 tabular-nums">
         {CYCLE_FORMATTER.format(mockCycleEnd(row.cafe_id))}
-        {row.billing_status === "canceled" ? (
-          <div className="mt-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-rose-400">
+        {row.billing_status === "pending_cancellation" ? (
+          <div className="mt-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-orange-400">
             Grace period
           </div>
         ) : null}
@@ -422,7 +427,14 @@ function CancelPlanDialog({
     setBusy(true);
     setError(null);
     try {
-      const updated = await setCafeBillingStatus(row.cafe_id, "canceled");
+      // Cancel-at-period-end policy (see memory): flip to the grace-period
+      // status, not the fully-finished `canceled`. The cafe keeps paying +
+      // keeps serving customers until their billing cycle ends; a
+      // period-end sweep would later transition them to `canceled`.
+      const updated = await setCafeBillingStatus(
+        row.cafe_id,
+        "pending_cancellation",
+      );
       onCancelled(updated);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to cancel plan.");
@@ -436,11 +448,13 @@ function CancelPlanDialog({
       onDismiss={busy ? () => undefined : onDismiss}
     >
       <div className="px-5 py-4 text-sm leading-6 text-neutral-300">
-        Cancel billing for{" "}
-        <span className="font-semibold text-neutral-100">{row.cafe_name}</span>
-        ? {GBP.format(row.monthly_rate_pence / 100)}/mo will drop out of
-        platform MRR immediately. The cafe itself and its ledger history are
-        untouched — this flips the billing flag only.
+        Mark{" "}
+        <span className="font-semibold text-neutral-100">{row.cafe_name}</span>{" "}
+        as pending cancellation? They&apos;ll keep billing at{" "}
+        {GBP.format(row.monthly_rate_pence / 100)}/mo and stay live on the
+        consumer app until their cycle ends — then the period-end job flips
+        them to canceled and MRR drops. Ledger history is untouched either
+        way.
       </div>
 
       {error ? (

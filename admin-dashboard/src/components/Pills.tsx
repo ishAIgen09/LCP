@@ -56,6 +56,13 @@ const STATUS_STYLES: Record<
     label: "Incomplete",
     className: "bg-neutral-800 text-neutral-400 ring-1 ring-neutral-700",
   },
+  // Cancel-at-period-end grace window. Warning orange — brighter than the
+  // billing-finished gray "Canceled" because admins still need to act on
+  // these (reach out, retention offer) before they actually go dark.
+  pending_cancellation: {
+    label: "Pending Cancellation",
+    className: "bg-orange-500/15 text-orange-300 ring-1 ring-orange-500/30",
+  },
   suspended: {
     label: "Suspended",
     className: "bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/30",

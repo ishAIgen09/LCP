@@ -246,6 +246,21 @@ class CafeScans(BaseModel):
 
 
 class MetricsResponse(BaseModel):
+    # Range-filtered aggregates. `range` echoes the query param back so the
+    # frontend can correlate a render against the request that produced
+    # it. `cafe_id` is either the literal string "all" or the UUID that
+    # was filtered to — kept as a string to keep the echo shape simple.
+    range: str
+    cafe_id: str
+    total_earned: int
+    total_redeemed: int
+    # EARN count in the matched prior window of the same length, used for
+    # the top card's delta %. Null when range="all" (nothing to compare).
+    prev_total_earned: int | None = None
+
+    # Legacy 30d-wide brand-level fields — stay constant regardless of
+    # the filter so the "Top performing branches" card keeps a stable
+    # 30d backdrop even when the user narrows the top-card filter.
     total_scans_30d: int
     total_scans_prev_30d: int
     active_cafes: int
@@ -275,7 +290,14 @@ class AdminPlatformCafeResponse(BaseModel):
     brand_id: UUID
     brand_name: str
     scheme_type: SchemeType
+    # Brand-level Stripe subscription status. Historically the only status
+    # the Cafes tab showed.
     subscription_status: SubscriptionStatus
+    # Cafe-level billing state (migration 0012). Separate from the brand's
+    # Stripe status — this is what the super-admin flips to cancel a
+    # single location. Drives the "Pending Cancellation" + "Canceled"
+    # pills on the Cafes tab.
+    billing_status: SubscriptionStatus
     created_at: datetime
 
 
@@ -364,6 +386,59 @@ class AdminBillingResponse(BaseModel):
 
 class UpdateCafeBillingStatusRequest(BaseModel):
     status: SubscriptionStatus
+
+
+# Cafe ROI dossier for the super-admin Cafes drill-down. `stamps_issued`
+# and `rewards_redeemed` are raw ledger counts scoped to the requested
+# date window. `net_roi_pence` is the mock monetary delta — each stamp
+# proxies a paid drink, each redemption proxies a free drink. The drink
+# value is a platform-wide mock constant (see ASSUMED_DRINK_PENCE in
+# main.py). Swap for real per-cafe average ticket when that data lands.
+class CafeStatsResponse(BaseModel):
+    cafe_id: UUID
+    cafe_name: str
+    range: str
+    range_start: datetime | None
+    range_end: datetime
+    stamps_issued: int
+    rewards_redeemed: int
+    net_roi_pence: int
+
+
+# POST body for the super-admin AI chat widget. One-shot for now — no
+# conversation history (the frontend can echo prior turns into `message`
+# when we need context). Keeping the shape simple buys us freedom to
+# swap the backend implementation (rule-based → LLM → SQL-agent) without
+# touching the wire protocol.
+class AiAgentRequest(BaseModel):
+    message: str
+
+
+class AiAgentResponse(BaseModel):
+    reply: str
+
+
+# POST body for manually creating a new brand from the super-admin
+# dashboard. Skips the usual Stripe-Checkout-on-signup flow — brand
+# lands with `subscription_status='incomplete'` and no password_hash,
+# so the brand owner can't log in until the password is set via another
+# path. That's intentional: this route is an admin override for
+# provisioning, not a replacement for self-service onboarding.
+class AdminCreateBrandRequest(BaseModel):
+    name: str
+    scheme_type: SchemeType
+    contact_email: str
+
+
+# POST body for adding a cafe to an existing brand via the super-admin
+# dashboard. `store_number` auto-generated server-side when omitted —
+# six A-Z0-9 chars, unique across the cafes table (matches the existing
+# `store_number_format` CHECK regex ^[A-Z0-9]{3,10}$).
+class AdminCreateCafeRequest(BaseModel):
+    brand_id: UUID
+    name: str
+    address: str
+    store_number: str | None = None
 
 
 class CafeProfile(BaseModel):

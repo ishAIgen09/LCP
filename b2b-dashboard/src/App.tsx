@@ -273,6 +273,7 @@ function App() {
                 brand={brand}
                 cafes={cafes}
                 metrics={metrics}
+                token={session.token}
                 onNavigate={setNav}
               />
             )}

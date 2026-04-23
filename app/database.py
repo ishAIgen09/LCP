@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     # before any non-local deploy.
     cors_origins: str = "*"
 
+    # Super-admin AI assistant. Optional: if unset the /ai-agent endpoint
+    # returns a friendly "add your key" message instead of a 500, so the
+    # widget stays usable during early dev without a paid key on hand.
+    # Model is kept configurable so we can swap between gpt-4o-mini,
+    # gpt-3.5-turbo, or a future cheaper option without code changes.
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-4o-mini"
+
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 

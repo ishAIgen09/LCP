@@ -127,7 +127,23 @@ type ApiBrand = {
   company_registration_number?: string | null
 }
 
+export type MetricsRange = "7d" | "30d" | "ytd" | "all"
+
+export type MetricsFilter = {
+  cafeId?: string // "all" or a specific cafe UUID; defaults to "all"
+  range?: MetricsRange // defaults to "30d"
+}
+
 export type ApiMetrics = {
+  // Echoes of the request so a render can correlate to the query that
+  // produced it — useful when filter changes overlap in-flight fetches.
+  range: MetricsRange
+  cafe_id: string
+  // Range-filtered aggregates.
+  total_earned: number
+  total_redeemed: number
+  prev_total_earned: number | null
+  // Legacy brand-wide 30d fields — stable regardless of filter.
   total_scans_30d: number
   total_scans_prev_30d: number
   active_cafes: number
@@ -296,12 +312,18 @@ export async function getAdminMe(
   return { admin: raw.admin, brand: brandFromApi(raw.brand) }
 }
 
-export async function getAdminMetrics(token: string): Promise<ApiMetrics> {
+export async function getAdminMetrics(
+  token: string,
+  filter?: MetricsFilter,
+): Promise<ApiMetrics> {
+  const range = filter?.range ?? "30d"
+  const cafeId = filter?.cafeId ?? "all"
+  const qs = `?range=${encodeURIComponent(range)}&cafe_id=${encodeURIComponent(cafeId)}`
   return request<ApiMetrics>(
     "GET",
-    "/api/admin/metrics",
+    `/api/admin/metrics${qs}`,
     undefined,
-    authHeader(token)
+    authHeader(token),
   )
 }
 

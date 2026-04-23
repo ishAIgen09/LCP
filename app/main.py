@@ -17,7 +17,7 @@ for _stream in (sys.stdout, sys.stderr):
             # Non-reconfigurable stream (e.g. redirected to a non-text sink).
             pass
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
@@ -63,10 +63,15 @@ from app.schemas import (
     AdjustStampsRequest,
     AdminBillingResponse,
     AdminBillingRow,
+    AdminCreateBrandRequest,
+    AdminCreateCafeRequest,
     AdminCustomerResponse,
     AdminOverviewResponse,
     AdminPlatformCafeResponse,
     AdminTransactionResponse,
+    AiAgentRequest,
+    AiAgentResponse,
+    CafeStatsResponse,
     SuspendCustomerRequest,
     UpdateCafeBillingStatusRequest,
     MetricsResponse,
@@ -348,11 +353,49 @@ async def update_admin_brand(
     return brand
 
 
+_METRICS_RANGES = {"7d", "30d", "ytd", "all"}
+
+
+def _metrics_range_bounds(
+    range_key: str, now: datetime
+) -> tuple[datetime | None, datetime | None, datetime | None]:
+    """Return (window_start, prev_window_start, prev_window_end).
+
+    For a window of known length, the previous comparison window is the
+    matched prior period. For "all" there's no lower bound and no
+    meaningful prior window.
+    """
+    if range_key == "7d":
+        start = now - timedelta(days=7)
+        return start, start - timedelta(days=7), start
+    if range_key == "30d":
+        start = now - timedelta(days=30)
+        return start, start - timedelta(days=30), start
+    if range_key == "ytd":
+        start = datetime(now.year, 1, 1, tzinfo=now.tzinfo)
+        # YTD prev = same fraction of the previous year. Good apples-to-
+        # apples for "how are we pacing vs. last year at this point".
+        prev_year_same_point = datetime(
+            now.year - 1, now.month, now.day, tzinfo=now.tzinfo
+        )
+        prev_year_start = datetime(now.year - 1, 1, 1, tzinfo=now.tzinfo)
+        return start, prev_year_start, prev_year_same_point
+    return None, None, None
+
+
 @app.get("/api/admin/metrics", response_model=MetricsResponse)
 async def admin_metrics(
+    range: str = Query("30d"),
+    cafe_id: str = Query("all"),
     admin: AdminSession = Depends(get_admin_session),
     session: AsyncSession = Depends(get_session),
 ) -> MetricsResponse:
+    if range not in _METRICS_RANGES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="range must be one of: 7d, 30d, ytd, all.",
+        )
+
     brand = await session.get(Brand, admin.brand_id)
     if brand is None:
         raise HTTPException(
@@ -360,7 +403,76 @@ async def admin_metrics(
             detail="Admin session references an unknown brand.",
         )
 
+    # Row-level security: if a specific cafe_id is requested, it MUST
+    # belong to this admin's brand. Anything else → 404 (not 403 — we
+    # don't want to leak the existence of another brand's cafe).
+    scoped_cafe_id: UUID | None = None
+    if cafe_id != "all":
+        try:
+            scoped_cafe_id = UUID(cafe_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="cafe_id must be 'all' or a valid UUID.",
+            )
+        owned = (
+            await session.execute(
+                select(Cafe.id)
+                .where(Cafe.id == scoped_cafe_id)
+                .where(Cafe.brand_id == admin.brand_id)
+            )
+        ).scalar_one_or_none()
+        if owned is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Cafe not found for this brand.",
+            )
+
     now = datetime.now(timezone.utc)
+    window_start, prev_start, prev_end = _metrics_range_bounds(range, now)
+
+    # Helper to build a scoped ledger-count query. Applies brand RLS via
+    # the Cafe join + either the brand_id filter or the specific cafe_id
+    # if one was requested.
+    def _scoped_count(
+        event: LedgerEventType,
+        start: datetime | None,
+        end: datetime | None,
+    ):
+        q = (
+            select(func.count())
+            .select_from(StampLedger)
+            .join(Cafe, StampLedger.cafe_id == Cafe.id)
+            .where(Cafe.brand_id == admin.brand_id)
+            .where(StampLedger.event_type == event)
+        )
+        if scoped_cafe_id is not None:
+            q = q.where(StampLedger.cafe_id == scoped_cafe_id)
+        if start is not None:
+            q = q.where(StampLedger.created_at >= start)
+        if end is not None:
+            q = q.where(StampLedger.created_at < end)
+        return q
+
+    total_earned = int(
+        (await session.execute(_scoped_count(LedgerEventType.EARN, window_start, now))).scalar_one()
+    )
+    total_redeemed = int(
+        (await session.execute(_scoped_count(LedgerEventType.REDEEM, window_start, now))).scalar_one()
+    )
+    prev_total_earned: int | None = None
+    if prev_start is not None and prev_end is not None:
+        prev_total_earned = int(
+            (
+                await session.execute(
+                    _scoped_count(LedgerEventType.EARN, prev_start, prev_end)
+                )
+            ).scalar_one()
+        )
+
+    # Legacy 30d / brand-wide aggregates — unchanged by the filter so the
+    # "Top performing branches" widget below the KPI cards has a stable
+    # backdrop even when the filter narrows to a single cafe.
     thirty_days_ago = now - timedelta(days=30)
     sixty_days_ago = now - timedelta(days=60)
 
@@ -404,6 +516,11 @@ async def admin_metrics(
     active_cafes = total_cafes if brand.subscription_status == SubscriptionStatus.ACTIVE else 0
 
     return MetricsResponse(
+        range=range,
+        cafe_id=cafe_id,
+        total_earned=total_earned,
+        total_redeemed=total_redeemed,
+        prev_total_earned=prev_total_earned,
         total_scans_30d=total_scans_30d,
         total_scans_prev_30d=total_scans_prev_30d,
         active_cafes=active_cafes,
@@ -466,19 +583,48 @@ async def admin_overview(
 # /api/admin/cafes at line ~407 which requires an admin JWT.
 # Future super-admin endpoints (customers, transactions, billing)
 # should sit under the same /api/admin/platform/* namespace.
+_CAFE_JOINED_WINDOWS = {"last_7_days", "last_30_days", "all"}
+
+
 @app.get("/api/admin/platform/cafes", response_model=list[AdminPlatformCafeResponse])
 async def platform_cafes(
+    status: str | None = Query(None),
+    joined: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> list[AdminPlatformCafeResponse]:
+    # Validate filters up front so a typo gives an actionable 422
+    # instead of silently returning the unfiltered list.
+    if status is not None:
+        try:
+            status_enum = SubscriptionStatus(status)
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail=f"status must be one of: {', '.join(s.value for s in SubscriptionStatus)}.",
+            )
+    else:
+        status_enum = None
+
+    if joined is not None and joined not in _CAFE_JOINED_WINDOWS:
+        raise HTTPException(
+            status_code=422,
+            detail="joined must be one of: last_7_days, last_30_days, all.",
+        )
+
     # Single join pass — the super-admin table needs both sides so we
     # fetch them together instead of N+1-ing brand lookups.
-    rows = (
-        await session.execute(
-            select(Cafe, Brand)
-            .join(Brand, Brand.id == Cafe.brand_id)
-            .order_by(Cafe.name.asc())
-        )
-    ).all()
+    stmt = (
+        select(Cafe, Brand)
+        .join(Brand, Brand.id == Cafe.brand_id)
+        .order_by(Cafe.name.asc())
+    )
+    if status_enum is not None:
+        stmt = stmt.where(Cafe.billing_status == status_enum)
+    if joined == "last_7_days":
+        stmt = stmt.where(Cafe.created_at >= datetime.now(timezone.utc) - timedelta(days=7))
+    elif joined == "last_30_days":
+        stmt = stmt.where(Cafe.created_at >= datetime.now(timezone.utc) - timedelta(days=30))
+    rows = (await session.execute(stmt)).all()
     return [
         AdminPlatformCafeResponse(
             id=cafe.id,
@@ -488,6 +634,7 @@ async def platform_cafes(
             brand_name=brand.name,
             scheme_type=brand.scheme_type,
             subscription_status=brand.subscription_status,
+            billing_status=cafe.billing_status,
             created_at=cafe.created_at,
         )
         for cafe, brand in rows
@@ -829,7 +976,13 @@ async def platform_billing(
                 monthly_rate_pence=rate,
             )
         )
-        if cafe.billing_status == SubscriptionStatus.ACTIVE:
+        # Cafes in pending_cancellation are still paying through the
+        # grace period (cancel-at-period-end policy) — they keep counting
+        # toward MRR. Only `canceled` actually drops revenue.
+        if cafe.billing_status in (
+            SubscriptionStatus.ACTIVE,
+            SubscriptionStatus.PENDING_CANCELLATION,
+        ):
             total_mrr += rate
             active_count += 1
     return AdminBillingResponse(
@@ -879,6 +1032,376 @@ async def set_cafe_billing_status(
         monthly_rate_pence=BILLING_RATE_PENCE_BY_SCHEME.get(
             brand.scheme_type, 0
         ),
+    )
+
+
+# Monetary value of a single drink, used by the cafe-stats dossier to
+# turn ledger counts into a rough £ ROI figure. Platform-wide mock; the
+# real number is per-cafe average ticket which we don't store yet.
+ASSUMED_DRINK_PENCE = 350
+
+
+# Date-range aliases the stats endpoint accepts. Values double as the
+# frontend's segmented control ids.
+_STATS_RANGES = {"7d", "30d", "ytd", "all"}
+
+
+def _range_start(range_key: str, now: datetime) -> datetime | None:
+    if range_key == "7d":
+        return now - timedelta(days=7)
+    if range_key == "30d":
+        return now - timedelta(days=30)
+    if range_key == "ytd":
+        return datetime(now.year, 1, 1, tzinfo=now.tzinfo)
+    # "all" → None → no lower bound in the WHERE clause
+    return None
+
+
+# SECURITY — unauth'd, same posture as the other /api/admin/platform/*
+# routes. Wrap with a super-admin dependency when that role ships.
+#
+# Cafe ROI dossier for the super-admin Cafes drill-down. Returns ledger
+# totals within the selected date window (7d, 30d, ytd, all), plus a
+# mock monetary net ROI = (stamps - rewards) × ASSUMED_DRINK_PENCE.
+#
+# Using count(*) on stamp_ledger is safe because the CHECK constraint
+# fixes every EARN row at +1 and every REDEEM row at -10, so a count by
+# event_type IS the signed aggregate we want.
+#
+# Namespaced under /api/admin/platform/ to avoid clashing with the
+# brand-scoped /api/admin/cafes/{id} which requires a brand-admin JWT.
+@app.get(
+    "/api/admin/platform/cafes/{cafe_id}/stats",
+    response_model=CafeStatsResponse,
+)
+async def platform_cafe_stats(
+    cafe_id: UUID,
+    range: str = Query("30d"),
+    session: AsyncSession = Depends(get_session),
+) -> CafeStatsResponse:
+    if range not in _STATS_RANGES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="range must be one of: 7d, 30d, ytd, all.",
+        )
+    cafe = await session.get(Cafe, cafe_id)
+    if cafe is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Cafe not found."
+        )
+
+    now = datetime.now(timezone.utc)
+    start = _range_start(range, now)
+
+    earn_q = (
+        select(func.count())
+        .select_from(StampLedger)
+        .where(StampLedger.cafe_id == cafe_id)
+        .where(StampLedger.event_type == LedgerEventType.EARN)
+    )
+    redeem_q = (
+        select(func.count())
+        .select_from(StampLedger)
+        .where(StampLedger.cafe_id == cafe_id)
+        .where(StampLedger.event_type == LedgerEventType.REDEEM)
+    )
+    if start is not None:
+        earn_q = earn_q.where(StampLedger.created_at >= start)
+        redeem_q = redeem_q.where(StampLedger.created_at >= start)
+    earn_q = earn_q.where(StampLedger.created_at <= now)
+    redeem_q = redeem_q.where(StampLedger.created_at <= now)
+
+    stamps_issued = int((await session.execute(earn_q)).scalar_one())
+    rewards_redeemed = int((await session.execute(redeem_q)).scalar_one())
+    net_roi_pence = (stamps_issued - rewards_redeemed) * ASSUMED_DRINK_PENCE
+
+    return CafeStatsResponse(
+        cafe_id=cafe.id,
+        cafe_name=cafe.name,
+        range=range,
+        range_start=start,
+        range_end=now,
+        stamps_issued=stamps_issued,
+        rewards_redeemed=rewards_redeemed,
+        net_roi_pence=net_roi_pence,
+    )
+
+
+# System prompt for the super-admin AI assistant. Intentionally lean:
+# gives the model just enough schema context to answer questions about
+# platform revenue, cafe ROI, and user behaviour in LCP's language
+# without burning tokens on trivia. If/when we hand the model real SQL
+# execution tools, tighten this further — don't expand it.
+_AI_AGENT_SYSTEM_PROMPT = """You are the LCP Data Assistant, an in-dashboard analyst for \
+Local Coffee Perks (LCP) — a coffee-shop loyalty platform where customers \
+earn stamps at cafes and redeem a free drink every 10 stamps.
+
+Platform shape:
+- Brands (`brands`): coffee businesses on LCP. Either `scheme_type='global'` \
+(LCP+ shared network) or `'private'` (walled-garden). Stripe-backed \
+billing at per-brand level.
+- Cafes (`cafes`): individual locations belonging to a brand. Each cafe has \
+its own `billing_status` (active / pending_cancellation / canceled / etc.) \
+which drives MRR attribution in the super-admin Billing tab.
+- Users (`users`): end consumers. Identified by a 6-character `till_code`. \
+Can be soft-suspended via `is_suspended`.
+- Stamp ledger (`stamp_ledger`): append-only row-per-stamp record. \
+`event_type='EARN'` gives +1; `event_type='REDEEM'` consumes -10 (one free \
+drink). Counts by event_type are the canonical source of truth.
+- Global ledger (`global_ledger`): row-per-transaction shadow of the stamp \
+ledger for reporting — includes quantities and action labels.
+
+When the admin asks about revenue, refer to MRR conceptually (the Billing \
+tab sums active + pending_cancellation cafes at their scheme-based rate). \
+When they ask about ROI or retention, reason from ledger event counts, not \
+monetary figures, since cafes don't report ticket values.
+
+Answer concisely. One to three short paragraphs max. If a question would \
+require running SQL, say so and describe the query you'd run — you don't \
+have live DB access yet, just schema context."""
+
+
+# Lazy-initialised OpenAI client. A module-level singleton would couple
+# import order to the env var, which is brittle when the key lands via
+# .env and gets reloaded. Build on first use instead.
+_openai_client = None
+
+
+def _get_openai_client():
+    global _openai_client
+    if _openai_client is None:
+        if not settings.openai_api_key:
+            return None
+        from openai import AsyncOpenAI
+
+        _openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+    return _openai_client
+
+
+# SECURITY — unauth'd, same posture as the other /api/admin/platform/*
+# routes. When the SQL-agent tool-use lands this MUST be wrapped in a
+# super-admin dependency before it sees prod.
+#
+# Super-admin AI chat. One-shot for now (no conversation history) — the
+# frontend widget maintains its own transcript; we accept a single
+# `message` and return a single `reply`. Modular on purpose: swapping
+# OpenAI for Anthropic/Gemini/etc. is a one-file change here.
+@app.post(
+    "/api/admin/platform/ai-agent",
+    response_model=AiAgentResponse,
+)
+async def platform_ai_agent(payload: AiAgentRequest) -> AiAgentResponse:
+    if not payload.message or not payload.message.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="message must be a non-empty string.",
+        )
+
+    client = _get_openai_client()
+    if client is None:
+        # Deliberately returned as a 200 with a reply string rather than a
+        # 5xx — the frontend treats this as a normal assistant message and
+        # the admin can act on it (add the key, hit retry).
+        return AiAgentResponse(
+            reply="Please add your OPENAI_API_KEY to the backend .env file to activate the assistant."
+        )
+
+    try:
+        completion = await client.chat.completions.create(
+            model=settings.openai_model,
+            messages=[
+                {"role": "system", "content": _AI_AGENT_SYSTEM_PROMPT},
+                {"role": "user", "content": payload.message.strip()},
+            ],
+            # Conservative output budget — the system prompt invites
+            # short answers, so a high cap is waste.
+            max_completion_tokens=600,
+            temperature=0.2,
+        )
+        reply = (completion.choices[0].message.content or "").strip()
+        if not reply:
+            reply = "(the assistant returned an empty response — try rephrasing.)"
+        return AiAgentResponse(reply=reply)
+    except Exception as exc:  # noqa: BLE001 — any SDK error maps to one message
+        # Surface the provider error to the admin rather than hiding it.
+        # The super-admin dashboard is the one consumer; they can read it.
+        return AiAgentResponse(
+            reply=f"The assistant hit an error: {type(exc).__name__}: {exc}"
+        )
+
+
+# Generate a 6-char uppercase alphanumeric store_number that satisfies
+# the `store_number_format` CHECK (^[A-Z0-9]{3,10}$) and is unique
+# across the cafes table. Retries on collision; gives up after a handful
+# of tries rather than looping forever.
+_STORE_NUMBER_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+
+async def _allocate_store_number(session: AsyncSession, max_attempts: int = 20) -> str:
+    for _ in range(max_attempts):
+        candidate = "".join(
+            secrets.choice(_STORE_NUMBER_ALPHABET) for _ in range(6)
+        )
+        existing = (
+            await session.execute(
+                select(Cafe.id).where(Cafe.store_number == candidate)
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            return candidate
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Could not allocate a unique store number — try again.",
+    )
+
+
+# SECURITY — unauth'd, same posture as other /api/admin/platform/*
+# routes. Wrap with super-admin dependency before any prod exposure.
+#
+# Manually provision a brand from the super-admin dashboard. Bypasses
+# the usual signup-then-Stripe-Checkout flow — lands with
+# `subscription_status='incomplete'` and no password_hash, so the brand
+# owner can't log in until a password is set through another path.
+# Admin-override endpoint; not a replacement for self-service signup.
+@app.post(
+    "/api/admin/platform/brands",
+    response_model=BrandResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def platform_create_brand(
+    payload: AdminCreateBrandRequest,
+    session: AsyncSession = Depends(get_session),
+) -> Brand:
+    name = payload.name.strip()
+    contact_email = payload.contact_email.strip().lower()
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Brand name must not be empty.",
+        )
+    if not contact_email or "@" not in contact_email:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="contact_email must be a valid email address.",
+        )
+
+    # Allocate a unique slug: base from name, suffix on collision.
+    base_slug = _slugify(name)
+    slug: str | None = None
+    for i in range(1, 50):
+        candidate = base_slug if i == 1 else f"{base_slug}-{i}"
+        collision = (
+            await session.execute(select(Brand.id).where(Brand.slug == candidate))
+        ).scalar_one_or_none()
+        if collision is None:
+            slug = candidate
+            break
+    if slug is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Could not allocate a unique brand slug.",
+        )
+
+    brand = Brand(
+        name=name,
+        slug=slug,
+        contact_email=contact_email,
+        scheme_type=payload.scheme_type,
+    )
+    session.add(brand)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A brand with that email or slug already exists.",
+        )
+    await session.refresh(brand)
+    return brand
+
+
+# SECURITY — unauth'd, same posture as other /api/admin/platform/*.
+#
+# Manually add a cafe to an existing brand. Differs from the brand-scoped
+# `POST /api/admin/cafes` (which uses the admin JWT's brand_id): this
+# one takes an explicit `brand_id` so a super-admin can provision
+# cafes for any brand. Auto-allocates store_number + slug; does NOT
+# touch Stripe (no sync_subscription_quantity call — that's a
+# brand-scoped ops path).
+@app.post(
+    "/api/admin/platform/cafes",
+    response_model=AdminPlatformCafeResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def platform_create_cafe(
+    payload: AdminCreateCafeRequest,
+    session: AsyncSession = Depends(get_session),
+) -> AdminPlatformCafeResponse:
+    name = payload.name.strip()
+    address = payload.address.strip()
+    if not name or not address:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="name and address must not be empty.",
+        )
+    brand = await session.get(Brand, payload.brand_id)
+    if brand is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Brand not found."
+        )
+
+    if payload.store_number is not None:
+        store_number = payload.store_number.strip().upper()
+        if not re.fullmatch(r"[A-Z0-9]{3,10}", store_number):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="store_number must be 3-10 uppercase alphanumerics.",
+            )
+        collision = (
+            await session.execute(
+                select(Cafe.id).where(Cafe.store_number == store_number)
+            )
+        ).scalar_one_or_none()
+        if collision is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Store number '{store_number}' is already in use.",
+            )
+    else:
+        store_number = await _allocate_store_number(session)
+
+    base_slug = f"{brand.slug}-{_slugify(name)}"
+    slug = await _unique_cafe_slug(session, base_slug)
+
+    cafe = Cafe(
+        brand_id=brand.id,
+        name=name,
+        slug=slug,
+        address=address,
+        contact_email=brand.contact_email,
+        store_number=store_number,
+    )
+    session.add(cafe)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A cafe with that identifier already exists.",
+        )
+    await session.refresh(cafe)
+    return AdminPlatformCafeResponse(
+        id=cafe.id,
+        name=cafe.name,
+        address=cafe.address,
+        brand_id=brand.id,
+        brand_name=brand.name,
+        scheme_type=brand.scheme_type,
+        subscription_status=brand.subscription_status,
+        billing_status=cafe.billing_status,
+        created_at=cafe.created_at,
     )
 
 

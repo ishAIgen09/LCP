@@ -1,5 +1,6 @@
 import { Outlet } from "react-router-dom";
 
+import { ChatWidget } from "@/components/ChatWidget";
 import { Sidebar } from "@/components/Sidebar";
 
 export function DashboardLayout() {
@@ -13,6 +14,9 @@ export function DashboardLayout() {
           <Outlet />
         </div>
       </main>
+      {/* Floating LCP Data Assistant — positioned fixed inside its own
+          component, persists across every tab. */}
+      <ChatWidget />
     </div>
   );
 }

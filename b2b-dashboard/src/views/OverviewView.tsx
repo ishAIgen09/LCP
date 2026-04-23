@@ -1,17 +1,23 @@
-import { Scan, Store, Sparkles, ArrowUpRight } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
+import { Scan, Store, Sparkles, Gift, ArrowUpRight, MapPin, CalendarClock } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { MetricCard } from "@/components/MetricCard"
 import type { NavKey } from "@/components/Sidebar"
 import type { Brand, Cafe } from "@/lib/mock"
-import type { ApiMetrics } from "@/lib/api"
+import {
+  getAdminMetrics,
+  type ApiMetrics,
+  type MetricsFilter,
+  type MetricsRange,
+} from "@/lib/api"
 
 function formatNumber(n: number) {
   return n.toLocaleString("en-GB")
 }
 
-function computeDelta(current: number, prev: number): number | undefined {
-  if (prev <= 0) return undefined
+function computeDelta(current: number, prev: number | null | undefined): number | undefined {
+  if (prev === null || prev === undefined || prev <= 0) return undefined
   const pct = ((current - prev) / prev) * 100
   return Math.round(pct * 10) / 10
 }
@@ -23,47 +29,167 @@ function formatRenewalLabel(iso: string | null | undefined): string {
   return `Renews ${d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`
 }
 
+type RangeOption = { id: MetricsRange; label: string; unit: string }
+const RANGE_OPTIONS: RangeOption[] = [
+  { id: "7d", label: "Last 7 Days", unit: "last 7 days" },
+  { id: "30d", label: "Last 30 Days", unit: "last 30 days" },
+  { id: "ytd", label: "Year to Date", unit: "year to date" },
+  { id: "all", label: "All Time", unit: "all time" },
+]
+
+// Count-up animation for the KPI numbers. Ramps from the previous value
+// to the target over ~500ms with requestAnimationFrame; first render
+// snaps directly (no 0→N flash on initial mount).
+function useCountUp(target: number, durationMs = 500): number {
+  const [display, setDisplay] = useState(target)
+  const prevRef = useRef(target)
+  const rafRef = useRef<number | null>(null)
+  const mountedRef = useRef(false)
+
+  useEffect(() => {
+    if (!mountedRef.current) {
+      // First paint — snap, don't animate.
+      mountedRef.current = true
+      prevRef.current = target
+      setDisplay(target)
+      return
+    }
+    const start = prevRef.current
+    const delta = target - start
+    if (delta === 0) return
+    const startTs = performance.now()
+    const step = (ts: number) => {
+      const elapsed = ts - startTs
+      const t = Math.min(1, elapsed / durationMs)
+      // easeOutCubic — feels snappy without overshoot.
+      const eased = 1 - Math.pow(1 - t, 3)
+      const next = Math.round(start + delta * eased)
+      setDisplay(next)
+      if (t < 1) {
+        rafRef.current = requestAnimationFrame(step)
+      } else {
+        prevRef.current = target
+      }
+    }
+    rafRef.current = requestAnimationFrame(step)
+    return () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
+    }
+  }, [target, durationMs])
+
+  return display
+}
+
 export function OverviewView({
   brand,
   cafes,
   metrics,
+  token,
   onNavigate,
 }: {
   brand: Brand
   cafes: Cafe[]
+  // App-level metrics (always 30d / all-cafes). Feeds the "Top
+  // performing branches" backdrop and the initial KPI render before the
+  // filter-scoped refetch lands.
   metrics: ApiMetrics | null
+  token: string
   onNavigate: (nav: NavKey) => void
 }) {
-  const totalScans = metrics?.total_scans_30d ?? 0
-  const prevScans = metrics?.total_scans_prev_30d ?? 0
-  // Bind strictly to the fetched list so the top card always agrees with the
-  // cafe cards rendered below. The backend `metrics.active_cafes` can drift
-  // (pre-inspection subscription states, background-refresh timing) so we
-  // pick the view-local truth instead of the server's projection.
+  // Filter state owned locally — App-level metrics stays on 30d/all for
+  // the bottom widget's stability, and this view refetches its own copy
+  // whenever the user narrows the filter.
+  const [filter, setFilter] = useState<MetricsFilter>({
+    cafeId: "all",
+    range: "30d",
+  })
+  const [filtered, setFiltered] = useState<ApiMetrics | null>(null)
+  const [refetchError, setRefetchError] = useState<string | null>(null)
+
+  // Refetch on filter change OR when the App-level metrics arrives
+  // (which signals a fresh session). Always uses the current filter.
+  useEffect(() => {
+    let cancelled = false
+    setRefetchError(null)
+    getAdminMetrics(token, filter)
+      .then((m) => {
+        if (!cancelled) setFiltered(m)
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return
+        setRefetchError(e instanceof Error ? e.message : "Failed to load metrics.")
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [token, filter, metrics])
+
+  // Prefer the filter-scoped values when available. Before the first
+  // filtered fetch lands we fall back to the App-level metrics (always
+  // 30d/all) so the cards never flash empty on initial navigation.
+  const activeMetrics = filtered ?? metrics
+  const rangeOption =
+    RANGE_OPTIONS.find((r) => r.id === (filter.range ?? "30d")) ?? RANGE_OPTIONS[1]
+  const totalEarned = activeMetrics?.total_earned ?? activeMetrics?.total_scans_30d ?? 0
+  const totalRedeemed = activeMetrics?.total_redeemed ?? 0
+  const earnedPrev = activeMetrics?.prev_total_earned ?? null
+  const earnedDelta = computeDelta(totalEarned, earnedPrev)
+
+  const animatedEarned = useCountUp(totalEarned)
+  const animatedRedeemed = useCountUp(totalRedeemed)
+
+  // The "Top performing branches" card always shows the App-level 30d
+  // roster regardless of the filter — the filter is for the KPIs only.
   const branchCount = cafes.length
-
-  const scansDelta = computeDelta(totalScans, prevScans)
-  const loading = metrics === null && cafes.length === 0
-
   const recent = cafes
     .slice()
     .sort((a, b) => b.scansThisMonth - a.scansThisMonth)
     .slice(0, 4)
 
+  const initialLoad = activeMetrics === null
+
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+      <FilterBar
+        filter={filter}
+        onFilterChange={setFilter}
+        cafes={cafes}
+      />
+
+      {refetchError ? (
+        <div className="rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+          {refetchError}
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
         <MetricCard
-          label="Total scans"
-          value={loading ? "—" : formatNumber(totalScans)}
-          unit="last 30 days"
-          delta={scansDelta}
+          label="Total earned"
+          value={initialLoad ? "—" : formatNumber(animatedEarned)}
+          unit={rangeOption.unit}
+          delta={earnedDelta}
+          deltaLabel={
+            filter.range === "ytd"
+              ? "vs. last year YTD"
+              : filter.range === "7d"
+                ? "vs. prior 7 days"
+                : filter.range === "30d"
+                  ? "vs. prior 30 days"
+                  : undefined
+          }
           icon={Scan}
           accent="emerald"
         />
         <MetricCard
+          label="Total redeemed"
+          value={initialLoad ? "—" : formatNumber(animatedRedeemed)}
+          unit="free coffees"
+          icon={Gift}
+          accent="amber"
+        />
+        <MetricCard
           label="Active branches"
-          value={loading ? "—" : String(branchCount)}
+          value={initialLoad ? "—" : String(branchCount)}
           unit={branchCount === 1 ? "location" : "locations"}
           icon={Store}
           accent="violet"
@@ -165,5 +291,89 @@ export function OverviewView({
         </Card>
       </div>
     </div>
+  )
+}
+
+function FilterBar({
+  filter,
+  onFilterChange,
+  cafes,
+}: {
+  filter: MetricsFilter
+  onFilterChange: (next: MetricsFilter) => void
+  cafes: Cafe[]
+}) {
+  const cafeId = filter.cafeId ?? "all"
+  const range = filter.range ?? "30d"
+  return (
+    // Sticky to the top of the scrollable <main>. The negative x/t
+    // margins + full-width padding let the bar break out of the
+    // max-w-6xl container so it covers the edges when scrolled.
+    <div className="sticky -top-6 z-20 -mx-8 mb-2 border-b border-border bg-background/95 px-8 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+      <div className="mx-auto flex max-w-6xl flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+        <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+          <span>Filter</span>
+        </div>
+        <FilterDropdown
+          Icon={MapPin}
+          value={cafeId}
+          onChange={(v) => onFilterChange({ ...filter, cafeId: v })}
+          options={[
+            { value: "all", label: "All Branches" },
+            ...cafes.map((c) => ({ value: c.id, label: c.name })),
+          ]}
+          ariaLabel="Filter by location"
+        />
+        <FilterDropdown
+          Icon={CalendarClock}
+          value={range}
+          onChange={(v) => onFilterChange({ ...filter, range: v as MetricsRange })}
+          options={RANGE_OPTIONS.map((r) => ({ value: r.id, label: r.label }))}
+          ariaLabel="Filter by date range"
+        />
+        {cafeId !== "all" || range !== "30d" ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 text-xs"
+            onClick={() => onFilterChange({ cafeId: "all", range: "30d" })}
+          >
+            Reset
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+function FilterDropdown({
+  Icon,
+  value,
+  onChange,
+  options,
+  ariaLabel,
+}: {
+  Icon: typeof MapPin
+  value: string
+  onChange: (v: string) => void
+  options: { value: string; label: string }[]
+  ariaLabel: string
+}) {
+  return (
+    <label className="group inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:border-foreground/20">
+      <Icon className="h-3.5 w-3.5 text-muted-foreground" strokeWidth={2.2} />
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label={ariaLabel}
+        className="cursor-pointer bg-transparent pr-1 text-xs outline-none"
+      >
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+    </label>
   )
 }
