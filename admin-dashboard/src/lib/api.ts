@@ -54,12 +54,58 @@ export type AdminTransaction = {
   scheme_type: SchemeType;
 };
 
+export type AdminCustomer = {
+  id: string;
+  till_code: string;
+  email: string | null;
+  created_at: string;
+  global_stamps: number;
+  total_private_stamps: number;
+  is_suspended: boolean;
+};
+
+export type AdjustStampsBody = {
+  scheme_type: SchemeType;
+  brand_id: string | null;
+  amount: number;
+};
+
+export type AdminBillingRow = {
+  cafe_id: string;
+  cafe_name: string;
+  brand_id: string;
+  brand_name: string;
+  scheme_type: SchemeType;
+  billing_status: SubscriptionStatus;
+  monthly_rate_pence: number;
+};
+
+export type AdminBilling = {
+  total_mrr_pence: number;
+  active_subscription_count: number;
+  rows: AdminBillingRow[];
+};
+
 async function getJSON<T>(path: string): Promise<T> {
+  return sendJSON<T>("GET", path);
+}
+
+async function sendJSON<T>(
+  method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
+  path: string,
+  body?: unknown,
+): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${API_BASE_URL}${path}`, {
-      method: "GET",
-      headers: { Accept: "application/json" },
+      method,
+      headers: {
+        Accept: "application/json",
+        ...(body !== undefined
+          ? { "Content-Type": "application/json" }
+          : null),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch {
     throw new Error("Couldn't reach the API — check your connection.");
@@ -67,8 +113,8 @@ async function getJSON<T>(path: string): Promise<T> {
   if (!res.ok) {
     let detail = `Request failed (${res.status}).`;
     try {
-      const body = await res.json();
-      if (body && typeof body.detail === "string") detail = body.detail;
+      const data = await res.json();
+      if (data && typeof data.detail === "string") detail = data.detail;
     } catch {
       // fall through to the generic message
     }
@@ -93,5 +139,46 @@ export function fetchCafes(): Promise<AdminCafe[]> {
 export function fetchTransactions(limit = 500): Promise<AdminTransaction[]> {
   return getJSON<AdminTransaction[]>(
     `/api/admin/platform/transactions?limit=${encodeURIComponent(limit)}`,
+  );
+}
+
+export function fetchCustomers(): Promise<AdminCustomer[]> {
+  return getJSON<AdminCustomer[]>("/api/admin/platform/customers");
+}
+
+export function setCustomerSuspended(
+  customerId: string,
+  isSuspended: boolean,
+): Promise<AdminCustomer> {
+  return sendJSON<AdminCustomer>(
+    "PATCH",
+    `/api/admin/platform/customers/${encodeURIComponent(customerId)}/suspend`,
+    { is_suspended: isSuspended },
+  );
+}
+
+export function adjustCustomerStamps(
+  customerId: string,
+  body: AdjustStampsBody,
+): Promise<AdminCustomer> {
+  return sendJSON<AdminCustomer>(
+    "POST",
+    `/api/admin/platform/customers/${encodeURIComponent(customerId)}/adjust-stamps`,
+    body,
+  );
+}
+
+export function fetchBilling(): Promise<AdminBilling> {
+  return getJSON<AdminBilling>("/api/admin/platform/billing");
+}
+
+export function setCafeBillingStatus(
+  cafeId: string,
+  status: SubscriptionStatus,
+): Promise<AdminBillingRow> {
+  return sendJSON<AdminBillingRow>(
+    "PATCH",
+    `/api/admin/platform/cafes/${encodeURIComponent(cafeId)}/billing-status`,
+    { status },
   );
 }

@@ -24,8 +24,15 @@ export function PlanTypePill({ scheme }: { scheme: SchemeType }) {
   );
 }
 
+// User-account-level status. "active" collides with SubscriptionStatus's
+// "active" on purpose — both read as green and both mean "fine, no action
+// needed", so one label keeps the visual vocabulary tight.
+export type UserStatus = "active" | "suspended";
+
+type PillStatus = SubscriptionStatus | UserStatus;
+
 const STATUS_STYLES: Record<
-  SubscriptionStatus,
+  PillStatus,
   { label: string; className: string }
 > = {
   active: {
@@ -49,9 +56,13 @@ const STATUS_STYLES: Record<
     label: "Incomplete",
     className: "bg-neutral-800 text-neutral-400 ring-1 ring-neutral-700",
   },
+  suspended: {
+    label: "Suspended",
+    className: "bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/30",
+  },
 };
 
-export function StatusPill({ status }: { status: SubscriptionStatus }) {
+export function StatusPill({ status }: { status: PillStatus }) {
   const { label, className } = STATUS_STYLES[status];
   return (
     <span

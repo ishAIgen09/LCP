@@ -60,9 +60,15 @@ from app.schemas import (
     CafeScans,
     CafeUpdate,
     CustomerStatusResponse,
+    AdjustStampsRequest,
+    AdminBillingResponse,
+    AdminBillingRow,
+    AdminCustomerResponse,
     AdminOverviewResponse,
     AdminPlatformCafeResponse,
     AdminTransactionResponse,
+    SuspendCustomerRequest,
+    UpdateCafeBillingStatusRequest,
     MetricsResponse,
     OfferCreate,
     OfferResponse,
@@ -542,6 +548,338 @@ async def platform_transactions(
         )
         for ledger, user, cafe, brand in rows
     ]
+
+
+# SECURITY — unauth'd, same posture as the other /api/admin/platform/* routes.
+#
+# Customers tab for the Super Admin dashboard. Returns every user with two
+# net-stamp aggregates: `global_stamps` (sum of stamp_delta across all
+# ledger rows whose cafe belongs to a scheme_type='global' brand) and
+# `total_private_stamps` (same, for 'private' brands). Nets mean a REDEEM
+# (-10) cancels out ten EARNs — the numbers read as the user's current
+# balance in each bucket, not lifetime throughput.
+#
+# Implementation: one users pass + one aggregate pass (grouped by customer
+# + scheme_type), joined in Python. Two queries keeps the SQL flat and
+# avoids a pivot; at MVP volumes (low thousands of users) this is instant.
+@app.get(
+    "/api/admin/platform/customers",
+    response_model=list[AdminCustomerResponse],
+)
+async def platform_customers(
+    session: AsyncSession = Depends(get_session),
+) -> list[AdminCustomerResponse]:
+    users = (
+        await session.execute(select(User).order_by(User.created_at.desc()))
+    ).scalars().all()
+
+    aggregate_rows = (
+        await session.execute(
+            select(
+                StampLedger.customer_id,
+                Brand.scheme_type,
+                func.coalesce(func.sum(StampLedger.stamp_delta), 0).label("net"),
+            )
+            .join(Cafe, Cafe.id == StampLedger.cafe_id)
+            .join(Brand, Brand.id == Cafe.brand_id)
+            .group_by(StampLedger.customer_id, Brand.scheme_type)
+        )
+    ).all()
+
+    # {user_id: {scheme: net_stamps}} — missing buckets default to 0 below.
+    net_by_user: dict[UUID, dict[SchemeType, int]] = {}
+    for customer_id, scheme_type, net in aggregate_rows:
+        net_by_user.setdefault(customer_id, {})[scheme_type] = int(net)
+
+    return [
+        AdminCustomerResponse(
+            id=user.id,
+            # CHAR(6) can arrive space-padded from some drivers; strip so
+            # the mono column doesn't show a trailing gap.
+            till_code=user.till_code.strip(),
+            email=user.email,
+            created_at=user.created_at,
+            global_stamps=net_by_user.get(user.id, {}).get(SchemeType.GLOBAL, 0),
+            total_private_stamps=net_by_user.get(user.id, {}).get(
+                SchemeType.PRIVATE, 0
+            ),
+            is_suspended=user.is_suspended,
+        )
+        for user in users
+    ]
+
+
+# Shared helper — both the suspend PATCH and the adjust-stamps POST need
+# to look up a user by id and return the same AdminCustomerResponse shape
+# the list endpoint emits (so the frontend can merge the response straight
+# into table state without a refetch).
+async def _build_customer_response(
+    session: AsyncSession, user: User
+) -> AdminCustomerResponse:
+    aggregate_rows = (
+        await session.execute(
+            select(
+                Brand.scheme_type,
+                func.coalesce(func.sum(StampLedger.stamp_delta), 0).label("net"),
+            )
+            .join(Cafe, Cafe.id == StampLedger.cafe_id)
+            .join(Brand, Brand.id == Cafe.brand_id)
+            .where(StampLedger.customer_id == user.id)
+            .group_by(Brand.scheme_type)
+        )
+    ).all()
+    nets: dict[SchemeType, int] = {
+        scheme: int(net) for scheme, net in aggregate_rows
+    }
+    return AdminCustomerResponse(
+        id=user.id,
+        till_code=user.till_code.strip(),
+        email=user.email,
+        created_at=user.created_at,
+        global_stamps=nets.get(SchemeType.GLOBAL, 0),
+        total_private_stamps=nets.get(SchemeType.PRIVATE, 0),
+        is_suspended=user.is_suspended,
+    )
+
+
+# PATCH — flip (or reassert) a customer's suspended flag. Idempotent: the
+# frontend sends the intended new state, which keeps the behaviour sane
+# across double-submits and optimistic UI.
+#
+# SECURITY — unauth'd, same posture as sibling /api/admin/platform/*
+# routes. Wrap with a super-admin dependency once that role ships.
+@app.patch(
+    "/api/admin/platform/customers/{customer_id}/suspend",
+    response_model=AdminCustomerResponse,
+)
+async def set_customer_suspended(
+    customer_id: UUID,
+    payload: SuspendCustomerRequest,
+    session: AsyncSession = Depends(get_session),
+) -> AdminCustomerResponse:
+    user = await session.get(User, customer_id)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found."
+        )
+    user.is_suspended = payload.is_suspended
+    await session.commit()
+    await session.refresh(user)
+    return await _build_customer_response(session, user)
+
+
+# POST — insert manual EARN/REDEEM ledger rows from the admin dashboard.
+#
+# The stamp_ledger CHECK forces every row to be exactly +1 (EARN) or -10
+# (REDEEM), so positive adjustments fan out into N EARN rows and negative
+# adjustments must be an exact multiple of -10 (one REDEEM per -10). The
+# fan-out is capped at MAX_ADJUST_STAMPS to prevent accidental mass writes.
+#
+# SECURITY — unauth'd, same posture as other /api/admin/platform/* routes.
+MAX_ADJUST_STAMPS = 100
+
+
+@app.post(
+    "/api/admin/platform/customers/{customer_id}/adjust-stamps",
+    response_model=AdminCustomerResponse,
+)
+async def adjust_customer_stamps(
+    customer_id: UUID,
+    payload: AdjustStampsRequest,
+    session: AsyncSession = Depends(get_session),
+) -> AdminCustomerResponse:
+    user = await session.get(User, customer_id)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found."
+        )
+
+    if payload.amount == 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Amount must be a non-zero integer.",
+        )
+    if abs(payload.amount) > MAX_ADJUST_STAMPS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Adjustments are capped at ±{MAX_ADJUST_STAMPS} stamps.",
+        )
+    # REDEEM rows must be exactly -10 apiece, so a negative amount has to
+    # be a clean multiple of 10 — no partial clawbacks.
+    if payload.amount < 0 and payload.amount % 10 != 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Negative adjustments must be a multiple of 10 (each REDEEM consumes 10 stamps).",
+        )
+
+    # Pick a cafe to attribute the manual row(s) to. For private schemes
+    # the admin nominates a brand; for global we take whichever global
+    # brand has a cafe (MVP — any cafe works because the aggregate query
+    # only cares about scheme_type via the Cafe→Brand join).
+    if payload.scheme_type == SchemeType.PRIVATE:
+        if payload.brand_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="brand_id is required for private-scheme adjustments.",
+            )
+        brand = await session.get(Brand, payload.brand_id)
+        if brand is None or brand.scheme_type != SchemeType.PRIVATE:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Private brand not found.",
+            )
+        cafe = (
+            await session.execute(
+                select(Cafe)
+                .where(Cafe.brand_id == brand.id)
+                .order_by(Cafe.created_at.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    else:
+        cafe = (
+            await session.execute(
+                select(Cafe)
+                .join(Brand, Brand.id == Cafe.brand_id)
+                .where(Brand.scheme_type == SchemeType.GLOBAL)
+                .order_by(Cafe.created_at.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    if cafe is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No cafe exists for the selected scheme — can't attribute the adjustment.",
+        )
+
+    if payload.amount > 0:
+        for _ in range(payload.amount):
+            session.add(
+                StampLedger(
+                    customer_id=user.id,
+                    cafe_id=cafe.id,
+                    event_type=LedgerEventType.EARN,
+                    stamp_delta=1,
+                    note="manual admin adjustment",
+                )
+            )
+    else:
+        for _ in range(abs(payload.amount) // 10):
+            session.add(
+                StampLedger(
+                    customer_id=user.id,
+                    cafe_id=cafe.id,
+                    event_type=LedgerEventType.REDEEM,
+                    stamp_delta=-10,
+                    note="manual admin adjustment",
+                )
+            )
+    await session.commit()
+    await session.refresh(user)
+    return await _build_customer_response(session, user)
+
+
+# MVP pricing table for the super-admin Billing tab. Per-scheme flat rate,
+# stored in pence to avoid float drift when we sum MRR. These numbers are
+# mocks — the real Stripe-backed pricing is per-brand quantity (£5/cafe,
+# see app/billing.py). Swap this constant for a DB lookup once pricing
+# tiers live in a real table.
+BILLING_RATE_PENCE_BY_SCHEME: dict[SchemeType, int] = {
+    SchemeType.GLOBAL: 4900,   # £49.00 — LCP+ tier
+    SchemeType.PRIVATE: 2900,  # £29.00 — Private-scheme tier
+}
+
+
+# SECURITY — unauth'd, same posture as the other /api/admin/platform/*
+# routes. Wrap with Depends(get_super_admin_session) when that role ships.
+#
+# Billing tab feed. One row per cafe (billing happens per-cafe in this MVP
+# mock, not per-brand). MRR is summed only across rows whose
+# billing_status is 'active' — past_due, trialing, canceled, incomplete
+# all contribute 0 to MRR. That keeps the top-line widget honest: it's
+# "revenue we expect to bill this month," not "revenue we theoretically
+# could bill if everyone paid."
+@app.get(
+    "/api/admin/platform/billing",
+    response_model=AdminBillingResponse,
+)
+async def platform_billing(
+    session: AsyncSession = Depends(get_session),
+) -> AdminBillingResponse:
+    joined = (
+        await session.execute(
+            select(Cafe, Brand)
+            .join(Brand, Brand.id == Cafe.brand_id)
+            .order_by(Cafe.name.asc())
+        )
+    ).all()
+    rows: list[AdminBillingRow] = []
+    total_mrr = 0
+    active_count = 0
+    for cafe, brand in joined:
+        rate = BILLING_RATE_PENCE_BY_SCHEME.get(brand.scheme_type, 0)
+        rows.append(
+            AdminBillingRow(
+                cafe_id=cafe.id,
+                cafe_name=cafe.name,
+                brand_id=brand.id,
+                brand_name=brand.name,
+                scheme_type=brand.scheme_type,
+                billing_status=cafe.billing_status,
+                monthly_rate_pence=rate,
+            )
+        )
+        if cafe.billing_status == SubscriptionStatus.ACTIVE:
+            total_mrr += rate
+            active_count += 1
+    return AdminBillingResponse(
+        total_mrr_pence=total_mrr,
+        active_subscription_count=active_count,
+        rows=rows,
+    )
+
+
+# PATCH — flip a single cafe's billing status. The super-admin dashboard
+# uses this to "cancel" a location without touching the brand's real
+# Stripe subscription. Accepts any SubscriptionStatus so the UI can also
+# downgrade to past_due or reactivate to active without a second route.
+#
+# Returns the same AdminBillingRow shape the list endpoint emits so the
+# frontend can splice it straight into table state.
+@app.patch(
+    "/api/admin/platform/cafes/{cafe_id}/billing-status",
+    response_model=AdminBillingRow,
+)
+async def set_cafe_billing_status(
+    cafe_id: UUID,
+    payload: UpdateCafeBillingStatusRequest,
+    session: AsyncSession = Depends(get_session),
+) -> AdminBillingRow:
+    cafe = await session.get(Cafe, cafe_id)
+    if cafe is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Cafe not found."
+        )
+    brand = await session.get(Brand, cafe.brand_id)
+    if brand is None:
+        # Orphaned cafe — treat as not found rather than 500.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Cafe's brand not found."
+        )
+    cafe.billing_status = payload.status
+    await session.commit()
+    await session.refresh(cafe)
+    return AdminBillingRow(
+        cafe_id=cafe.id,
+        cafe_name=cafe.name,
+        brand_id=brand.id,
+        brand_name=brand.name,
+        scheme_type=brand.scheme_type,
+        billing_status=cafe.billing_status,
+        monthly_rate_pence=BILLING_RATE_PENCE_BY_SCHEME.get(
+            brand.scheme_type, 0
+        ),
+    )
 
 
 @app.get("/api/admin/cafes", response_model=list[CafeResponse])

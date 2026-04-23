@@ -5,6 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    Boolean,
     CHAR,
     CheckConstraint,
     Float,
@@ -162,6 +163,14 @@ class Cafe(Base):
     # geocodes them; Discover sorts cafes with missing coords to the end.
     latitude: Mapped[float | None] = mapped_column(Float)
     longitude: Mapped[float | None] = mapped_column(Float)
+    # Per-cafe billing status, separate from brand-level Stripe state. The
+    # super-admin Billing tab uses this to cancel a single location without
+    # mutating the brand's real subscription. See migration 0012.
+    billing_status: Mapped[SubscriptionStatus] = mapped_column(
+        subscription_status_enum,
+        nullable=False,
+        server_default=text("'active'"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -191,6 +200,9 @@ class User(Base):
     display_name: Mapped[str | None] = mapped_column(Text)
     first_name: Mapped[str | None] = mapped_column(Text)
     last_name: Mapped[str | None] = mapped_column(Text)
+    is_suspended: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,

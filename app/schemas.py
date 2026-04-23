@@ -298,6 +298,74 @@ class AdminTransactionResponse(BaseModel):
     scheme_type: SchemeType
 
 
+# One row of the super-admin Customers table. `global_stamps` and
+# `total_private_stamps` are net sums of stamp_ledger.stamp_delta scoped to
+# brands of that scheme_type — so a REDEEM (-10) offsets ten EARNs (+1) and
+# the number reads as "current balance in that scheme bucket" rather than
+# lifetime throughput. Both can legitimately be 0 for a newly-signed-up
+# user who hasn't been scanned yet.
+class AdminCustomerResponse(BaseModel):
+    id: UUID
+    till_code: str
+    email: str | None
+    created_at: datetime
+    global_stamps: int
+    total_private_stamps: int
+    is_suspended: bool
+
+
+# PATCH body for the Customers tab's Suspend toggle. Idempotent on purpose
+# — the frontend always sends the *intended* new state, which means a
+# double-click replays the same value instead of flipping back and forth.
+class SuspendCustomerRequest(BaseModel):
+    is_suspended: bool
+
+
+# POST body for a manual ledger correction from the Customers tab.
+#
+# `amount` is signed: positive = admin crediting the user (EARNs), negative
+# = admin clawing back (REDEEMs). The stamp_ledger CHECK constraint fixes
+# each row at +1 (EARN) or -10 (REDEEM), so the endpoint fans out:
+#   amount=+5   → five EARN rows
+#   amount=-10  → one REDEEM row
+#   amount=-5   → rejected (422) — REDEEM cannot be partial.
+# `brand_id` is required for private-scheme adjustments; for global it's
+# ignored and the server picks any global brand's cafe.
+class AdjustStampsRequest(BaseModel):
+    scheme_type: SchemeType
+    brand_id: UUID | None = None
+    amount: int
+
+
+# One row of the super-admin Billing tab. Flat shape, like the other
+# AdminPlatform* responses. `monthly_rate_pence` is an MVP mock driven by
+# scheme_type — it doesn't reflect the real per-brand Stripe quantity
+# pricing. When the real billing data catches up this field becomes
+# either the invoice line total or the Stripe subscription item amount.
+class AdminBillingRow(BaseModel):
+    cafe_id: UUID
+    cafe_name: str
+    brand_id: UUID
+    brand_name: str
+    scheme_type: SchemeType
+    billing_status: SubscriptionStatus
+    monthly_rate_pence: int
+
+
+# Aggregate + rows for the Billing tab in a single response. Keeping MRR
+# server-computed so the frontend never has to know the rate card; the
+# pricing table lives in one place (main.py) and can move to the DB
+# later without an API break.
+class AdminBillingResponse(BaseModel):
+    total_mrr_pence: int
+    active_subscription_count: int
+    rows: list[AdminBillingRow]
+
+
+class UpdateCafeBillingStatusRequest(BaseModel):
+    status: SubscriptionStatus
+
+
 class CafeProfile(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
