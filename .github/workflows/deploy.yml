@@ -50,6 +50,26 @@ jobs:
             echo "→ building + starting containers"
             docker compose up -d --build
 
+            # Apply every migrations/*.sql against the live DB. All our
+            # migrations are IF-NOT-EXISTS idempotent so re-running
+            # previously-applied ones is a no-op. Alphabetical sort on
+            # zero-padded numeric prefixes (0001_..0014_..) preserves
+            # intended order. If any migration fails, script_stop aborts
+            # the whole deploy so we notice rather than silently serving
+            # code against a stale schema.
+            echo "→ waiting for api container to be ready"
+            for i in $(seq 1 20); do
+              if docker compose exec -T api python -c "import app.main" >/dev/null 2>&1; then
+                break
+              fi
+              sleep 2
+            done
+            echo "→ applying pending migrations"
+            for sql in migrations/*.sql; do
+              echo "  · $sql"
+              docker compose exec -T api python -m scripts.apply_migration "$sql"
+            done
+
             echo "→ pruning dangling images"
             docker image prune -f
 
