@@ -177,12 +177,24 @@ export type DiscoverCafe = {
   food_hygiene_rating: FoodHygieneRating;
   amenities: string[];
   live_offers: DiscoverOffer[];
+  // Wallet / Discover additions (backend ≥ 2026-04-23).
+  // `is_lcp_plus` is true for cafes whose brand uses the global scheme.
+  // `distance_miles` is set only when the consumer passes lat/lng; the
+  // server clamps missing cafe coords to `null` (sorted to the end).
+  is_lcp_plus: boolean;
+  latitude: number | null;
+  longitude: number | null;
+  distance_miles: number | null;
 };
 
 export function fetchDiscoverCafes(
   token: string,
+  coords?: { lat: number; lng: number } | null,
 ): Promise<DiscoverCafe[]> {
-  return getJSON<DiscoverCafe[]>("/api/consumer/cafes", token);
+  const qs = coords
+    ? `?lat=${encodeURIComponent(coords.lat)}&lng=${encodeURIComponent(coords.lng)}`
+    : "";
+  return getJSON<DiscoverCafe[]>(`/api/consumer/cafes${qs}`, token);
 }
 
 // One row per GlobalLedger transaction (not per individual stamp). Sorted

@@ -39,6 +39,7 @@ from app.models import (
     GlobalLedger,
     GlobalLedgerAction,
     Offer,
+    SchemeType,
     User,
 )
 from app.schemas import (
@@ -364,20 +365,44 @@ async def consumer_history(
 # with the cafe's amenities and the brand's currently-live offers (window
 # strictly contains `now()`). Consumer-auth'd — an anonymous visitor shouldn't
 # be able to scrape the cafe directory.
+_EARTH_RADIUS_MILES = 3958.7613
+
+
+def _haversine_miles(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    # Standard great-circle distance in statute miles. Good enough for a
+    # city-scale "nearest cafe" sort; a PostGIS-powered version would replace
+    # this with ST_DistanceSphere on a geography column.
+    import math
+    lat1_r, lat2_r = math.radians(lat1), math.radians(lat2)
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1_r) * math.cos(lat2_r) * math.sin(dlng / 2) ** 2
+    c = 2 * math.asin(math.sqrt(a))
+    return _EARTH_RADIUS_MILES * c
+
+
 @consumer_router.get("/cafes", response_model=list[ConsumerCafePayload])
 async def consumer_cafes(
+    lat: float | None = None,
+    lng: float | None = None,
     _consumer: ConsumerSession = Depends(get_consumer_session),
     session: AsyncSession = Depends(get_session),
 ) -> list[ConsumerCafePayload]:
-    cafe_rows = (
-        await session.execute(select(Cafe).order_by(Cafe.name.asc()))
-    ).scalars().all()
+    # Pull cafes + their parent Brand in one pass so we can derive
+    # `is_lcp_plus` without an N+1 follow-up query.
+    rows = (
+        await session.execute(
+            select(Cafe, Brand)
+            .join(Brand, Brand.id == Cafe.brand_id)
+            .order_by(Cafe.name.asc())
+        )
+    ).all()
 
     # Live offers for every brand in the set. We fetch the raw Offer rows
     # (keeping target_cafe_ids) so we can do the per-cafe targeting filter in
     # Python — cleaner than a cross-join with array containment for a list
     # that's typically tiny (<50 live offers per brand).
-    brand_ids = {cafe.brand_id for cafe in cafe_rows}
+    brand_ids = {cafe.brand_id for cafe, _brand in rows}
     offers_by_brand: dict[uuid.UUID, list[Offer]] = {}
     if brand_ids:
         now = datetime.now(timezone.utc)
@@ -417,15 +442,43 @@ async def consumer_cafes(
             )
         return out
 
-    return [
-        ConsumerCafePayload(
-            id=cafe.id,
-            name=cafe.name,
-            address=cafe.address,
-            phone=cafe.phone,
-            food_hygiene_rating=cafe.food_hygiene_rating,
-            amenities=list(cafe.amenities or []),
-            live_offers=_offers_for_cafe(cafe),
+    # Validate lat/lng pair only if both are present and inside the legal
+    # WGS-84 range. Anything outside is silently treated as "no location",
+    # so a malformed query still returns cafes (just unsorted by distance).
+    proximity_ok = (
+        lat is not None
+        and lng is not None
+        and -90.0 <= lat <= 90.0
+        and -180.0 <= lng <= 180.0
+    )
+
+    payloads: list[ConsumerCafePayload] = []
+    for cafe, brand in rows:
+        distance: float | None = None
+        if proximity_ok and cafe.latitude is not None and cafe.longitude is not None:
+            distance = round(
+                _haversine_miles(lat, lng, cafe.latitude, cafe.longitude), 2  # type: ignore[arg-type]
+            )
+        payloads.append(
+            ConsumerCafePayload(
+                id=cafe.id,
+                name=cafe.name,
+                address=cafe.address,
+                phone=cafe.phone,
+                food_hygiene_rating=cafe.food_hygiene_rating,
+                amenities=list(cafe.amenities or []),
+                live_offers=_offers_for_cafe(cafe),
+                is_lcp_plus=(brand.scheme_type == SchemeType.GLOBAL),
+                latitude=cafe.latitude,
+                longitude=cafe.longitude,
+                distance_miles=distance,
+            )
         )
-        for cafe in cafe_rows
-    ]
+
+    if proximity_ok:
+        # Sort closest-first; cafes missing coords (distance=None) go to the
+        # end. Using `float("inf")` sentinel keeps the sort key monotone
+        # without needing a two-pass partition.
+        payloads.sort(key=lambda p: p.distance_miles if p.distance_miles is not None else float("inf"))
+
+    return payloads

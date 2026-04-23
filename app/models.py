@@ -7,6 +7,7 @@ from decimal import Decimal
 from sqlalchemy import (
     CHAR,
     CheckConstraint,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -157,6 +158,10 @@ class Cafe(Base):
         nullable=False,
         server_default=text("'{}'::text[]"),
     )
+    # WGS-84 degrees. Nullable so cafes can exist before a back-office lookup
+    # geocodes them; Discover sorts cafes with missing coords to the end.
+    latitude: Mapped[float | None] = mapped_column(Float)
+    longitude: Mapped[float | None] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,

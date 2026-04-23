@@ -501,3 +501,12 @@ class ConsumerCafePayload(BaseModel):
     food_hygiene_rating: FoodHygieneRating = "Awaiting Inspection"
     amenities: list[str] = Field(default_factory=list)
     live_offers: list[ConsumerOfferPayload] = Field(default_factory=list)
+    # Wallet / Discover additions. `is_lcp_plus` is derived server-side from
+    # the parent brand's scheme_type ('global' → true, 'private' → false).
+    # `distance_miles` is populated only when the consumer supplies lat/lng
+    # to GET /api/consumer/cafes — null otherwise, and also null for cafes
+    # whose coords haven't been captured yet.
+    is_lcp_plus: bool = False
+    latitude: float | None = None
+    longitude: float | None = None
+    distance_miles: float | None = None

@@ -20,13 +20,18 @@ import {
   Coffee,
   Compass,
   Clock,
+  Gift,
   House,
   MapPin,
+  Navigation,
   Quote,
   ShieldCheck,
   Sparkles,
+  Star,
   User as UserIcon,
+  Wallet,
 } from "lucide-react-native";
+import * as Location from "expo-location";
 
 import { LoginScreen } from "./src/LoginScreen";
 import { HistoryScreen } from "./src/HistoryScreen";
@@ -449,18 +454,52 @@ function HomeView({
 
       <QuoteCard quote={quote} />
 
+      {/* Wallet layout (2026-04-23): "Rewards Progress" split into two
+          sections. A) LCP+ Global Passport — the universal pool. B) My
+          Brand Cards — per-brand loyalty for non-global partners. Only the
+          passport is populated in MVP; brand cards are an empty state
+          until the backend exposes per-brand balances. */}
+
+      {/* A) LCP+ Global Passport */}
       <View className="mt-6">
-        <View className="flex-row items-end justify-between">
-          <View>
-            <Text
-              className="text-[11px] font-semibold uppercase"
-              style={{ color: COLOR.textDim, letterSpacing: 2 }}
-            >
-              Rewards Progress
-            </Text>
-            <View className="mt-1 flex-row items-baseline">
+        <View className="flex-row items-center">
+          <Star
+            size={13}
+            color={COLOR.accent}
+            strokeWidth={2.2}
+            fill={COLOR.accent}
+          />
+          <Text
+            className="ml-2 text-[11px] font-semibold uppercase"
+            style={{ color: COLOR.accent, letterSpacing: 2 }}
+          >
+            LCP+ Global Passport
+          </Text>
+        </View>
+        <Text
+          className="mt-1 text-[12px]"
+          style={{ color: COLOR.textMuted, letterSpacing: 0.1 }}
+        >
+          Redeemable at any LCP+ partner.
+        </Text>
+
+        <View
+          className="mt-3 rounded-3xl p-5"
+          style={{
+            backgroundColor: COLOR.surface,
+            borderWidth: 1,
+            borderColor: "rgba(228,185,127,0.3)",
+            shadowColor: COLOR.accent,
+            shadowOffset: { width: 0, height: 10 },
+            shadowOpacity: 0.12,
+            shadowRadius: 18,
+            elevation: 4,
+          }}
+        >
+          <View className="flex-row items-end justify-between">
+            <View className="flex-row items-baseline">
               <Text
-                className="text-[32px] font-semibold"
+                className="text-[34px] font-semibold"
                 style={{ color: COLOR.text, letterSpacing: -1 }}
               >
                 {stampsEarned}
@@ -469,68 +508,103 @@ function HomeView({
                 {" "}/ {STAMPS_TARGET}
               </Text>
             </View>
-          </View>
-          <View
-            className="items-end rounded-2xl px-3 py-2"
-            style={{
-              backgroundColor: "rgba(228,185,127,0.08)",
-              borderWidth: 1,
-              borderColor: "rgba(228,185,127,0.15)",
-            }}
-          >
-            <Text
-              className="text-[10px] font-semibold uppercase"
-              style={{ color: COLOR.textMuted, letterSpacing: 1 }}
+            <View
+              className="items-end rounded-2xl px-3 py-2"
+              style={{
+                backgroundColor: "rgba(228,185,127,0.08)",
+                borderWidth: 1,
+                borderColor: "rgba(228,185,127,0.15)",
+              }}
             >
-              Free coffee in
-            </Text>
-            <Text
-              className="mt-0.5 text-base font-semibold"
-              style={{ color: COLOR.accent }}
-            >
-              {remaining} {remaining === 1 ? "stamp" : "stamps"}
-            </Text>
-          </View>
-        </View>
-
-        <View
-          className="mt-4 h-3 w-full overflow-hidden rounded-full"
-          style={{ backgroundColor: COLOR.surface }}
-        >
-          <View
-            className="h-full rounded-full"
-            style={{
-              width: `${pct * 100}%`,
-              backgroundColor: COLOR.accentDeep,
-              shadowColor: COLOR.accent,
-              shadowOffset: { width: 0, height: 0 },
-              shadowOpacity: 0.6,
-              shadowRadius: 8,
-            }}
-          />
-        </View>
-
-        <View className="mt-4 flex-row justify-between">
-          {Array.from({ length: STAMPS_TARGET }).map((_, i) => {
-            const filled = i < stampsEarned;
-            return (
-              <View
-                key={i}
-                className="h-8 w-8 items-center justify-center rounded-full"
-                style={{
-                  backgroundColor: filled ? COLOR.accentDeep : COLOR.surface,
-                  borderWidth: 1,
-                  borderColor: filled ? COLOR.accentDeep : COLOR.border,
-                }}
+              <Text
+                className="text-[10px] font-semibold uppercase"
+                style={{ color: COLOR.textMuted, letterSpacing: 1 }}
               >
-                <Coffee
-                  size={14}
-                  color={filled ? COLOR.accentInk : COLOR.textFaint}
-                  strokeWidth={2.4}
-                />
-              </View>
-            );
-          })}
+                Free coffee in
+              </Text>
+              <Text
+                className="mt-0.5 text-base font-semibold"
+                style={{ color: COLOR.accent }}
+              >
+                {remaining} {remaining === 1 ? "stamp" : "stamps"}
+              </Text>
+            </View>
+          </View>
+
+          <View
+            className="mt-4 h-3 w-full overflow-hidden rounded-full"
+            style={{ backgroundColor: COLOR.bg }}
+          >
+            <View
+              className="h-full rounded-full"
+              style={{
+                width: `${pct * 100}%`,
+                backgroundColor: COLOR.accentDeep,
+                shadowColor: COLOR.accent,
+                shadowOffset: { width: 0, height: 0 },
+                shadowOpacity: 0.6,
+                shadowRadius: 8,
+              }}
+            />
+          </View>
+
+          <View className="mt-4 flex-row justify-between">
+            {Array.from({ length: STAMPS_TARGET }).map((_, i) => {
+              const filled = i < stampsEarned;
+              return (
+                <View
+                  key={i}
+                  className="h-8 w-8 items-center justify-center rounded-full"
+                  style={{
+                    backgroundColor: filled ? COLOR.accentDeep : COLOR.bg,
+                    borderWidth: 1,
+                    borderColor: filled ? COLOR.accentDeep : COLOR.border,
+                  }}
+                >
+                  <Coffee
+                    size={14}
+                    color={filled ? COLOR.accentInk : COLOR.textFaint}
+                    strokeWidth={2.4}
+                  />
+                </View>
+              );
+            })}
+          </View>
+        </View>
+      </View>
+
+      {/* B) My Brand Cards — empty state in MVP */}
+      <View className="mt-6">
+        <View className="flex-row items-center">
+          <Wallet size={13} color={COLOR.textDim} strokeWidth={2.2} />
+          <Text
+            className="ml-2 text-[11px] font-semibold uppercase"
+            style={{ color: COLOR.textDim, letterSpacing: 2 }}
+          >
+            My Brand Cards
+          </Text>
+        </View>
+        <View
+          className="mt-3 rounded-2xl p-4"
+          style={{
+            backgroundColor: COLOR.surface,
+            borderWidth: 1,
+            borderColor: COLOR.border,
+            borderStyle: "dashed",
+          }}
+        >
+          <Text
+            className="text-[13px] font-semibold"
+            style={{ color: COLOR.text }}
+          >
+            No private cards yet
+          </Text>
+          <Text
+            className="mt-1 text-[12px]"
+            style={{ color: COLOR.textMuted, lineHeight: 17 }}
+          >
+            Visit a Local-scheme partner and their loyalty card will appear here.
+          </Text>
         </View>
       </View>
 
@@ -599,12 +673,39 @@ function DiscoverView({ session }: { session: Session }) {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<DiscoverCafe | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
+
+  // Location permission + first fix. One-shot on mount — if the user denies
+  // permission or the GPS errors, coords stays null and the cafe feed
+  // falls back to alphabetical order (server behavior when lat/lng absent).
+  // We don't re-prompt: a hard denial should stick, and `Accuracy.Balanced`
+  // is enough for a "nearest cafe" sort without burning battery.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== "granted") return;
+        const pos = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+        if (cancelled) return;
+        setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+      } catch {
+        // Hardware or permission error — swallow so the Discover tab still
+        // renders cafes (just without a proximity sort).
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     setError(null);
     setCafes(null);
-    fetchDiscoverCafes(session.token)
+    fetchDiscoverCafes(session.token, coords)
       .then((data) => {
         if (!cancelled) setCafes(data);
       })
@@ -616,7 +717,7 @@ function DiscoverView({ session }: { session: Session }) {
     return () => {
       cancelled = true;
     };
-  }, [session.token, reloadKey]);
+  }, [session.token, reloadKey, coords]);
 
   return (
     <ScrollView
@@ -802,7 +903,14 @@ function DiscoverCafeCard({
         </Text>
       </View>
 
-      <HygienePill rating={cafe.food_hygiene_rating} />
+      <View className="mt-2 flex-row flex-wrap">
+        <HygienePill rating={cafe.food_hygiene_rating} />
+        {cafe.distance_miles != null && (
+          <DistancePill miles={cafe.distance_miles} />
+        )}
+        {cafe.is_lcp_plus && <LcpPlusPill />}
+        {cafe.live_offers.length > 0 && <ActiveOffersPill />}
+      </View>
 
       {knownAmenities.length > 0 && (
         <View className="mt-3 flex-row flex-wrap">
@@ -887,15 +995,29 @@ function DiscoverOfferRow({ offer }: { offer: DiscoverOffer }) {
 // on a scroll-y list, the sticker's stark black/green is too loud. This
 // pill echoes the amenity-chip treatment so the card reads as a single
 // visual rhythm: rating · amenities · offer.
+// Shared pill look. Keeps every Discover-card badge (hygiene, distance,
+// LCP+, active offers) rendered at the exact same height/corner-radius so
+// they flex-wrap cleanly in a single row — otherwise two pills with
+// different py/px values collapse the row onto mismatched baselines.
+const PILL_STYLE = {
+  flexDirection: "row" as const,
+  alignItems: "center" as const,
+  paddingHorizontal: 10,
+  paddingVertical: 5,
+  borderRadius: 999,
+  marginRight: 6,
+  marginBottom: 6,
+  borderWidth: 1,
+};
+
 function HygienePill({ rating }: { rating: FoodHygieneRating }) {
   const isAwaiting = rating === "Awaiting Inspection";
   const label = isAwaiting ? "Awaiting inspection" : `Hygiene · ${rating}/5`;
   return (
     <View
-      className="mt-2 flex-row self-start items-center rounded-full px-2.5 py-1"
       style={{
+        ...PILL_STYLE,
         backgroundColor: "rgba(255,255,255,0.04)",
-        borderWidth: 1,
         borderColor: COLOR.border,
       }}
       accessibilityLabel={
@@ -906,14 +1028,92 @@ function HygienePill({ rating }: { rating: FoodHygieneRating }) {
     >
       <ShieldCheck size={11} color={COLOR.roastedAlmond} strokeWidth={2.2} />
       <Text
-        className="ml-1.5 text-[10.5px]"
         style={{
+          marginLeft: 6,
+          fontSize: 10.5,
           color: COLOR.textMuted,
           fontFamily: FONT.semibold,
           letterSpacing: 0.3,
         }}
       >
         {label}
+      </Text>
+    </View>
+  );
+}
+
+function DistancePill({ miles }: { miles: number }) {
+  const label = miles < 0.1 ? "Nearby" : `${miles.toFixed(1)} mi away`;
+  return (
+    <View
+      style={{
+        ...PILL_STYLE,
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderColor: COLOR.border,
+      }}
+      accessibilityLabel={label}
+    >
+      <Navigation size={11} color={COLOR.roastedAlmond} strokeWidth={2.2} />
+      <Text
+        style={{
+          marginLeft: 6,
+          fontSize: 10.5,
+          color: COLOR.textMuted,
+          fontFamily: FONT.semibold,
+          letterSpacing: 0.3,
+        }}
+      >
+        {label}
+      </Text>
+    </View>
+  );
+}
+
+function LcpPlusPill() {
+  return (
+    <View
+      style={{
+        ...PILL_STYLE,
+        backgroundColor: "rgba(228,185,127,0.15)",
+        borderColor: "rgba(228,185,127,0.38)",
+      }}
+      accessibilityLabel="LCP Plus partner"
+    >
+      <Text
+        style={{
+          fontSize: 11,
+          color: COLOR.accent,
+          fontFamily: FONT.bold,
+          letterSpacing: 0.8,
+        }}
+      >
+        ✦ LCP+
+      </Text>
+    </View>
+  );
+}
+
+function ActiveOffersPill() {
+  return (
+    <View
+      style={{
+        ...PILL_STYLE,
+        backgroundColor: "rgba(201,110,75,0.12)",
+        borderColor: "rgba(201,110,75,0.32)",
+      }}
+      accessibilityLabel="Active offers available"
+    >
+      <Gift size={11} color={COLOR.terracotta} strokeWidth={2.2} />
+      <Text
+        style={{
+          marginLeft: 6,
+          fontSize: 10.5,
+          color: COLOR.terracotta,
+          fontFamily: FONT.semibold,
+          letterSpacing: 0.3,
+        }}
+      >
+        Active Offers
       </Text>
     </View>
   );
