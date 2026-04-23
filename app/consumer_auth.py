@@ -40,6 +40,7 @@ from app.models import (
     GlobalLedgerAction,
     Offer,
     SchemeType,
+    StampLedger,
     User,
 )
 from app.schemas import (
@@ -52,7 +53,10 @@ from app.schemas import (
     ConsumerRequestOTP,
     ConsumerRequestOTPResponse,
     ConsumerVerifyOTP,
+    ConsumerWalletResponse,
     LatestEarnPayload,
+    WalletBalanceBlock,
+    WalletPrivateBrandBalance,
 )
 from app.security import hash_password, verify_password
 
@@ -324,6 +328,117 @@ async def consumer_balance(
         # the X/10 progress display so it never shows "13/10".
         current_stamps=scoped_balance % REWARD_THRESHOLD,
         banked_rewards=scoped_balance // REWARD_THRESHOLD,
+        latest_earn=latest_earn,
+    )
+
+
+# /me/wallet — full wallet state in one fetch. Splits the consumer's
+# stamp_ledger into:
+#   - a pooled "global" balance (every global-scheme brand contributes),
+#   - one private-brand balance per private-scheme brand with any activity.
+# Plus latest_earn so the mobile Home screen can keep its one-fetch-per-poll
+# cadence instead of fanning out to /me/balance AND a wallet endpoint.
+@consumer_router.get("/me/wallet", response_model=ConsumerWalletResponse)
+async def consumer_wallet(
+    consumer: ConsumerSession = Depends(get_consumer_session),
+    session: AsyncSession = Depends(get_session),
+) -> ConsumerWalletResponse:
+    user_id = consumer.user_id
+
+    # Global pool: SUM(stamp_delta) across every ledger row whose cafe's
+    # brand is scheme_type='global'. COALESCE handles the "brand-new
+    # consumer, no ledger rows yet" case without a second roundtrip.
+    global_total = (
+        await session.execute(
+            select(func.coalesce(func.sum(StampLedger.stamp_delta), 0))
+            .select_from(StampLedger)
+            .join(Cafe, Cafe.id == StampLedger.cafe_id)
+            .join(Brand, Brand.id == Cafe.brand_id)
+            .where(
+                StampLedger.customer_id == user_id,
+                Brand.scheme_type == SchemeType.GLOBAL,
+            )
+        )
+    ).scalar_one() or 0
+
+    # Private pools: per-brand aggregates, filtered with HAVING so we only
+    # return brands where the consumer has a non-zero balance. (Zero-balance
+    # rows after a full redeem also drop off — correct UX: the mobile "My
+    # Brand Cards" list hides fully-cashed-in punch cards.)
+    private_rows = (
+        await session.execute(
+            select(
+                Brand.id,
+                Brand.name,
+                func.coalesce(func.sum(StampLedger.stamp_delta), 0).label("total"),
+            )
+            .select_from(Brand)
+            .join(Cafe, Cafe.brand_id == Brand.id)
+            .join(StampLedger, StampLedger.cafe_id == Cafe.id)
+            .where(
+                StampLedger.customer_id == user_id,
+                Brand.scheme_type == SchemeType.PRIVATE,
+            )
+            .group_by(Brand.id, Brand.name)
+            .having(func.coalesce(func.sum(StampLedger.stamp_delta), 0) > 0)
+            .order_by(Brand.name.asc())
+        )
+    ).all()
+
+    # latest_earn mirrors the /me/balance shape exactly so the mobile
+    # RewardModal delta-detection code doesn't need a new branch.
+    latest_earn_row = (
+        await session.execute(
+            select(GlobalLedger, Cafe)
+            .join(Cafe, Cafe.id == GlobalLedger.venue_id)
+            .where(
+                GlobalLedger.consumer_id == consumer.consumer_id,
+                GlobalLedger.action_type == GlobalLedgerAction.EARNED,
+            )
+            .order_by(GlobalLedger.timestamp.desc())
+            .limit(1)
+        )
+    ).first()
+
+    latest_earn: LatestEarnPayload | None = None
+    if latest_earn_row is not None:
+        earn, cafe = latest_earn_row
+        redeemed_hit = (
+            await session.execute(
+                select(GlobalLedger.transaction_id).where(
+                    GlobalLedger.consumer_id == consumer.consumer_id,
+                    GlobalLedger.venue_id == earn.venue_id,
+                    GlobalLedger.action_type == GlobalLedgerAction.REDEEMED,
+                    GlobalLedger.timestamp == earn.timestamp,
+                )
+            )
+        ).first()
+        latest_earn = LatestEarnPayload(
+            transaction_id=earn.transaction_id,
+            cafe_name=cafe.name,
+            cafe_address=cafe.address,
+            stamps_earned=earn.quantity,
+            free_drink_unlocked=redeemed_hit is not None,
+            timestamp=earn.timestamp,
+        )
+
+    return ConsumerWalletResponse(
+        threshold=REWARD_THRESHOLD,
+        global_balance=WalletBalanceBlock(
+            stamp_balance=int(global_total),
+            current_stamps=int(global_total) % REWARD_THRESHOLD,
+            banked_rewards=int(global_total) // REWARD_THRESHOLD,
+        ),
+        private_balances=[
+            WalletPrivateBrandBalance(
+                brand_id=row.id,
+                brand_name=row.name,
+                stamp_balance=int(row.total),
+                current_stamps=int(row.total) % REWARD_THRESHOLD,
+                banked_rewards=int(row.total) // REWARD_THRESHOLD,
+            )
+            for row in private_rows
+        ],
         latest_earn=latest_earn,
     )
 

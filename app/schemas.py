@@ -337,6 +337,37 @@ class LatestEarnPayload(BaseModel):
     timestamp: datetime
 
 
+class WalletBalanceBlock(BaseModel):
+    """One pool of stamps. Under the 2026-04-21 banking model the three
+    values can always be derived from stamp_balance, but we pre-compute
+    current_stamps + banked_rewards server-side so every client renders
+    the same X/10 split instead of re-doing the modular math."""
+    stamp_balance: int
+    current_stamps: int
+    banked_rewards: int
+
+
+class WalletPrivateBrandBalance(WalletBalanceBlock):
+    brand_id: UUID
+    brand_name: str
+
+
+class ConsumerWalletResponse(BaseModel):
+    # Constant 10 today; promoted to a field so a future per-brand threshold
+    # (e.g. "buy 8 get the 9th free") doesn't force a schema break.
+    threshold: int
+    # Pooled across every global-scheme brand. Always present (zero balance
+    # for a fresh consumer).
+    global_balance: WalletBalanceBlock
+    # One entry per private-scheme brand the consumer has *any* activity at.
+    # Empty list if the consumer only earns at LCP+ cafes — the mobile
+    # "My Brand Cards" section renders its empty state in that case.
+    private_balances: list[WalletPrivateBrandBalance] = Field(default_factory=list)
+    # Same semantics as ConsumerBalanceResponse.latest_earn — last EARNED
+    # global_ledger row, used by the mobile RewardModal delta detection.
+    latest_earn: LatestEarnPayload | None = None
+
+
 class ConsumerBalanceResponse(BaseModel):
     consumer_id: str
     # Total scoped balance (can be >= threshold — Mixed-Basket POS no longer

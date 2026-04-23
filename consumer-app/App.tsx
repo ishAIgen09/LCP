@@ -39,11 +39,12 @@ import { RewardModal, type RewardPayload } from "./src/RewardModal";
 import { CafeDetailsModal } from "./src/CafeDetailsModal";
 import { lookupAmenity, type AmenityDef } from "./src/amenities";
 import {
-  fetchBalance,
   fetchDiscoverCafes,
+  fetchWallet,
   type DiscoverCafe,
   type DiscoverOffer,
   type FoodHygieneRating,
+  type PrivateBrandBalance,
 } from "./src/api";
 import { formatOfferHeadline, formatOfferWindow } from "./src/offers";
 import { COLOR, FONT, type Session } from "./src/theme";
@@ -208,28 +209,27 @@ function HomeView({
     };
   }, [firstName]);
 
-  // Live stamp balance — polls /api/consumer/me/balance every 3s while Home
-  // is mounted AND the app is foregrounded. Ref-guarded mutex prevents
-  // overlapping fetches from stacking on a slow tunnel; errors are swallowed
-  // so a transient blip keeps the last-good value on screen. The fetch
-  // itself is cache-busted inside getJSON (`?t=…` + Cache-Control no-cache).
+  // Live wallet state — polls /api/consumer/me/wallet every 3s while Home
+  // is mounted AND the app is foregrounded. One request now covers both the
+  // LCP+ passport + every private brand card, replacing the separate
+  // /me/balance fetch. Ref-guarded mutex prevents overlapping fetches from
+  // stacking on a slow connection; errors are swallowed so a transient blip
+  // keeps the last-good values on screen. Cache-busted inside getJSON.
   const [stampsEarned, setStampsEarned] = useState(0);
+  const [privateBalances, setPrivateBalances] = useState<PrivateBrandBalance[]>([]);
   const pollBusyRef = useRef(false);
 
-  // Celebration trigger (2026-04-22): **delta detection** on current_stamps
-  // + banked_rewards. Replaces the old transaction_id approach, which broke
-  // under the banking pivot (latest_earn.free_drink_unlocked was unreliable
-  // because REDEEMED rows now come from a separate transaction).
-  //
-  // Rule: if EITHER current_stamps > previous OR banked_rewards > previous,
-  // the customer earned something since the last poll → fire RewardModal.
-  // `freeDrinkUnlocked` derives from banked_rewards going up (the scan
-  // pushed them past the threshold). Pure redeems (banked goes DOWN) are
-  // correctly silent — barista-initiated, customer is already aware.
+  // Celebration trigger — delta detection on TOTAL balance + TOTAL banked
+  // across every pool (global passport + all private brand cards). A stamp
+  // earned at ANY cafe bumps totalBalance; crossing any threshold bumps
+  // totalBanked. This replaces the scoped-balance delta that /me/balance
+  // used to provide, and handles multi-brand users correctly: earning at
+  // Monmouth and at Prufrock the same session fires RewardModal twice,
+  // once per poll tick.
   //
   // Null sentinels for the pre-first-poll state mean the initial fetch
   // seeds silently instead of celebrating on app-open.
-  const prevCurrentRef = useRef<number | null>(null);
+  const prevTotalRef = useRef<number | null>(null);
   const prevBankedRef = useRef<number | null>(null);
 
   // AppState gating — stop polling when the app is backgrounded. Saves
@@ -257,45 +257,50 @@ function HomeView({
       if (pollBusyRef.current) return;
       pollBusyRef.current = true;
       try {
-        const res = await fetchBalance(session.token);
+        const wallet = await fetchWallet(session.token);
         if (cancelled) return;
+
+        // Totals are the sum across every pool. Delta detection fires
+        // when stamps are earned anywhere (global OR any private brand);
+        // bankedUp fires when any threshold is crossed. Using totals (not
+        // per-pool) keeps the logic trivially O(1) regardless of how many
+        // brand cards the consumer has.
+        const totalBalance =
+          wallet.global_balance.stamp_balance +
+          wallet.private_balances.reduce((s, b) => s + b.stamp_balance, 0);
+        const totalBanked =
+          wallet.global_balance.banked_rewards +
+          wallet.private_balances.reduce((s, b) => s + b.banked_rewards, 0);
+
         if (__DEV__) {
           console.log(
-            `[poll] current=${res.current_stamps}/${res.threshold} banked=${res.banked_rewards} latest_earn=${res.latest_earn?.transaction_id ?? "none"}`,
+            `[poll] global=${wallet.global_balance.current_stamps}/${wallet.threshold} banked_total=${totalBanked} brands=${wallet.private_balances.length} latest_earn=${wallet.latest_earn?.transaction_id ?? "none"}`,
           );
         }
-        // Banking pivot (2026-04-21): balances can exceed threshold now.
-        // Use current_stamps for the X/10 progress display.
-        setStampsEarned(res.current_stamps);
 
-        // Delta detection.
-        const prevCurrent = prevCurrentRef.current;
+        setStampsEarned(wallet.global_balance.current_stamps);
+        setPrivateBalances(wallet.private_balances);
+
+        // Delta detection on totals.
+        const prevTotal = prevTotalRef.current;
         const prevBanked = prevBankedRef.current;
-        const seeded = prevCurrent !== null && prevBanked !== null;
-        const currentUp = seeded && res.current_stamps > prevCurrent!;
-        const bankedUp = seeded && res.banked_rewards > prevBanked!;
-        if (seeded && (currentUp || bankedUp) && res.latest_earn) {
-          // Compute actual earn from the deltas, not from
-          // latest_earn.stamps_earned. Under banking, crossing the
-          // threshold resets current_stamps (e.g. 8 → 1), so
-          //   total = (banked_new - banked_prev) * 10
-          //         + (current_new - current_prev)
-          // is the signed stamp change. Celebration fires only when
-          // it's positive, so this is always >= 1.
-          const stampsEarnedDelta =
-            (res.banked_rewards - prevBanked!) * 10 +
-            (res.current_stamps - prevCurrent!);
+        const seeded = prevTotal !== null && prevBanked !== null;
+        const stampsUp = seeded && totalBalance > prevTotal!;
+        const bankedUp = seeded && totalBanked > prevBanked!;
+        if (seeded && stampsUp && wallet.latest_earn) {
           onReward({
-            stampsEarned: Math.max(1, stampsEarnedDelta),
-            cafeName: res.latest_earn.cafe_name,
-            cafeAddress: res.latest_earn.cafe_address,
-            newBalance: res.current_stamps,
-            // Crossed the threshold iff banked_rewards went up.
+            stampsEarned: Math.max(1, totalBalance - prevTotal!),
+            cafeName: wallet.latest_earn.cafe_name,
+            cafeAddress: wallet.latest_earn.cafe_address,
+            // Celebration shows the passport balance — the mobile's
+            // "primary" card. A future pass can scope this to the earn's
+            // brand once latest_earn carries brand_id.
+            newBalance: wallet.global_balance.current_stamps,
             freeDrinkUnlocked: bankedUp,
           });
         }
-        prevCurrentRef.current = res.current_stamps;
-        prevBankedRef.current = res.banked_rewards;
+        prevTotalRef.current = totalBalance;
+        prevBankedRef.current = totalBanked;
       } catch (e) {
         if (__DEV__) {
           console.log(
@@ -573,7 +578,10 @@ function HomeView({
         </View>
       </View>
 
-      {/* B) My Brand Cards — empty state in MVP */}
+      {/* B) My Brand Cards — renders one mini-card per private brand the
+          consumer has activity at. HAVING >0 on the server filters out
+          fully-redeemed brands so the list stays short. Empty state shows
+          until the consumer earns their first private-scheme stamp. */}
       <View className="mt-6">
         <View className="flex-row items-center">
           <Wallet size={13} color={COLOR.textDim} strokeWidth={2.2} />
@@ -583,29 +591,55 @@ function HomeView({
           >
             My Brand Cards
           </Text>
+          {privateBalances.length > 0 ? (
+            <View
+              className="ml-2 rounded-full px-2 py-0.5"
+              style={{
+                backgroundColor: "rgba(255,255,255,0.06)",
+                borderWidth: 1,
+                borderColor: COLOR.border,
+              }}
+            >
+              <Text
+                className="text-[10px] font-semibold"
+                style={{ color: COLOR.textMuted, letterSpacing: 0.5 }}
+              >
+                {privateBalances.length}
+              </Text>
+            </View>
+          ) : null}
         </View>
-        <View
-          className="mt-3 rounded-2xl p-4"
-          style={{
-            backgroundColor: COLOR.surface,
-            borderWidth: 1,
-            borderColor: COLOR.border,
-            borderStyle: "dashed",
-          }}
-        >
-          <Text
-            className="text-[13px] font-semibold"
-            style={{ color: COLOR.text }}
+
+        {privateBalances.length === 0 ? (
+          <View
+            className="mt-3 rounded-2xl p-4"
+            style={{
+              backgroundColor: COLOR.surface,
+              borderWidth: 1,
+              borderColor: COLOR.border,
+              borderStyle: "dashed",
+            }}
           >
-            No private cards yet
-          </Text>
-          <Text
-            className="mt-1 text-[12px]"
-            style={{ color: COLOR.textMuted, lineHeight: 17 }}
-          >
-            Visit a Local-scheme partner and their loyalty card will appear here.
-          </Text>
-        </View>
+            <Text
+              className="text-[13px] font-semibold"
+              style={{ color: COLOR.text }}
+            >
+              No private cards yet
+            </Text>
+            <Text
+              className="mt-1 text-[12px]"
+              style={{ color: COLOR.textMuted, lineHeight: 17 }}
+            >
+              Visit a Local-scheme partner and their loyalty card will appear here.
+            </Text>
+          </View>
+        ) : (
+          <View className="mt-3">
+            {privateBalances.map((b) => (
+              <BrandCardMini key={b.brand_id} balance={b} threshold={STAMPS_TARGET} />
+            ))}
+          </View>
+        )}
       </View>
 
       <Pressable
@@ -1089,6 +1123,85 @@ function LcpPlusPill() {
       >
         ✦ LCP+
       </Text>
+    </View>
+  );
+}
+
+function BrandCardMini({
+  balance,
+  threshold,
+}: {
+  balance: PrivateBrandBalance;
+  threshold: number;
+}) {
+  const pct = Math.min(balance.current_stamps / threshold, 1);
+  const readyCount = balance.banked_rewards;
+  const remaining = Math.max(threshold - balance.current_stamps, 0);
+  return (
+    <View
+      className="mb-3 rounded-2xl p-4"
+      style={{
+        backgroundColor: COLOR.surface,
+        borderWidth: 1,
+        borderColor: COLOR.border,
+      }}
+    >
+      <View className="flex-row items-center justify-between">
+        <View className="flex-1 pr-3">
+          <Text
+            className="text-[14px] font-semibold"
+            style={{ color: COLOR.text, letterSpacing: -0.1 }}
+            numberOfLines={1}
+          >
+            {balance.brand_name}
+          </Text>
+          {readyCount > 0 ? (
+            <Text
+              className="mt-0.5 text-[11px]"
+              style={{
+                color: COLOR.accent,
+                fontFamily: FONT.semibold,
+                letterSpacing: 0.3,
+              }}
+            >
+              {readyCount} free {readyCount === 1 ? "drink" : "drinks"} ready
+            </Text>
+          ) : (
+            <Text
+              className="mt-0.5 text-[11px]"
+              style={{ color: COLOR.textDim, letterSpacing: 0.2 }}
+            >
+              {remaining} more for a free coffee
+            </Text>
+          )}
+        </View>
+        <View className="flex-row items-baseline">
+          <Text
+            className="text-[22px] font-semibold"
+            style={{ color: COLOR.text, letterSpacing: -0.5 }}
+          >
+            {balance.current_stamps}
+          </Text>
+          <Text
+            className="text-[13px]"
+            style={{ color: COLOR.textFaint }}
+          >
+            /{threshold}
+          </Text>
+        </View>
+      </View>
+      <View
+        className="mt-3 h-2 w-full overflow-hidden rounded-full"
+        style={{ backgroundColor: COLOR.bg }}
+      >
+        <View
+          className="h-full rounded-full"
+          style={{
+            width: `${pct * 100}%`,
+            backgroundColor: COLOR.roastedAlmond,
+          }}
+        />
+      </View>
     </View>
   );
 }

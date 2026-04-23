@@ -152,6 +152,28 @@ export function fetchBalance(token: string): Promise<BalanceResponse> {
   return getJSON<BalanceResponse>("/api/consumer/me/balance", token);
 }
 
+export type WalletBalanceBlock = {
+  stamp_balance: number;
+  current_stamps: number;
+  banked_rewards: number;
+};
+
+export type PrivateBrandBalance = WalletBalanceBlock & {
+  brand_id: string;
+  brand_name: string;
+};
+
+export type WalletResponse = {
+  threshold: number;
+  global_balance: WalletBalanceBlock;
+  private_balances: PrivateBrandBalance[];
+  latest_earn: LatestEarn | null;
+};
+
+export function fetchWallet(token: string): Promise<WalletResponse> {
+  return getJSON<WalletResponse>("/api/consumer/me/wallet", token);
+}
+
 export type DiscoverOffer = {
   id: string;
   offer_type: "percent" | "fixed" | "bogo" | "double_stamps";
