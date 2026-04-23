@@ -4,7 +4,7 @@ from uuid import UUID
 
 import stripe
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_admin_session
@@ -275,5 +275,63 @@ async def stripe_webhook(
             brand.stripe_subscription_id = stripe_subscription_id
         await session.commit()
         return {"received": True, "brand_id": str(brand_id), "status": "active"}
+
+    # Subscription fully cancelled (either via Portal or because the
+    # cancel-at-period-end grace window elapsed). Flip the brand to
+    # CANCELED, and flip every cafe that was still being billed
+    # (ACTIVE / PENDING_CANCELLATION) to CANCELED in one pass so the
+    # super-admin Billing tab drops them from MRR immediately.
+    if event["type"] == "customer.subscription.deleted":
+        obj = event["data"]["object"]
+        stripe_customer_id = obj.get("customer")
+        stripe_subscription_id = obj.get("id")
+
+        # Locate the brand — prefer subscription_id (more specific), fall
+        # back to customer_id, then metadata if neither is on file.
+        brand: Brand | None = None
+        if stripe_subscription_id:
+            brand = (
+                await session.execute(
+                    select(Brand).where(
+                        Brand.stripe_subscription_id == stripe_subscription_id
+                    )
+                )
+            ).scalar_one_or_none()
+        if brand is None and stripe_customer_id:
+            brand = (
+                await session.execute(
+                    select(Brand).where(Brand.stripe_customer_id == stripe_customer_id)
+                )
+            ).scalar_one_or_none()
+        if brand is None:
+            meta_brand_id = (obj.get("metadata") or {}).get("brand_id")
+            if meta_brand_id:
+                try:
+                    brand = await session.get(Brand, UUID(meta_brand_id))
+                except ValueError:
+                    brand = None
+        if brand is None:
+            return {"received": True, "warning": "no matching brand"}
+
+        brand.subscription_status = SubscriptionStatus.CANCELED
+        await session.execute(
+            update(Cafe)
+            .where(Cafe.brand_id == brand.id)
+            .where(
+                Cafe.billing_status.in_(
+                    [
+                        SubscriptionStatus.ACTIVE,
+                        SubscriptionStatus.PENDING_CANCELLATION,
+                    ]
+                )
+            )
+            .values(billing_status=SubscriptionStatus.CANCELED)
+        )
+        await session.commit()
+        return {
+            "received": True,
+            "brand_id": str(brand.id),
+            "status": "canceled",
+        }
 
     return {"received": True}

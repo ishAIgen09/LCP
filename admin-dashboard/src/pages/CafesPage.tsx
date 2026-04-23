@@ -5,6 +5,7 @@ import {
   CalendarClock,
   ChevronDown,
   Coffee,
+  Download,
   Filter,
   Gift,
   Loader2,
@@ -21,6 +22,7 @@ import { PlanTypePill, StatusPill } from "@/components/Pills";
 import {
   createBrand,
   createPlatformCafe,
+  exportCafesCsv,
   fetchCafeStats,
   fetchCafes,
   type AdminCafe,
@@ -57,6 +59,21 @@ export function CafesPage() {
   const [addOpen, setAddOpen] = useState<null | "brand" | "cafe">(null);
   // Bumps on every successful create → forces the fetch effect to re-run.
   const [refreshKey, setRefreshKey] = useState(0);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const handleExport = async () => {
+    if (exporting) return;
+    setExporting(true);
+    setExportError(null);
+    try {
+      await exportCafesCsv(filter);
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : "Export failed.");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -128,7 +145,14 @@ export function CafesPage() {
         onFilterChange={setFilter}
         onAddBrand={() => setAddOpen("brand")}
         onAddCafe={() => setAddOpen("cafe")}
+        onExport={handleExport}
+        exporting={exporting}
       />
+      {exportError ? (
+        <div className="mt-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+          Export failed: {exportError}
+        </div>
+      ) : null}
 
       {error ? (
         <ErrorCard message={error} />
@@ -580,11 +604,15 @@ function CafesFilterBar({
   onFilterChange,
   onAddBrand,
   onAddCafe,
+  onExport,
+  exporting,
 }: {
   filter: CafeListFilter;
   onFilterChange: (next: CafeListFilter) => void;
   onAddBrand: () => void;
   onAddCafe: () => void;
+  onExport: () => void;
+  exporting: boolean;
 }) {
   const status = filter.status ?? "all";
   const joined = filter.joined ?? "all";
@@ -636,7 +664,23 @@ function CafesFilterBar({
             </button>
           ) : null}
         </div>
-        <AddNewButton onAddBrand={onAddBrand} onAddCafe={onAddCafe} />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onExport}
+            disabled={exporting}
+            className="inline-flex items-center gap-1.5 rounded-md border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-xs font-semibold text-neutral-200 transition-colors hover:border-neutral-700 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50"
+            title="Download the filtered cafe roster as a CSV"
+          >
+            {exporting ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.2} />
+            ) : (
+              <Download className="h-3.5 w-3.5" strokeWidth={2.4} />
+            )}
+            Export Report (CSV)
+          </button>
+          <AddNewButton onAddBrand={onAddBrand} onAddCafe={onAddCafe} />
+        </div>
       </div>
     </div>
   );

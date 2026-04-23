@@ -411,16 +411,42 @@ function HomeView({
           </View>
         </View>
 
-        <View
-          className="mt-5 items-center rounded-2xl p-5"
-          style={{ backgroundColor: "#FFFFFF" }}
-        >
-          <QRCode
-            value={consumerId}
-            size={200}
-            color={COLOR.bg}
-            backgroundColor="#FFFFFF"
-          />
+        {/* Scanner viewport — the consumer's own QR reads like a scan
+            target because of the four corner brackets, so baristas get
+            an unambiguous "point your scanner here" cue. Helper text
+            below mirrors the standard "Align QR within the frame" cue
+            baristas see on their end. */}
+        <View className="mt-5 items-center">
+          <View className="relative items-center justify-center">
+            <View
+              className="items-center justify-center rounded-2xl p-5"
+              style={{ backgroundColor: "#FFFFFF" }}
+            >
+              <QRCode
+                value={consumerId}
+                size={200}
+                color={COLOR.bg}
+                backgroundColor="#FFFFFF"
+              />
+            </View>
+            {/* Four L-shaped corner brackets overlay the white QR card.
+                Each is two 3px-thick strokes meeting at a corner, accent
+                coloured so they pop against the white frame. */}
+            <ScannerCornerBracket position="tl" />
+            <ScannerCornerBracket position="tr" />
+            <ScannerCornerBracket position="bl" />
+            <ScannerCornerBracket position="br" />
+          </View>
+          <Text
+            className="mt-3 text-[11px] font-semibold uppercase"
+            style={{
+              color: COLOR.textMuted,
+              letterSpacing: 1.4,
+              textAlign: "center",
+            }}
+          >
+            Align QR code within the frame
+          </Text>
         </View>
 
         <View
@@ -501,16 +527,27 @@ function HomeView({
             elevation: 4,
           }}
         >
-          <View className="flex-row items-end justify-between">
-            <View className="flex-row items-baseline">
+          {/* Visual stamp card is the hero now — the 2×5 grid of coffee
+              cups does the storytelling. Numeric "X of 10" drops to a
+              small secondary label so the grid holds the eye. */}
+          <View className="flex-row items-center justify-between">
+            <View>
               <Text
-                className="text-[34px] font-semibold"
-                style={{ color: COLOR.text, letterSpacing: -1 }}
+                className="text-[11px] font-semibold uppercase"
+                style={{ color: COLOR.textMuted, letterSpacing: 1.4 }}
               >
-                {stampsEarned}
+                Stamp card
               </Text>
-              <Text className="text-xl" style={{ color: COLOR.textFaint }}>
-                {" "}/ {STAMPS_TARGET}
+              <Text
+                className="mt-1 text-[13px]"
+                style={{ color: COLOR.textMuted }}
+              >
+                <Text
+                  style={{ color: COLOR.text, fontFamily: FONT.medium }}
+                >
+                  {stampsEarned}
+                </Text>
+                {" "}of {STAMPS_TARGET} stamps collected
               </Text>
             </View>
             <View
@@ -536,8 +573,41 @@ function HomeView({
             </View>
           </View>
 
+          {/* 2 × 5 grid — larger slots than before (h-12 vs h-8) so each
+              coffee cup reads at a glance. Filled slots carry the gold
+              fill + a subtle accent glow; empty slots are dashed rings
+              so they clearly feel like "to be earned" rather than "off". */}
+          <View className="mt-5 flex-row flex-wrap justify-between">
+            {Array.from({ length: STAMPS_TARGET }).map((_, i) => {
+              const filled = i < stampsEarned;
+              return (
+                <View
+                  key={i}
+                  className="mb-2 h-12 w-12 items-center justify-center rounded-2xl"
+                  style={{
+                    backgroundColor: filled ? COLOR.accentDeep : COLOR.bg,
+                    borderWidth: filled ? 0 : 1,
+                    borderColor: COLOR.border,
+                    borderStyle: filled ? "solid" : "dashed",
+                    shadowColor: filled ? COLOR.accent : "transparent",
+                    shadowOffset: { width: 0, height: 2 },
+                    shadowOpacity: filled ? 0.45 : 0,
+                    shadowRadius: filled ? 6 : 0,
+                    elevation: filled ? 3 : 0,
+                  }}
+                >
+                  <Coffee
+                    size={20}
+                    color={filled ? COLOR.accentInk : COLOR.textFaint}
+                    strokeWidth={2.2}
+                  />
+                </View>
+              );
+            })}
+          </View>
+
           <View
-            className="mt-4 h-3 w-full overflow-hidden rounded-full"
+            className="mt-2 h-1.5 w-full overflow-hidden rounded-full"
             style={{ backgroundColor: COLOR.bg }}
           >
             <View
@@ -551,29 +621,6 @@ function HomeView({
                 shadowRadius: 8,
               }}
             />
-          </View>
-
-          <View className="mt-4 flex-row justify-between">
-            {Array.from({ length: STAMPS_TARGET }).map((_, i) => {
-              const filled = i < stampsEarned;
-              return (
-                <View
-                  key={i}
-                  className="h-8 w-8 items-center justify-center rounded-full"
-                  style={{
-                    backgroundColor: filled ? COLOR.accentDeep : COLOR.bg,
-                    borderWidth: 1,
-                    borderColor: filled ? COLOR.accentDeep : COLOR.border,
-                  }}
-                >
-                  <Coffee
-                    size={14}
-                    color={filled ? COLOR.accentInk : COLOR.textFaint}
-                    strokeWidth={2.4}
-                  />
-                </View>
-              );
-            })}
           </View>
         </View>
       </View>
@@ -661,6 +708,61 @@ function HomeView({
         </Text>
       </Pressable>
     </ScrollView>
+  );
+}
+
+// L-shaped corner bracket for the scanner viewport. Absolute-positioned
+// over the white QR card so the four corners read as a scan target
+// frame. Two thin strokes per corner; accent-gold keeps the branding
+// consistent without fighting the QR's black-on-white.
+function ScannerCornerBracket({
+  position,
+}: {
+  position: "tl" | "tr" | "bl" | "br";
+}) {
+  const LEG = 22; // length of each stroke
+  const THICK = 3; // stroke thickness
+  const OFFSET = -6; // negative = sticks out past the card edge
+  const isTop = position === "tl" || position === "tr";
+  const isLeft = position === "tl" || position === "bl";
+  return (
+    <View
+      pointerEvents="none"
+      style={{
+        position: "absolute",
+        width: LEG,
+        height: LEG,
+        top: isTop ? OFFSET : undefined,
+        bottom: isTop ? undefined : OFFSET,
+        left: isLeft ? OFFSET : undefined,
+        right: isLeft ? undefined : OFFSET,
+      }}
+    >
+      {/* Horizontal leg */}
+      <View
+        style={{
+          position: "absolute",
+          height: THICK,
+          width: LEG,
+          top: isTop ? 0 : LEG - THICK,
+          left: 0,
+          backgroundColor: COLOR.accent,
+          borderRadius: THICK / 2,
+        }}
+      />
+      {/* Vertical leg */}
+      <View
+        style={{
+          position: "absolute",
+          width: THICK,
+          height: LEG,
+          top: 0,
+          left: isLeft ? 0 : LEG - THICK,
+          backgroundColor: COLOR.accent,
+          borderRadius: THICK / 2,
+        }}
+      />
+    </View>
   );
 }
 

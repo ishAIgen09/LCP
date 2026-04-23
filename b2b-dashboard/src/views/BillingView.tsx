@@ -161,7 +161,7 @@ export function BillingView({
               ) : (
                 <>
                   <ExternalLink className="h-3.5 w-3.5" strokeWidth={2.25} />
-                  Manage billing & invoices
+                  Manage Payment Method & Invoices
                 </>
               )}
             </Button>

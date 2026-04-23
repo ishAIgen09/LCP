@@ -1,9 +1,12 @@
 import type { Session } from "./theme";
 
-// Production DO droplet running the FastAPI backend + postgres via
-// docker compose. Plain http:// until TLS is added — on Android this
-// requires usesCleartextTraffic=true, on iOS an ATS exception.
-export const API_BASE_URL = "http://178.62.123.228:8000";
+// Local dev target — iOS Simulator + any container sharing the host's
+// network reach the uvicorn on 127.0.0.1:8000 directly. Heads-up:
+// - Android emulator: change to http://10.0.2.2:8000 (emulator alias for host)
+// - Physical device: change to http://<your-LAN-IP>:8000 (same Wi-Fi as dev machine)
+// - Production: swap back to http://178.62.123.228:8000 (the DO droplet)
+// Plain http:// until TLS is added; on Android needs usesCleartextTraffic=true.
+export const API_BASE_URL = "http://127.0.0.1:8000";
 
 if (__DEV__) {
   // eslint-disable-next-line no-console

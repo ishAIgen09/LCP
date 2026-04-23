@@ -327,6 +327,54 @@ export async function getAdminMetrics(
   )
 }
 
+// B2B data-report CSV download. Goes through fetch (not <a href>) so the
+// JWT rides in an Authorization header rather than a query string, and a
+// 4xx surfaces as a throwable the caller can show in a toast.
+export async function downloadB2bReportCsv(
+  token: string,
+  range: MetricsRange,
+): Promise<void> {
+  const path = `/api/b2b/export/reports?range=${encodeURIComponent(range)}`
+  const base =
+    typeof import.meta !== "undefined" &&
+    (import.meta as unknown as { env?: Record<string, string> }).env
+      ? (import.meta as unknown as { env: Record<string, string> }).env
+          .VITE_API_BASE_URL
+      : undefined
+  const url = `${(base || "http://localhost:8000").replace(/\/+$/, "")}${path}`
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    })
+  } catch {
+    throw new Error("Couldn't reach the API — check your connection.")
+  }
+  if (!res.ok) {
+    let detail = `Request failed (${res.status}).`
+    try {
+      const body = await res.json()
+      if (body && typeof body.detail === "string") detail = body.detail
+    } catch {
+      // non-JSON body → stick with generic message
+    }
+    throw new Error(detail)
+  }
+  const disposition = res.headers.get("Content-Disposition") ?? ""
+  const match = /filename="?([^";]+)"?/i.exec(disposition)
+  const filename = match?.[1] ?? `lcp-report-${range}.csv`
+  const blob = await res.blob()
+  const objectUrl = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = objectUrl
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(objectUrl)
+}
+
 export async function updateAdminBrand(
   token: string,
   patch: {

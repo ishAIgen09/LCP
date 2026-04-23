@@ -116,9 +116,14 @@ function ActivityRow({
     ? "rgba(74,222,128,0.22)"
     : "rgba(228,185,127,0.2)";
   const iconColor = isRedeem ? COLOR.live : COLOR.accent;
-  const title = isRedeem
-    ? `Redeemed ${entry.quantity} Free Drink${entry.quantity === 1 ? "" : "s"}`
-    : `Earned ${entry.quantity} stamp${entry.quantity === 1 ? "" : "s"}`;
+  // "Earned @ Cafe" / "Redeemed @ Cafe" reads like a bank statement —
+  // cleaner scan than "Earned N stamps" / "Redeemed N free drinks".
+  // Quantity (e.g. "+3 stamps", "-1 free drink") moves to a subtle
+  // secondary line so the cafe name wins the eye.
+  const verb = isRedeem ? "Redeemed" : "Earned";
+  const qtyLabel = isRedeem
+    ? `${entry.quantity} free drink${entry.quantity === 1 ? "" : "s"}`
+    : `${entry.quantity} stamp${entry.quantity === 1 ? "" : "s"}`;
 
   return (
     <View
@@ -143,8 +148,9 @@ function ActivityRow({
           <Text
             className="text-[15px] font-semibold"
             style={{ color: COLOR.text, letterSpacing: -0.1 }}
+            numberOfLines={1}
           >
-            {title}
+            {verb} @ {entry.cafe_name}
           </Text>
           <Text className="text-[11px]" style={{ color: COLOR.textDim }}>
             {formatWhen(entry.timestamp)}
@@ -157,7 +163,7 @@ function ActivityRow({
             style={{ color: COLOR.textMuted }}
             numberOfLines={1}
           >
-            {entry.cafe_name} · {entry.cafe_address}
+            {entry.cafe_address} · {qtyLabel}
           </Text>
         </View>
       </View>

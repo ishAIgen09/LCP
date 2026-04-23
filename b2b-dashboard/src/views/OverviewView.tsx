@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react"
-import { Scan, Store, Sparkles, Gift, ArrowUpRight, MapPin, CalendarClock } from "lucide-react"
+import { Scan, Store, Sparkles, Gift, ArrowUpRight, MapPin, CalendarClock, Download, Loader2 } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { MetricCard } from "@/components/MetricCard"
 import type { NavKey } from "@/components/Sidebar"
 import type { Brand, Cafe } from "@/lib/mock"
 import {
+  downloadB2bReportCsv,
   getAdminMetrics,
   type ApiMetrics,
   type MetricsFilter,
@@ -105,6 +106,21 @@ export function OverviewView({
   })
   const [filtered, setFiltered] = useState<ApiMetrics | null>(null)
   const [refetchError, setRefetchError] = useState<string | null>(null)
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
+
+  const handleDownloadReport = async () => {
+    if (exporting) return
+    setExporting(true)
+    setExportError(null)
+    try {
+      await downloadB2bReportCsv(token, filter.range ?? "30d")
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : "Download failed.")
+    } finally {
+      setExporting(false)
+    }
+  }
 
   // Refetch on filter change OR when the App-level metrics arrives
   // (which signals a fresh session). Always uses the current filter.
@@ -154,11 +170,19 @@ export function OverviewView({
         filter={filter}
         onFilterChange={setFilter}
         cafes={cafes}
+        onDownloadReport={handleDownloadReport}
+        downloading={exporting}
       />
 
       {refetchError ? (
         <div className="rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-700">
           {refetchError}
+        </div>
+      ) : null}
+
+      {exportError ? (
+        <div className="rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+          Download failed: {exportError}
         </div>
       ) : null}
 
@@ -298,10 +322,14 @@ function FilterBar({
   filter,
   onFilterChange,
   cafes,
+  onDownloadReport,
+  downloading,
 }: {
   filter: MetricsFilter
   onFilterChange: (next: MetricsFilter) => void
   cafes: Cafe[]
+  onDownloadReport: () => void
+  downloading: boolean
 }) {
   const cafeId = filter.cafeId ?? "all"
   const range = filter.range ?? "30d"
@@ -341,6 +369,23 @@ function FilterBar({
             Reset
           </Button>
         ) : null}
+        <div className="ml-auto">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs"
+            onClick={onDownloadReport}
+            disabled={downloading}
+            title="Download the current range as a CSV"
+          >
+            {downloading ? (
+              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" strokeWidth={2.2} />
+            ) : (
+              <Download className="mr-1 h-3.5 w-3.5" strokeWidth={2.2} />
+            )}
+            Download Data Report
+          </Button>
+        </div>
       </div>
     </div>
   )

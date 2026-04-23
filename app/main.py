@@ -1,3 +1,5 @@
+import csv
+import io
 import re
 import secrets
 import sys
@@ -19,6 +21,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -1403,6 +1406,273 @@ async def platform_create_cafe(
         billing_status=cafe.billing_status,
         created_at=cafe.created_at,
     )
+
+
+# ─────────────────────────────────────────────────────────────────
+# CSV exports — Excel-friendly, UTF-8-BOM-prefixed
+# ─────────────────────────────────────────────────────────────────
+
+# Excel on Windows treats UTF-8 CSV as cp1252 unless the file starts
+# with a BOM. Shipping the BOM makes £, em-dashes, accented names etc.
+# open cleanly on a client's laptop without them having to do the
+# Data → Import wizard dance.
+_CSV_BOM = "﻿"
+
+
+def _streaming_csv_response(
+    rows: list[list[str]], filename: str
+) -> StreamingResponse:
+    """Serialize rows to a UTF-8-BOM-prefixed CSV with Excel-safe quoting."""
+    buf = io.StringIO()
+    buf.write(_CSV_BOM)
+    writer = csv.writer(buf, quoting=csv.QUOTE_MINIMAL, lineterminator="\r\n")
+    for row in rows:
+        writer.writerow(row)
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            # Let the admin dashboard read the filename on the JS side if
+            # we ever want to display "Downloaded X.csv" toast.
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
+
+
+_CAFE_STATUS_LABELS: dict[SubscriptionStatus, str] = {
+    SubscriptionStatus.TRIALING: "Trialing",
+    SubscriptionStatus.ACTIVE: "Active",
+    SubscriptionStatus.PAST_DUE: "Past Due",
+    SubscriptionStatus.CANCELED: "Cancelled",
+    SubscriptionStatus.INCOMPLETE: "Incomplete",
+    SubscriptionStatus.PENDING_CANCELLATION: "Pending Cancellation",
+}
+
+_SCHEME_LABELS: dict[SchemeType, str] = {
+    SchemeType.GLOBAL: "LCP+ (Global)",
+    SchemeType.PRIVATE: "Private",
+}
+
+
+# SECURITY — unauth'd, same posture as the other /api/admin/platform/*
+# routes. Wrap with super-admin dependency before prod.
+#
+# Super-admin Cafes CRM export. Accepts the same `status` + `joined`
+# filters as the list endpoint so "what you see is what you download".
+@app.get("/api/admin/export/cafes")
+async def export_cafes_csv(
+    status: str | None = Query(None),
+    joined: str | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    if status is not None:
+        try:
+            status_enum = SubscriptionStatus(status)
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail=f"status must be one of: {', '.join(s.value for s in SubscriptionStatus)}.",
+            )
+    else:
+        status_enum = None
+    if joined is not None and joined not in _CAFE_JOINED_WINDOWS:
+        raise HTTPException(
+            status_code=422,
+            detail="joined must be one of: last_7_days, last_30_days, all.",
+        )
+
+    stmt = (
+        select(Cafe, Brand)
+        .join(Brand, Brand.id == Cafe.brand_id)
+        .order_by(Brand.name.asc(), Cafe.name.asc())
+    )
+    if status_enum is not None:
+        stmt = stmt.where(Cafe.billing_status == status_enum)
+    if joined == "last_7_days":
+        stmt = stmt.where(
+            Cafe.created_at >= datetime.now(timezone.utc) - timedelta(days=7)
+        )
+    elif joined == "last_30_days":
+        stmt = stmt.where(
+            Cafe.created_at >= datetime.now(timezone.utc) - timedelta(days=30)
+        )
+    joined_rows = (await session.execute(stmt)).all()
+
+    rows: list[list[str]] = [
+        [
+            "Brand Name",
+            "Cafe Name",
+            "Address",
+            "Scheme",
+            "Status",
+            "Joined Date",
+            "Contact Email",
+        ]
+    ]
+    for cafe, brand in joined_rows:
+        rows.append(
+            [
+                brand.name,
+                cafe.name,
+                cafe.address,
+                _SCHEME_LABELS.get(brand.scheme_type, brand.scheme_type.value),
+                _CAFE_STATUS_LABELS.get(
+                    cafe.billing_status, cafe.billing_status.value
+                ),
+                cafe.created_at.strftime("%Y-%m-%d"),
+                cafe.contact_email,
+            ]
+        )
+
+    # ISO-ish timestamp in the filename so repeated exports don't clobber
+    # each other in the browser's downloads folder.
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M")
+    return _streaming_csv_response(rows, f"lcp-cafes-{stamp}.csv")
+
+
+_RANGE_LABELS = {
+    "7d": "Last 7 Days",
+    "30d": "Last 30 Days",
+    "ytd": "Year to Date",
+    "all": "All Time",
+}
+
+
+@app.get("/api/b2b/export/reports")
+async def export_b2b_report_csv(
+    range: str = Query("30d"),
+    brand_id: str | None = Query(None),
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    if range not in _METRICS_RANGES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="range must be one of: 7d, 30d, ytd, all.",
+        )
+
+    # RLS: if the frontend passes an explicit brand_id, it MUST match the
+    # JWT's brand. Otherwise we just scope to the JWT's brand silently.
+    # This keeps the endpoint shape symmetric with /api/admin/metrics
+    # without opening a cross-brand data leak.
+    if brand_id is not None and brand_id.lower() != "all":
+        try:
+            parsed = UUID(brand_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="brand_id must be a valid UUID or 'all'.",
+            )
+        if parsed != admin.brand_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="brand_id does not match the authenticated brand.",
+            )
+
+    brand = await session.get(Brand, admin.brand_id)
+    if brand is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin session references an unknown brand.",
+        )
+
+    now = datetime.now(timezone.utc)
+    window_start, prev_start, prev_end = _metrics_range_bounds(range, now)
+
+    def _scoped_count(
+        event: LedgerEventType, start: datetime | None, end: datetime | None
+    ):
+        q = (
+            select(func.count())
+            .select_from(StampLedger)
+            .join(Cafe, StampLedger.cafe_id == Cafe.id)
+            .where(Cafe.brand_id == admin.brand_id)
+            .where(StampLedger.event_type == event)
+        )
+        if start is not None:
+            q = q.where(StampLedger.created_at >= start)
+        if end is not None:
+            q = q.where(StampLedger.created_at < end)
+        return q
+
+    total_earned = int(
+        (
+            await session.execute(_scoped_count(LedgerEventType.EARN, window_start, now))
+        ).scalar_one()
+    )
+    total_redeemed = int(
+        (
+            await session.execute(_scoped_count(LedgerEventType.REDEEM, window_start, now))
+        ).scalar_one()
+    )
+    prev_total_earned: int | None = None
+    if prev_start is not None and prev_end is not None:
+        prev_total_earned = int(
+            (
+                await session.execute(
+                    _scoped_count(LedgerEventType.EARN, prev_start, prev_end)
+                )
+            ).scalar_one()
+        )
+
+    total_cafes = int(
+        (
+            await session.execute(
+                select(func.count(Cafe.id)).where(Cafe.brand_id == admin.brand_id)
+            )
+        ).scalar_one()
+    )
+
+    # Per-cafe rollup for the 30d window — gives the owner a branch-by-
+    # branch breakdown below the summary.
+    thirty_days_ago = now - timedelta(days=30)
+    per_cafe_rows = (
+        await session.execute(
+            select(Cafe.name, func.count().label("scans"))
+            .join(StampLedger, StampLedger.cafe_id == Cafe.id)
+            .where(Cafe.brand_id == admin.brand_id)
+            .where(StampLedger.event_type == LedgerEventType.EARN)
+            .where(StampLedger.created_at >= thirty_days_ago)
+            .group_by(Cafe.name)
+            .order_by(func.count().desc())
+        )
+    ).all()
+
+    # Two-section CSV — Excel shows a nice visual gap on the blank row
+    # between Summary and Per-Cafe tables.
+    rows: list[list[str]] = [
+        ["Local Coffee Perks — Data Report"],
+        ["Brand", brand.name],
+        ["Date Range", _RANGE_LABELS[range]],
+        [
+            "Window Start",
+            window_start.isoformat() if window_start is not None else "(all time)",
+        ],
+        ["Window End", now.isoformat()],
+        ["Generated At", now.strftime("%Y-%m-%d %H:%M UTC")],
+        [],  # blank separator
+        ["Metric", "Value"],
+        ["Total Stamps Earned", str(total_earned)],
+        ["Total Free Coffees Redeemed", str(total_redeemed)],
+        [
+            "Prior-Period Stamps Earned",
+            str(prev_total_earned) if prev_total_earned is not None else "-",
+        ],
+        ["Total Cafes", str(total_cafes)],
+        [],
+        ["Per-Cafe Breakdown (Last 30 Days)"],
+        ["Cafe Name", "Scans"],
+    ]
+    for name, scans in per_cafe_rows:
+        rows.append([name, str(int(scans))])
+    if not per_cafe_rows:
+        rows.append(["(no scans in the last 30 days)", ""])
+
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", brand.name).strip("-").lower() or "brand"
+    stamp = now.strftime("%Y-%m-%d_%H%M")
+    return _streaming_csv_response(rows, f"lcp-report-{slug}-{range}-{stamp}.csv")
 
 
 @app.get("/api/admin/cafes", response_model=list[CafeResponse])

@@ -261,3 +261,56 @@ export function postAiAgent(message: string): Promise<AiAgentReply> {
     message,
   });
 }
+
+// Fetch a CSV and trigger a browser download. Goes through fetch (not a
+// plain <a href>) so a 4xx surfaces as a throwable error the caller can
+// show in a toast, and the filename comes from Content-Disposition when
+// the server provides one (falls back to `fallbackName` otherwise).
+export async function downloadCsv(
+  path: string,
+  fallbackName: string,
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}${path}`, { method: "GET" });
+  } catch {
+    throw new Error("Couldn't reach the API — check your connection.");
+  }
+  if (!res.ok) {
+    let detail = `Request failed (${res.status}).`;
+    try {
+      const data = await res.json();
+      if (data && typeof data.detail === "string") detail = data.detail;
+    } catch {
+      // non-JSON error body → stick with the generic message
+    }
+    throw new Error(detail);
+  }
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const match = /filename="?([^";]+)"?/i.exec(disposition);
+  const filename = match?.[1] ?? fallbackName;
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
+export function exportCafesCsv(filter?: CafeListFilter): Promise<void> {
+  const params = new URLSearchParams();
+  if (filter?.status && filter.status !== "all") {
+    params.set("status", filter.status);
+  }
+  if (filter?.joined && filter.joined !== "all") {
+    params.set("joined", filter.joined);
+  }
+  const qs = params.toString();
+  return downloadCsv(
+    `/api/admin/export/cafes${qs ? `?${qs}` : ""}`,
+    "lcp-cafes.csv",
+  );
+}
