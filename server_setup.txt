@@ -1,0 +1,146 @@
+============================================================
+ LCP STATIC SITE — DigitalOcean Droplet Deployment
+ Domain:        localcoffeeperks.com (+ www)
+ Web root /     -> /var/www/lcp/main-website/dist
+ /waitlist      -> /var/www/lcp/waitlist-page/dist
+ SSH as root (or a sudoer); paste each block in order.
+============================================================
+
+
+------------------------------------------------------------
+ STEP 1 — One-time prerequisites (skip if already installed)
+------------------------------------------------------------
+sudo apt update
+sudo apt install -y git nginx certbot python3-certbot-nginx
+
+
+------------------------------------------------------------
+ STEP 2 — Clone (first deploy) OR pull (subsequent deploys)
+------------------------------------------------------------
+# --- FIRST TIME ONLY: clone into /var/www/lcp ---
+sudo mkdir -p /var/www
+sudo git clone https://github.com/ishAIgen09/LCP.git /var/www/lcp
+
+# --- EVERY DEPLOY AFTER THAT: pull the latest build ---
+cd /var/www/lcp
+sudo git fetch --all
+sudo git reset --hard origin/main
+
+# Make sure Nginx (www-data) can read the files
+sudo chown -R www-data:www-data /var/www/lcp
+sudo find /var/www/lcp -type d -exec chmod 755 {} \;
+sudo find /var/www/lcp -type f -exec chmod 644 {} \;
+
+
+------------------------------------------------------------
+ STEP 3 — Write the Nginx server block
+------------------------------------------------------------
+sudo tee /etc/nginx/sites-available/localcoffeeperks.com > /dev/null <<'NGINX'
+server {
+    listen 80;
+    listen [::]:80;
+    server_name localcoffeeperks.com www.localcoffeeperks.com;
+
+    # Hardening
+    server_tokens off;
+    client_max_body_size 10M;
+
+    # ----------------------------------------------------------
+    # /waitlist  ->  /var/www/lcp/waitlist-page/dist
+    # MUST be declared BEFORE the root "location /" block so it
+    # wins the longest-prefix match for /waitlist and /waitlist/*.
+    # alias + try_files keeps deep links working for the SPA.
+    # ----------------------------------------------------------
+    location /waitlist/ {
+        alias /var/www/lcp/waitlist-page/dist/;
+        index index.html;
+        try_files $uri $uri/ /waitlist/index.html;
+    }
+
+    # Bare /waitlist (no trailing slash) — redirect to /waitlist/
+    location = /waitlist {
+        return 301 /waitlist/;
+    }
+
+    # ----------------------------------------------------------
+    # /  ->  /var/www/lcp/main-website/dist  (default site)
+    # ----------------------------------------------------------
+    location / {
+        root /var/www/lcp/main-website/dist;
+        index index.html;
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Long-cache hashed assets, never cache HTML
+    location ~* \.(?:js|css|woff2?|ttf|eot|otf|png|jpg|jpeg|gif|webp|svg|ico|map)$ {
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }
+
+    location = /index.html {
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+    }
+}
+NGINX
+
+# Enable the site, drop the default placeholder
+sudo ln -sf /etc/nginx/sites-available/localcoffeeperks.com /etc/nginx/sites-enabled/localcoffeeperks.com
+sudo rm -f /etc/nginx/sites-enabled/default
+
+
+------------------------------------------------------------
+ STEP 4 — Validate config, then reload (NOT restart)
+------------------------------------------------------------
+# `nginx -t` parses the config without touching the running
+# process. ONLY reload after it prints "syntax is ok".
+sudo nginx -t && sudo systemctl reload nginx
+
+# (If you need a hard restart instead — e.g. after a package
+#  upgrade — use:  sudo systemctl restart nginx)
+
+
+------------------------------------------------------------
+ STEP 5 — Issue HTTPS cert via Let's Encrypt (Certbot)
+------------------------------------------------------------
+# Prerequisites:
+#   - DNS A records for both names point to this droplet's IP
+#   - Port 80 is reachable from the public internet
+#
+# --nginx       : auto-edit the server block we just wrote to
+#                 add 443 + SSL directives + HTTP->HTTPS redirect
+# --redirect    : force HTTP -> HTTPS
+# --agree-tos   : accept the LE Subscriber Agreement
+# -m EMAIL      : where renewal-failure notices go
+# -n            : non-interactive (no prompts)
+
+sudo certbot --nginx \
+  -d localcoffeeperks.com \
+  -d www.localcoffeeperks.com \
+  --redirect \
+  --agree-tos \
+  -m hello@impactvisualbranding.co.uk \
+  -n
+
+# Sanity-check renewal cron (Certbot installs a systemd timer)
+sudo systemctl list-timers | grep certbot
+sudo certbot renew --dry-run
+
+
+------------------------------------------------------------
+ STEP 6 — Smoke test
+------------------------------------------------------------
+curl -I https://localcoffeeperks.com/            # expect 200
+curl -I https://localcoffeeperks.com/waitlist/   # expect 200
+curl -I https://www.localcoffeeperks.com/        # expect 200 (or 301 -> apex)
+
+
+============================================================
+ RE-DEPLOY (after pushing a new build to GitHub)
+============================================================
+cd /var/www/lcp \
+  && sudo git fetch --all \
+  && sudo git reset --hard origin/main \
+  && sudo chown -R www-data:www-data /var/www/lcp \
+  && sudo nginx -t && sudo systemctl reload nginx
+============================================================

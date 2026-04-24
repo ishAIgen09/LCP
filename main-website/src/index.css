@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Local Coffee Perks — Design tokens. All colors HSL. */
+
+@layer base {
+  :root {
+    /* Brand palette */
+    --espresso: 12 18% 9%;        /* #1C1412 */
+    --espresso-deep: 12 22% 6%;
+    --cream: 36 27% 94%;          /* #F5F2ED */
+    --cream-muted: 36 15% 78%;
+    --mint: 152 94% 57%;          /* #2AF598 */
+    --mint-glow: 152 94% 57%;
+
+    /* Semantic mapping */
+    --background: var(--espresso);
+    --foreground: var(--cream);
+
+    --card: 12 20% 11%;
+    --card-foreground: var(--cream);
+
+    --popover: 12 20% 11%;
+    --popover-foreground: var(--cream);
+
+    --primary: var(--mint);
+    --primary-foreground: 12 30% 8%;
+
+    --secondary: 12 14% 16%;
+    --secondary-foreground: var(--cream);
+
+    --muted: 12 14% 14%;
+    --muted-foreground: 36 12% 65%;
+
+    --accent: var(--mint);
+    --accent-foreground: 12 30% 8%;
+
+    --destructive: 0 70% 55%;
+    --destructive-foreground: var(--cream);
+
+    --border: 12 14% 18%;
+    --input: 12 14% 18%;
+    --ring: var(--mint);
+
+    --radius: 1.25rem;
+
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    --background: var(--espresso);
+    --foreground: var(--cream);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    background-color: hsl(var(--espresso));
+    background-image:
+      radial-gradient(ellipse at 50% 0%, hsl(12 22% 13% / 0.9), transparent 60%),
+      radial-gradient(ellipse at 50% 100%, hsl(12 25% 5% / 0.9), transparent 55%);
+    min-height: 100vh;
+  }
+
+  /* Subtle grain */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1;
+    opacity: 0.05;
+    mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  }
+
+  .font-display {
+    font-family: 'Fraunces', 'Playfair Display', Georgia, serif;
+    font-optical-sizing: auto;
+  }
+}

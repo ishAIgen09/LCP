@@ -4,6 +4,12 @@ __pycache__/
 
 # Build artifacts / dependencies / local-only docs
 node_modules/
-dist/
 *.tsbuildinfo
 MEMORY.md
+
+# Allow front-end production builds for the static-host deploy,
+# but keep app-level dist (Python/admin) ignored.
+app/dist/
+admin-dashboard/dist/
+b2b-dashboard/dist/
+consumer-app/dist/

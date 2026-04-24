@@ -1,0 +1,132 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Deep Espresso #1C1412 -> HSL 12 13% 9% */
+    --background: 36 30% 96%;
+    --foreground: 12 13% 9%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 12 13% 9%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 12 13% 9%;
+
+    /* Espresso as primary on light surfaces */
+    --primary: 12 13% 9%;
+    --primary-foreground: 36 30% 96%;
+
+    --secondary: 30 20% 92%;
+    --secondary-foreground: 12 13% 9%;
+
+    --muted: 30 15% 90%;
+    --muted-foreground: 12 8% 35%;
+
+    /* Electric Mint #2AF598 -> HSL 152 92% 56% */
+    --accent: 152 92% 56%;
+    --accent-foreground: 12 13% 9%;
+
+    --destructive: 0 70% 45%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 30 15% 86%;
+    --input: 30 15% 86%;
+    --ring: 152 92% 56%;
+
+    --radius: 0.75rem;
+
+    /* Brand tokens */
+    --espresso: 12 13% 9%;
+    --espresso-soft: 12 12% 14%;
+    --cream: 36 35% 95%;
+    --cream-warm: 32 40% 92%;
+    --mint: 152 92% 56%;
+    --mint-glow: 152 92% 70%;
+
+    --gradient-hero: linear-gradient(180deg, hsl(var(--espresso) / 0.55) 0%, hsl(var(--espresso) / 0.85) 100%);
+    --gradient-mint: linear-gradient(135deg, hsl(var(--mint)) 0%, hsl(var(--mint-glow)) 100%);
+    --shadow-elegant: 0 30px 80px -30px hsl(var(--espresso) / 0.45);
+    --shadow-soft: 0 10px 40px -10px hsl(var(--espresso) / 0.15);
+    --shadow-mint: 0 10px 30px -10px hsl(var(--mint) / 0.45);
+
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    --background: 12 13% 9%;
+    --foreground: 36 30% 96%;
+    --card: 12 12% 12%;
+    --card-foreground: 36 30% 96%;
+    --popover: 12 12% 12%;
+    --popover-foreground: 36 30% 96%;
+    --primary: 36 30% 96%;
+    --primary-foreground: 12 13% 9%;
+    --secondary: 12 8% 18%;
+    --secondary-foreground: 36 30% 96%;
+    --muted: 12 8% 16%;
+    --muted-foreground: 36 15% 65%;
+    --accent: 152 92% 56%;
+    --accent-foreground: 12 13% 9%;
+    --destructive: 0 62.8% 40%;
+    --destructive-foreground: 36 30% 96%;
+    --border: 12 8% 20%;
+    --input: 12 8% 20%;
+    --ring: 152 92% 56%;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  html { scroll-behavior: smooth; }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3, .font-display {
+    font-family: 'Fraunces', 'Playfair Display', Georgia, serif;
+    font-feature-settings: "ss01", "ss02";
+    letter-spacing: -0.02em;
+  }
+}
+
+@layer utilities {
+  .tabular-nums { font-variant-numeric: tabular-nums; }
+  .text-balance { text-wrap: balance; }
+
+  .reveal {
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity 0.9s cubic-bezier(0.22, 1, 0.36, 1), transform 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .reveal.in-view {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .bg-espresso { background-color: hsl(var(--espresso)); }
+  .bg-cream { background-color: hsl(var(--cream)); }
+  .text-mint { color: hsl(var(--mint)); }
+  .bg-mint { background-color: hsl(var(--mint)); }
+  .border-mint { border-color: hsl(var(--mint)); }
+
+  .shadow-elegant { box-shadow: var(--shadow-elegant); }
+  .shadow-soft { box-shadow: var(--shadow-soft); }
+  .shadow-mint { box-shadow: var(--shadow-mint); }
+}
+
+@layer components {
+  .marquee-track {
+    animation: marquee 50s linear infinite;
+  }
+  .marquee-pause:hover .marquee-track { animation-play-state: paused; }
+}
