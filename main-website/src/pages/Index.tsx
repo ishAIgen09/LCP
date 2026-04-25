@@ -85,6 +85,15 @@ const Index = () => {
         <div className="mt-12 flex flex-col items-center gap-4">
           <a
             href="/waitlist/"
+            onClick={(e) => {
+              // Force a full-page navigation so nothing — service workers,
+              // browser extensions, react-router internals, anything — can
+              // intercept and SPA-trap the click. /waitlist/ is a separate
+              // built app (main-website/dist/waitlist), not a route in
+              // this React tree.
+              e.preventDefault();
+              window.location.href = "/waitlist/";
+            }}
             className="group relative inline-flex items-center justify-center gap-2 rounded-full bg-mint px-10 py-4 text-sm font-semibold uppercase tracking-[0.18em] text-primary-foreground transition-transform duration-300 hover:scale-[1.04] active:scale-[0.98] animate-pulse-mint"
           >
             Join the Waitlist
