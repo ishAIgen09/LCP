@@ -71,16 +71,22 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
-    # Long-cache hashed assets, never cache HTML
-    location ~* \.(?:js|css|woff2?|ttf|eot|otf|png|jpg|jpeg|gif|webp|svg|ico|map)$ {
-        expires 30d;
-        add_header Cache-Control "public, immutable";
-        try_files $uri =404;
-    }
-
+    # Never cache HTML — clients should always re-fetch the entry point so
+    # they pick up new hashed JS/CSS filenames after a redeploy.
     location = /index.html {
         add_header Cache-Control "no-cache, no-store, must-revalidate";
     }
+    location = /waitlist/index.html {
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+    }
+
+    # NB: do NOT add a regex `location ~* \.(js|css|...)$` block here.
+    # Nginx regex locations override prefix locations, and without their
+    # own `root`/`alias` they fall back to the compiled-in default
+    # docroot — which means /waitlist/assets/*.js would 404 from the
+    # wrong path. Prefix locations above already serve the assets via
+    # try_files; long-cache headers can be added per-location later if
+    # needed.
 }
 NGINX
 

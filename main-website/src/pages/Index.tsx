@@ -1,4 +1,3 @@
-import { useToast } from "@/hooks/use-toast";
 import coffee1 from "@/assets/coffee-1.jpeg";
 import coffee2 from "@/assets/coffee-2.jpeg";
 import coffee3 from "@/assets/coffee-3.jpeg";
@@ -27,15 +26,6 @@ const tiles: Tile[] = [
 ];
 
 const Index = () => {
-  const { toast } = useToast();
-
-  const handleWaitlist = () => {
-    toast({
-      title: "You're nearly on the list ☕",
-      description: "Waitlist sign-up opens soon. We'll save you a seat at the counter.",
-    });
-  };
-
   return (
     <main className="relative z-10 min-h-screen overflow-hidden">
       {/* Top bar */}
@@ -93,13 +83,13 @@ const Index = () => {
         </p>
 
         <div className="mt-12 flex flex-col items-center gap-4">
-          <button
-            onClick={handleWaitlist}
+          <a
+            href="/waitlist/"
             className="group relative inline-flex items-center justify-center gap-2 rounded-full bg-mint px-10 py-4 text-sm font-semibold uppercase tracking-[0.18em] text-primary-foreground transition-transform duration-300 hover:scale-[1.04] active:scale-[0.98] animate-pulse-mint"
           >
             Join the Waitlist
             <span aria-hidden className="transition-transform duration-300 group-hover:translate-x-1">→</span>
-          </button>
+          </a>
           <p className="text-xs uppercase tracking-[0.22em] text-cream/45">
             Be first to brew with us at launch
           </p>

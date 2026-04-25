@@ -5,6 +5,10 @@ import { componentTagger } from "lovable-tagger";
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
+  // Hosted at https://localcoffeeperks.com/waitlist/ (Nginx alias).
+  // Without this, dist/index.html references /assets/* (root-relative)
+  // and the browser 404s on every chunk → blank white page.
+  base: "/waitlist/",
   server: {
     host: "::",
     port: 8080,
