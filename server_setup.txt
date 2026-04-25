@@ -2,7 +2,10 @@
  LCP STATIC SITE — DigitalOcean Droplet Deployment
  Domain:        localcoffeeperks.com (+ www)
  Web root /     -> /var/www/lcp/main-website/dist
- /waitlist      -> /var/www/lcp/waitlist-page/dist
+ /waitlist      -> served from main-website/dist/waitlist/
+                   (waitlist-page's build copies its dist tree
+                    into main-website/dist/waitlist after each
+                    build — single root, no Nginx alias.)
  SSH as root (or a sudoer); paste each block in order.
 ============================================================
 
@@ -45,29 +48,26 @@ server {
     server_tokens off;
     client_max_body_size 10M;
 
-    # ----------------------------------------------------------
-    # /waitlist  ->  /var/www/lcp/waitlist-page/dist
-    # MUST be declared BEFORE the root "location /" block so it
-    # wins the longest-prefix match for /waitlist and /waitlist/*.
-    # alias + try_files keeps deep links working for the SPA.
-    # ----------------------------------------------------------
-    location /waitlist/ {
-        alias /var/www/lcp/waitlist-page/dist/;
-        index index.html;
-        try_files $uri $uri/ /waitlist/index.html;
-    }
+    # Single doc root. The waitlist app lives physically inside
+    # main-website/dist/waitlist/ (copied there by waitlist-page's
+    # post-build step), so /waitlist/* resolves with normal static
+    # file serving — no alias, no MIME-type surprises.
+    root /var/www/lcp/main-website/dist;
+    index index.html;
 
-    # Bare /waitlist (no trailing slash) — redirect to /waitlist/
+    # /waitlist (no slash) → /waitlist/  (so the index.html is found)
     location = /waitlist {
         return 301 /waitlist/;
     }
 
-    # ----------------------------------------------------------
-    # /  ->  /var/www/lcp/main-website/dist  (default site)
-    # ----------------------------------------------------------
+    # SPA fallback for the waitlist app — deep links like
+    # /waitlist/anything fall back to /waitlist/index.html.
+    location /waitlist/ {
+        try_files $uri $uri/ /waitlist/index.html;
+    }
+
+    # SPA fallback for the marketing site.
     location / {
-        root /var/www/lcp/main-website/dist;
-        index index.html;
         try_files $uri $uri/ /index.html;
     }
 
@@ -79,14 +79,6 @@ server {
     location = /waitlist/index.html {
         add_header Cache-Control "no-cache, no-store, must-revalidate";
     }
-
-    # NB: do NOT add a regex `location ~* \.(js|css|...)$` block here.
-    # Nginx regex locations override prefix locations, and without their
-    # own `root`/`alias` they fall back to the compiled-in default
-    # docroot — which means /waitlist/assets/*.js would 404 from the
-    # wrong path. Prefix locations above already serve the assets via
-    # try_files; long-cache headers can be added per-location later if
-    # needed.
 }
 NGINX
 
