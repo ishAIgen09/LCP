@@ -21,4 +21,10 @@ jobs:
           host: ${{ secrets.DROPLET_HOST }}
           username: ${{ secrets.DROPLET_USER }}
           key: ${{ secrets.DROPLET_SSH_KEY }}
-          script: cd /var/www/lcp && git fetch --all && git reset --hard origin/main && chown -R www-data:www-data /var/www/lcp && docker compose up -d --build
+          # `.env` is intentionally untracked (holds Stripe keys, DB
+          # password, JWT secret). The persistent copy at
+          # /root/.env-lcp-production is restored after the git reset so
+          # `docker compose` can interpolate POSTGRES_PASSWORD et al.
+          # Without this, compose fails with "POSTGRES_PASSWORD is
+          # missing a value".
+          script: cd /var/www/lcp && git fetch --all && git reset --hard origin/main && cp /root/.env-lcp-production .env && chmod 600 .env && chown -R www-data:www-data /var/www/lcp && docker compose up -d --build
