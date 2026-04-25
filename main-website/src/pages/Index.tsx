@@ -14,31 +14,41 @@ type Tile = {
   delay: string;
 };
 
+// Mobile (default): every tile is a uniform aspect-square in a
+// 2-col grid → 4 flush rows of 2 = no awkward bottom gap.
+// sm+ : the editorial masonry kicks in via sm:-prefixed spans
+// against an auto-rows track.
 const tiles: Tile[] = [
-  { src: coffee1, alt: "Latte art on a flat white", className: "col-span-2 row-span-2", delay: "0s" },
-  { src: coffee2, alt: "Independent café counter", className: "col-span-2 row-span-3", delay: "1.2s" },
-  { src: coffee3, alt: "Coffee with pastry", className: "col-span-2 row-span-2", delay: "0.6s" },
-  { src: coffee4, alt: "Espresso pull", className: "col-span-2 row-span-2", delay: "2s" },
-  { src: coffee5, alt: "Cortado on a saucer", className: "col-span-2 row-span-2", delay: "0.3s" },
-  { src: coffee6, alt: "Iced coffee in a tall glass", className: "col-span-2 row-span-3", delay: "1.6s" },
-  { src: coffee7, alt: "Beans being weighed", className: "col-span-2 row-span-2", delay: "0.9s" },
-  { src: coffee8, alt: "Morning coffee on a wooden table", className: "col-span-2 row-span-2", delay: "2.4s" },
+  { src: coffee1, alt: "Latte art on a flat white", className: "sm:col-span-2 sm:row-span-2", delay: "0s" },
+  { src: coffee2, alt: "Independent café counter", className: "sm:col-span-2 sm:row-span-3", delay: "1.2s" },
+  { src: coffee3, alt: "Coffee with pastry", className: "sm:col-span-2 sm:row-span-2", delay: "0.6s" },
+  { src: coffee4, alt: "Espresso pull", className: "sm:col-span-2 sm:row-span-2", delay: "2s" },
+  { src: coffee5, alt: "Cortado on a saucer", className: "sm:col-span-2 sm:row-span-2", delay: "0.3s" },
+  { src: coffee6, alt: "Iced coffee in a tall glass", className: "sm:col-span-2 sm:row-span-3", delay: "1.6s" },
+  { src: coffee7, alt: "Beans being weighed", className: "sm:col-span-2 sm:row-span-2", delay: "0.9s" },
+  { src: coffee8, alt: "Morning coffee on a wooden table", className: "sm:col-span-2 sm:row-span-2", delay: "2.4s" },
 ];
 
 const Index = () => {
   return (
     <main className="relative z-10 min-h-screen overflow-hidden">
       {/* Top bar */}
-      <header className="mx-auto flex max-w-7xl items-center justify-between px-6 pt-6 text-xs uppercase tracking-[0.2em] text-cream/60 sm:px-10">
-        <div className="flex items-center gap-2">
+      <header className="mx-auto flex max-w-7xl items-center justify-between px-6 pt-6 text-xs uppercase tracking-[0.2em] text-cream/70 sm:px-10">
+        <div className="flex items-center gap-2 rounded-full border border-mint/30 bg-mint/10 px-3 py-1.5 text-mint">
           <span className="h-1.5 w-1.5 rounded-full bg-mint animate-dot-pulse" />
-          <span>Coming soon · 2026</span>
+          <span className="font-semibold tracking-[0.22em]">Launching Spring 2026</span>
         </div>
-        <div className="hidden sm:block">Independent cafés · UK</div>
+        <div className="hidden sm:block">Built for local cafés</div>
       </header>
 
       {/* Brand block */}
       <section className="mx-auto max-w-4xl px-6 pt-16 text-center sm:pt-24">
+        <div className="mb-8 flex justify-center animate-fade-in">
+          <span className="inline-flex items-center gap-2 rounded-full border border-mint/40 bg-espresso/40 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-[0.28em] text-mint backdrop-blur-sm shadow-[0_0_20px_-4px_rgba(42,245,152,0.35)]">
+            <span className="h-1.5 w-1.5 rounded-full bg-mint animate-dot-pulse" />
+            Coming Soon · Spring 2026
+          </span>
+        </div>
         <h1 className="font-display text-[15vw] font-medium leading-[0.95] tracking-tight text-cream sm:text-7xl md:text-8xl lg:text-[112px] animate-fade-in">
           Local <span className="italic text-mint/90">Coffee</span> Perks
         </h1>
@@ -55,11 +65,11 @@ const Index = () => {
 
       {/* Editorial collage */}
       <section className="mx-auto mt-14 max-w-7xl px-6 sm:mt-20 sm:px-10">
-        <div className="grid auto-rows-[44px] grid-cols-4 gap-3 sm:auto-rows-[60px] sm:gap-4 md:grid-cols-8 md:auto-rows-[72px]">
+        <div className="grid grid-cols-2 gap-3 sm:auto-rows-[60px] sm:grid-cols-4 sm:gap-4 md:grid-cols-8 md:auto-rows-[72px]">
           {tiles.map((tile, i) => (
             <figure
               key={i}
-              className={`group relative overflow-hidden rounded-[20px] bg-card shadow-[0_20px_60px_-20px_rgba(0,0,0,0.6)] ring-1 ring-white/5 ${tile.className}`}
+              className={`group relative aspect-square overflow-hidden rounded-[20px] bg-card shadow-[0_20px_60px_-20px_rgba(0,0,0,0.6)] ring-1 ring-white/5 sm:aspect-auto ${tile.className}`}
               style={{ animation: `float-soft 7s ease-in-out ${tile.delay} infinite` }}
             >
               <img
@@ -99,8 +109,11 @@ const Index = () => {
             Join the Waitlist
             <span aria-hidden className="transition-transform duration-300 group-hover:translate-x-1">→</span>
           </a>
-          <p className="text-xs uppercase tracking-[0.22em] text-cream/45">
-            Be first to brew with us at launch
+          <p className="max-w-md text-xs uppercase tracking-[0.22em] text-mint/80">
+            Secure your <span className="text-mint">Founding 100</span> lifetime discount
+          </p>
+          <p className="text-[11px] uppercase tracking-[0.22em] text-cream/40">
+            No payment · No commitment · Just be first to know
           </p>
         </div>
       </section>

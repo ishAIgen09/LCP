@@ -27,7 +27,7 @@ export const Hero = () => {
             Turn first-timers into regulars. Without the paper card.
           </h2>
           <p className="mx-auto animate-fade-in-up max-w-2xl text-balance text-base leading-relaxed text-white/80 sm:text-lg" style={{ animationDelay: "240ms" }}>
-            The exclusive loyalty network for independent coffee shops and small collectives. We strictly <span className="text-mint font-semibold">do not partner with corporate chains over 10 locations</span>. Let's keep the high street local.
+            A loyalty network built for independent coffee shops and small collectives — <span className="text-mint font-semibold">never the corporate chains over 10 locations</span>. Let's keep the high street local.
           </p>
 
           <div className="flex animate-fade-in-up flex-col items-center gap-4 pt-2" style={{ animationDelay: "360ms" }}>
@@ -36,7 +36,7 @@ export const Hero = () => {
               size="lg"
               className="bg-mint text-accent-foreground shadow-mint hover:bg-mint/90 hover:shadow-mint h-12 px-7 text-base font-semibold"
             >
-              Get on the list — 20 seconds
+              Put me on the waitlist
             </Button>
             <LiveCounters variant="hero" />
           </div>
