@@ -8,15 +8,17 @@ on:
 
 jobs:
   deploy:
-    name: SSH + pull on droplet
+    name: SSH + pull + rebuild on droplet
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Bumped from 5 → 15 to give `docker compose up -d --build` enough
+    # headroom on a cold cache (the API image build is the longest step).
+    timeout-minutes: 15
 
     steps:
-      - name: SSH into droplet and pull latest
+      - name: SSH into droplet and redeploy
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.DROPLET_HOST }}
           username: ${{ secrets.DROPLET_USER }}
           key: ${{ secrets.DROPLET_SSH_KEY }}
-          script: cd /var/www/lcp && git fetch --all && git reset --hard origin/main && chown -R www-data:www-data /var/www/lcp
+          script: cd /var/www/lcp && git fetch --all && git reset --hard origin/main && chown -R www-data:www-data /var/www/lcp && docker compose up -d --build
