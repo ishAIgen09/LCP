@@ -4,74 +4,19 @@ on:
   push:
     branches:
       - main
-  # Lets you re-trigger a deploy from the GitHub UI without pushing a new commit.
   workflow_dispatch:
-
-# Only one deploy to main runs at a time. If another push arrives mid-deploy,
-# it queues (cancel-in-progress=false). Prevents two concurrent `docker compose
-# up --build` on the same droplet stomping on each other.
-concurrency:
-  group: deploy-main
-  cancel-in-progress: false
 
 jobs:
   deploy:
-    name: SSH + rebuild on droplet
+    name: SSH + pull on droplet
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
 
     steps:
-      - name: SSH into droplet and redeploy
-        uses: appleboy/ssh-action@v1.2.0
+      - name: SSH into droplet and pull latest
+        uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.DROPLET_HOST }}
           username: ${{ secrets.DROPLET_USER }}
           key: ${{ secrets.DROPLET_SSH_KEY }}
-          port: ${{ secrets.DROPLET_PORT || '22' }}
-          # Abort the whole job on the first non-zero exit inside `script:`.
-          script_stop: true
-          script: |
-            set -euo pipefail
-
-            cd "${{ secrets.DROPLET_PATH }}"
-
-            echo "→ fetching latest origin/main"
-            git fetch --prune origin
-            git reset --hard origin/main
-
-            # .env is intentionally NOT tracked in git (holds secrets).
-            # Persistent copy at /root/.env-lcp-production is restored into
-            # the repo working tree here, since `reset --hard` would
-            # otherwise leave compose without env vars.
-            echo "→ restoring .env from persistent location"
-            cp /root/.env-lcp-production .env
-            chmod 600 .env
-
-            echo "→ building + starting containers"
-            docker compose up -d --build
-
-            # Apply every migrations/*.sql against the live DB. All our
-            # migrations are IF-NOT-EXISTS idempotent so re-running
-            # previously-applied ones is a no-op. Alphabetical sort on
-            # zero-padded numeric prefixes (0001_..0014_..) preserves
-            # intended order. If any migration fails, script_stop aborts
-            # the whole deploy so we notice rather than silently serving
-            # code against a stale schema.
-            echo "→ waiting for api container to be ready"
-            for i in $(seq 1 20); do
-              if docker compose exec -T api python -c "import app.main" >/dev/null 2>&1; then
-                break
-              fi
-              sleep 2
-            done
-            echo "→ applying pending migrations"
-            for sql in migrations/*.sql; do
-              echo "  · $sql"
-              docker compose exec -T api python -m scripts.apply_migration "$sql"
-            done
-
-            echo "→ pruning dangling images"
-            docker image prune -f
-
-            echo "→ deploy complete — current service state:"
-            docker compose ps
+          script: cd /var/www/lcp && git fetch --all && git reset --hard origin/main && chown -R www-data:www-data /var/www/lcp
