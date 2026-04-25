@@ -27,4 +27,13 @@ jobs:
           # `docker compose` can interpolate POSTGRES_PASSWORD et al.
           # Without this, compose fails with "POSTGRES_PASSWORD is
           # missing a value".
-          script: cd /var/www/lcp && git fetch --all && git reset --hard origin/main && cp /root/.env-lcp-production .env && chmod 600 .env && chown -R www-data:www-data /var/www/lcp && docker compose up -d --build
+          #
+          # `docker rm -f lcp_db lcp_api` clears any orphan named
+          # containers from a previous compose project that doesn't
+          # share state with the current one. Without this, `up` aborts
+          # with "container name '/lcp_db' is already in use" because
+          # `container_name:` is fixed regardless of project name and
+          # compose can't reconcile across projects. The trailing
+          # `|| true` keeps the chain alive when the containers don't
+          # exist yet (clean droplet, first deploy).
+          script: cd /var/www/lcp && git fetch --all && git reset --hard origin/main && cp /root/.env-lcp-production .env && chmod 600 .env && chown -R www-data:www-data /var/www/lcp && (docker rm -f lcp_db lcp_api 2>/dev/null || true) && docker compose up -d --build
