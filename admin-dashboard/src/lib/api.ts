@@ -39,7 +39,7 @@ export type AdminCafe = {
   created_at: string;
 };
 
-export type CafeStatsRange = "7d" | "30d" | "ytd" | "all";
+export type CafeStatsRange = "today" | "7d" | "30d" | "ytd" | "1y" | "all";
 
 export type CafeStats = {
   cafe_id: string;

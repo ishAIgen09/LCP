@@ -1045,17 +1045,24 @@ ASSUMED_DRINK_PENCE = 350
 
 
 # Date-range aliases the stats endpoint accepts. Values double as the
-# frontend's segmented control ids.
-_STATS_RANGES = {"7d", "30d", "ytd", "all"}
+# frontend's dropdown option ids.
+_STATS_RANGES = {"today", "7d", "30d", "ytd", "1y", "all"}
 
 
 def _range_start(range_key: str, now: datetime) -> datetime | None:
+    if range_key == "today":
+        # Start-of-day in UTC. Naturally rolls over at midnight UTC, which
+        # is fine for the MVP — when we add per-brand timezones we'll
+        # localise this here.
+        return datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
     if range_key == "7d":
         return now - timedelta(days=7)
     if range_key == "30d":
         return now - timedelta(days=30)
     if range_key == "ytd":
         return datetime(now.year, 1, 1, tzinfo=now.tzinfo)
+    if range_key == "1y":
+        return now - timedelta(days=365)
     # "all" → None → no lower bound in the WHERE clause
     return None
 
@@ -1085,7 +1092,7 @@ async def platform_cafe_stats(
     if range not in _STATS_RANGES:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="range must be one of: 7d, 30d, ytd, all.",
+            detail="range must be one of: today, 7d, 30d, ytd, 1y, all.",
         )
     cafe = await session.get(Cafe, cafe_id)
     if cafe is None:

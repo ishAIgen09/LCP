@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
   Coffee,
@@ -25,6 +26,7 @@ const TINT_CLASSES: Record<Tint, string> = {
 };
 
 export function OverviewPage() {
+  const navigate = useNavigate();
   const [data, setData] = useState<AdminOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -83,24 +85,32 @@ export function OverviewPage() {
             tint="sky"
             label="Total Customers"
             value={data.total_customers}
+            onClick={() => navigate("/customers")}
+            hint="Open customers tab"
           />
           <KpiCard
             Icon={Coffee}
             tint="amber"
             label="Total Cafes"
             value={data.total_cafes}
+            onClick={() => navigate("/cafes")}
+            hint="Open cafes tab"
           />
           <KpiCard
             Icon={Stamp}
             tint="emerald"
             label="Stamps Issued"
             value={data.total_stamps_issued}
+            onClick={() => navigate("/transactions?event=EARN")}
+            hint="Filter ledger to EARN"
           />
           <KpiCard
             Icon={Gift}
             tint="rose"
             label="Rewards Redeemed"
             value={data.total_rewards_redeemed}
+            onClick={() => navigate("/transactions?event=REDEEM")}
+            hint="Filter ledger to REDEEM"
           />
         </div>
       )}
@@ -130,15 +140,22 @@ function KpiCard({
   tint,
   label,
   value,
+  onClick,
+  hint,
 }: {
   Icon: LucideIcon;
   tint: Tint;
   label: string;
   value: number;
+  onClick: () => void;
+  hint: string;
 }) {
   return (
-    <div
-      className="rounded-xl border border-neutral-800 p-5 transition-colors hover:border-neutral-700"
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={`${label}: ${hint}`}
+      className="group relative rounded-xl border border-neutral-800 p-5 text-left transition-colors hover:border-amber-500/40 focus:outline-none focus-visible:border-amber-500/60 focus-visible:ring-2 focus-visible:ring-amber-500/30"
       style={{ backgroundColor: "#1A1A1A", borderRadius: 12 }}
     >
       <div className="flex items-center gap-3">
@@ -154,6 +171,9 @@ function KpiCard({
       <div className="mt-5 text-4xl font-semibold tracking-tight tabular-nums text-neutral-50">
         {value.toLocaleString()}
       </div>
-    </div>
+      <div className="mt-2 text-[11px] font-medium text-neutral-500 transition-colors group-hover:text-amber-300">
+        {hint} →
+      </div>
+    </button>
   );
 }

@@ -1,9 +1,12 @@
 import json
 import logging
+from datetime import datetime, timezone
+from typing import Literal
 from uuid import UUID
 
 import stripe
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -204,6 +207,91 @@ async def create_portal_session(
         return_url=return_url,
     )
     return CheckoutResponse(checkout_url=portal_session.url)
+
+
+# Plan tier ids accepted by /plan-change. Locked at the boundary so a typo
+# from the dashboard surfaces as 422 rather than landing in the audit log.
+PlanTier = Literal["starter", "pro", "premium"]
+
+
+class PlanChangeRequest(BaseModel):
+    from_plan: PlanTier
+    to_plan: PlanTier
+    # Per-location monthly delta in pence — already computed by the
+    # frontend so the server log captures exactly what the user saw on
+    # the confirmation modal. We re-log it rather than re-compute so any
+    # client-vs-server tier-table drift is visible in the audit trail.
+    price_delta_pence_per_location: int = Field(ge=-100_000, le=100_000)
+    cafe_count: int = Field(ge=0)
+
+
+class PlanChangeResponse(BaseModel):
+    notified: bool
+    request_id: str
+    received_at: datetime
+
+
+@router.post("/plan-change", response_model=PlanChangeResponse)
+async def request_plan_change(
+    body: PlanChangeRequest,
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> PlanChangeResponse:
+    """
+    Record a brand-admin's plan-change request. No Stripe mutation yet —
+    real tier mapping requires per-tier price ids in env, which we'll add
+    when the tier system goes live. For now this is a structured audit
+    log line the Super Admin can grep:
+
+        docker compose logs api | grep "PLAN-CHANGE"
+
+    The frontend shows a success toast immediately on 200; nothing on
+    the brand record changes today.
+    """
+    brand = await session.get(Brand, admin.brand_id)
+    if brand is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin session references an unknown brand.",
+        )
+
+    received_at = datetime.now(timezone.utc)
+    request_id = f"plan-change-{int(received_at.timestamp() * 1000)}-{brand.id}"
+    monthly_total_delta_pence = (
+        body.price_delta_pence_per_location * body.cafe_count
+    )
+
+    # logger.warning so it stands out at the default log level. Structured
+    # extra dict keeps the line greppable by field too.
+    logger.warning(
+        "PLAN-CHANGE request_id=%s brand_id=%s brand_name=%s "
+        "from=%s to=%s delta_per_loc_pence=%s cafe_count=%s "
+        "total_delta_pence=%s",
+        request_id,
+        brand.id,
+        brand.name,
+        body.from_plan,
+        body.to_plan,
+        body.price_delta_pence_per_location,
+        body.cafe_count,
+        monthly_total_delta_pence,
+        extra={
+            "event": "plan_change_request",
+            "request_id": request_id,
+            "brand_id": str(brand.id),
+            "from_plan": body.from_plan,
+            "to_plan": body.to_plan,
+            "price_delta_pence_per_location": body.price_delta_pence_per_location,
+            "cafe_count": body.cafe_count,
+            "total_delta_pence": monthly_total_delta_pence,
+        },
+    )
+
+    return PlanChangeResponse(
+        notified=True,
+        request_id=request_id,
+        received_at=received_at,
+    )
 
 
 @router.post("/webhook")

@@ -421,6 +421,37 @@ export async function createPortalSession(
   )
 }
 
+export type PlanTier = "starter" | "pro" | "premium"
+
+export type PlanChangeRequestBody = {
+  from_plan: PlanTier
+  to_plan: PlanTier
+  // Per-location monthly delta in pence (positive = upgrade).
+  price_delta_pence_per_location: number
+  cafe_count: number
+}
+
+export type PlanChangeResponse = {
+  notified: boolean
+  request_id: string
+  received_at: string
+}
+
+// Submits a plan-change request to the Super Admin audit log. Backend
+// doesn't yet swap the brand to a new Stripe price id — this just
+// captures the intent in a structured log line keyed by request_id.
+export async function requestPlanChange(
+  token: string,
+  body: PlanChangeRequestBody,
+): Promise<PlanChangeResponse> {
+  return request<PlanChangeResponse>(
+    "POST",
+    "/api/billing/plan-change",
+    body,
+    authHeader(token),
+  )
+}
+
 export async function createCafe(
   token: string,
   values: {

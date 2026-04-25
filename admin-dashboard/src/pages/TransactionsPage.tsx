@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
   Loader2,
@@ -11,7 +12,12 @@ import { EventTypePill, PlanTypePill } from "@/components/Pills";
 import {
   fetchTransactions,
   type AdminTransaction,
+  type LedgerEventType,
 } from "@/lib/api";
+
+function isLedgerEvent(v: string | null): v is LedgerEventType {
+  return v === "EARN" || v === "REDEEM";
+}
 
 const DATE_FORMATTER = new Intl.DateTimeFormat("en-GB", {
   year: "numeric",
@@ -26,6 +32,19 @@ export function TransactionsPage() {
   const [txns, setTxns] = useState<AdminTransaction[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cafeFilter, setCafeFilter] = useState("");
+
+  // Event-type filter is sourced from ?event=EARN|REDEEM so the Overview
+  // KPI cards can deep-link straight into a filtered view.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawEvent = searchParams.get("event");
+  const eventFilter: LedgerEventType | null = isLedgerEvent(rawEvent)
+    ? rawEvent
+    : null;
+  const clearEventFilter = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("event");
+    setSearchParams(next, { replace: true });
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -46,15 +65,19 @@ export function TransactionsPage() {
     };
   }, []);
 
-  // Client-side filter on cafe name. Case-insensitive substring. At the
-  // MVP 500-row cap this is instant; if the feed ever exceeds a few
-  // thousand rows we'd push the filter to the server as a query param.
+  // Client-side filter on cafe name + event type. Case-insensitive
+  // substring on cafe; exact match on event. At the MVP 500-row cap
+  // this is instant; if the feed ever exceeds a few thousand rows we'd
+  // push the filter to the server as a query param.
   const filtered = useMemo(() => {
     if (!txns) return null;
     const needle = cafeFilter.trim().toLowerCase();
-    if (!needle) return txns;
-    return txns.filter((t) => t.cafe_name.toLowerCase().includes(needle));
-  }, [txns, cafeFilter]);
+    return txns.filter((t) => {
+      if (eventFilter && t.event_type !== eventFilter) return false;
+      if (needle && !t.cafe_name.toLowerCase().includes(needle)) return false;
+      return true;
+    });
+  }, [txns, cafeFilter, eventFilter]);
 
   return (
     <div>
@@ -82,6 +105,8 @@ export function TransactionsPage() {
           totalCount={txns.length}
           filterValue={cafeFilter}
           onFilterChange={setCafeFilter}
+          eventFilter={eventFilter}
+          onClearEventFilter={clearEventFilter}
         />
       )}
     </div>
@@ -125,22 +150,41 @@ function TxnTable({
   totalCount,
   filterValue,
   onFilterChange,
+  eventFilter,
+  onClearEventFilter,
 }: {
   rows: AdminTransaction[];
   totalCount: number;
   filterValue: string;
   onFilterChange: (v: string) => void;
+  eventFilter: LedgerEventType | null;
+  onClearEventFilter: () => void;
 }) {
-  const filtered = filterValue.trim().length > 0;
+  const isFiltered = filterValue.trim().length > 0 || eventFilter !== null;
   return (
     <div
       className="mt-8 overflow-hidden rounded-xl border border-neutral-800"
       style={{ backgroundColor: "#1A1A1A" }}
     >
       <div className="flex flex-col gap-3 border-b border-neutral-800 bg-neutral-900/60 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
-        <SearchBar value={filterValue} onChange={onFilterChange} />
+        <div className="flex flex-wrap items-center gap-2">
+          <SearchBar value={filterValue} onChange={onFilterChange} />
+          {eventFilter ? (
+            <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-amber-300">
+              Event · {eventFilter}
+              <button
+                type="button"
+                onClick={onClearEventFilter}
+                aria-label="Clear event filter"
+                className="ml-0.5 flex h-4 w-4 items-center justify-center rounded text-amber-300/80 transition-colors hover:bg-amber-500/20 hover:text-amber-200"
+              >
+                <X className="h-3 w-3" strokeWidth={2.4} />
+              </button>
+            </span>
+          ) : null}
+        </div>
         <div className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400">
-          {filtered
+          {isFiltered
             ? `${rows.length} of ${totalCount} rows`
             : `${rows.length} ${rows.length === 1 ? "row" : "rows"}`}
         </div>
@@ -149,11 +193,11 @@ function TxnTable({
       {rows.length === 0 ? (
         <div className="px-5 py-12 text-center">
           <div className="text-sm font-semibold text-neutral-200">
-            {filtered ? "No rows match that cafe" : "No transactions yet"}
+            {isFiltered ? "No rows match the filter" : "No transactions yet"}
           </div>
           <div className="mt-1 text-xs text-neutral-500">
-            {filtered
-              ? "Try a shorter or different substring."
+            {isFiltered
+              ? "Loosen the cafe name or clear the event chip to see more."
               : "Stamps + redeems will stream in here as baristas scan."}
           </div>
         </div>

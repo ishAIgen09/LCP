@@ -42,9 +42,11 @@ const GBP = new Intl.NumberFormat("en-GB", {
 
 type RangeOption = { id: CafeStatsRange; label: string };
 const RANGE_OPTIONS: RangeOption[] = [
+  { id: "today", label: "Today" },
   { id: "7d", label: "Last 7 days" },
   { id: "30d", label: "Last 30 days" },
   { id: "ytd", label: "YTD" },
+  { id: "1y", label: "Last year" },
   { id: "all", label: "All time" },
 ];
 
@@ -441,8 +443,15 @@ function CafeDetailPanel({
         <StatusPill status={cafe.billing_status} />
       </div>
 
-      <div className="mt-8">
-        <RangePicker value={range} onChange={setRange} />
+      <div className="mt-8 flex items-center gap-2">
+        <CalendarClock
+          className="h-3.5 w-3.5 text-neutral-500"
+          strokeWidth={2.2}
+        />
+        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-neutral-500">
+          Date range
+        </span>
+        <RangeDropdown value={range} onChange={setRange} />
       </div>
 
       {error ? (
@@ -456,7 +465,7 @@ function CafeDetailPanel({
   );
 }
 
-function RangePicker({
+function RangeDropdown({
   value,
   onChange,
 }: {
@@ -464,27 +473,20 @@ function RangePicker({
   onChange: (r: CafeStatsRange) => void;
 }) {
   return (
-    <div className="inline-flex rounded-lg border border-neutral-800 bg-neutral-950 p-0.5">
-      {RANGE_OPTIONS.map((opt) => {
-        const selected = opt.id === value;
-        return (
-          <button
-            key={opt.id}
-            type="button"
-            onClick={() => onChange(opt.id)}
-            aria-pressed={selected}
-            className={
-              "rounded-md px-3 py-1.5 text-xs font-semibold transition-colors " +
-              (selected
-                ? "bg-amber-500/15 text-amber-300"
-                : "text-neutral-400 hover:bg-neutral-900 hover:text-neutral-200")
-            }
-          >
+    <label className="inline-flex items-center gap-1.5 rounded-md border border-neutral-800 bg-neutral-900/60 px-2.5 py-1.5 text-xs font-medium text-neutral-200 transition-colors hover:border-neutral-700">
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as CafeStatsRange)}
+        aria-label="Date range"
+        className="cursor-pointer bg-transparent pr-1 text-xs font-semibold text-neutral-100 outline-none [&>option]:bg-neutral-900"
+      >
+        {RANGE_OPTIONS.map((opt) => (
+          <option key={opt.id} value={opt.id}>
             {opt.label}
-          </button>
-        );
-      })}
-    </div>
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -506,20 +508,24 @@ function StatsLoadingCard() {
 function StatsCards({ stats }: { stats: CafeStats }) {
   const netSign = stats.net_roi_pence >= 0 ? "positive" : "negative";
   return (
-    <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
-      <StatCard
-        Icon={Stamp}
-        label="Total stamps issued"
-        value={stats.stamps_issued.toString()}
-        hint="EARN rows in the window"
-      />
-      <StatCard
-        Icon={Gift}
-        label="Free coffees redeemed"
-        value={stats.rewards_redeemed.toString()}
-        hint="REDEEM rows in the window"
-      />
-      <StatCard
+    <div className="mt-6 space-y-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <PrimaryStatCard
+          Icon={Stamp}
+          tint="emerald"
+          label="Total Stamps Earned"
+          value={stats.stamps_issued.toLocaleString()}
+          hint="EARN rows in the selected window"
+        />
+        <PrimaryStatCard
+          Icon={Gift}
+          tint="rose"
+          label="Total Rewards Redeemed"
+          value={stats.rewards_redeemed.toLocaleString()}
+          hint="REDEEM rows in the selected window"
+        />
+      </div>
+      <SecondaryStatCard
         Icon={Scale}
         label="Net ROI"
         value={GBP.format(stats.net_roi_pence / 100)}
@@ -534,7 +540,48 @@ function StatsCards({ stats }: { stats: CafeStats }) {
   );
 }
 
-function StatCard({
+const PRIMARY_TINT: Record<"emerald" | "rose", string> = {
+  emerald: "bg-emerald-500/15 ring-emerald-500/30 text-emerald-400",
+  rose: "bg-rose-500/15 ring-rose-500/30 text-rose-400",
+};
+
+function PrimaryStatCard({
+  Icon,
+  tint,
+  label,
+  value,
+  hint,
+}: {
+  Icon: typeof Stamp;
+  tint: "emerald" | "rose";
+  label: string;
+  value: string;
+  hint: string;
+}) {
+  return (
+    <div
+      className="rounded-xl border border-neutral-800 p-6"
+      style={{ backgroundColor: "#1A1A1A" }}
+    >
+      <div className="flex items-center gap-3">
+        <div
+          className={`flex h-10 w-10 items-center justify-center rounded-lg ring-1 ${PRIMARY_TINT[tint]}`}
+        >
+          <Icon className="h-5 w-5" strokeWidth={2} />
+        </div>
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
+          {label}
+        </span>
+      </div>
+      <div className="mt-5 text-5xl font-semibold tracking-tight tabular-nums text-neutral-50">
+        {value}
+      </div>
+      <div className="mt-2 text-xs text-neutral-500">{hint}</div>
+    </div>
+  );
+}
+
+function SecondaryStatCard({
   Icon,
   label,
   value,
@@ -555,21 +602,23 @@ function StatCard({
         : "text-neutral-50";
   return (
     <div
-      className="rounded-xl border border-neutral-800 p-5"
+      className="flex items-center justify-between rounded-xl border border-neutral-800 p-4"
       style={{ backgroundColor: "#1A1A1A" }}
     >
       <div className="flex items-center gap-2">
         <Icon className="h-3.5 w-3.5 text-amber-400" strokeWidth={2.4} />
-        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-neutral-500">
-          {label}
-        </span>
+        <div>
+          <div className="text-[10.5px] font-semibold uppercase tracking-wider text-neutral-500">
+            {label}
+          </div>
+          <div className="mt-0.5 text-[11px] text-neutral-500">{hint}</div>
+        </div>
       </div>
       <div
-        className={`mt-3 text-3xl font-semibold tracking-tight tabular-nums ${valueClass}`}
+        className={`text-2xl font-semibold tracking-tight tabular-nums ${valueClass}`}
       >
         {value}
       </div>
-      <div className="mt-1 text-xs text-neutral-500">{hint}</div>
     </div>
   );
 }
