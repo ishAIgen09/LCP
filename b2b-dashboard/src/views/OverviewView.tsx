@@ -209,7 +209,7 @@ export function OverviewView({
           value={initialLoad ? "—" : formatNumber(animatedRedeemed)}
           unit="free coffees"
           icon={Gift}
-          accent="amber"
+          accent="stone"
         />
         <MetricCard
           label="Active branches"
@@ -224,7 +224,7 @@ export function OverviewView({
           unit={brand.planPrice}
           deltaLabel={formatRenewalLabel(brand.currentPeriodEnd ?? metrics?.renews_at)}
           icon={Sparkles}
-          accent="amber"
+          accent="stone"
         />
       </div>
 

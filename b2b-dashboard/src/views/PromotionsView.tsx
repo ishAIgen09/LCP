@@ -218,7 +218,7 @@ export function PromotionsView({
         <div className="space-y-5">
           <div className="rounded-xl bg-card p-6 ring-1 ring-foreground/10">
             <div className="flex items-center gap-3">
-              <div className="grid h-10 w-10 place-items-center rounded-lg bg-amber-400/15 text-amber-700 ring-1 ring-amber-400/30">
+              <div className="grid h-10 w-10 place-items-center rounded-lg bg-emerald-400/15 text-emerald-700 ring-1 ring-emerald-400/30">
                 <Megaphone className="h-5 w-5" strokeWidth={2.25} />
               </div>
               <div className="leading-tight">
@@ -332,7 +332,7 @@ export function PromotionsView({
                 className={cn(
                   "mt-3 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11.5px] leading-snug",
                   leadTimeTight
-                    ? "bg-amber-50 text-amber-800 ring-1 ring-amber-200"
+                    ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200"
                     : "bg-muted/50 text-muted-foreground"
                 )}
               >
@@ -541,7 +541,7 @@ function Step({
 }
 
 function OfferPreview({ offer }: { offer: Offer }) {
-  // Mirrors the consumer app's amber-on-espresso palette so the admin sees
+  // Mirrors the consumer app's emerald-on-espresso palette so the admin sees
   // roughly what regulars will see in the app's Offers strip.
   const headline = offerHeadline(offer)
   const subhead = OFFER_TARGETS.find((t) => t.id === offer.target)?.label ?? ""

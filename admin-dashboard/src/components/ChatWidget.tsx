@@ -81,14 +81,14 @@ export function ChatWidget() {
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40">
       <div className="pointer-events-none relative mx-auto h-0 w-full max-w-[1800px]">
-        {/* Collapsed FAB — amber accent to match the dashboard's existing
-            kicker vocabulary. Hidden while open. */}
+        {/* Collapsed FAB — mint (emerald) accent to match the brand
+            palette shared with the b2b dashboard + main website. */}
         {!open ? (
           <button
             type="button"
             onClick={() => setOpen(true)}
             aria-label="Open LCP Data Assistant"
-            className="pointer-events-auto absolute bottom-6 right-6 flex h-14 w-14 items-center justify-center rounded-full bg-amber-500 text-neutral-950 shadow-lg shadow-amber-500/30 ring-1 ring-amber-300/50 transition-all hover:bg-amber-400 hover:shadow-amber-500/40"
+            className="pointer-events-auto absolute bottom-6 right-6 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500 text-neutral-950 shadow-lg shadow-emerald-500/30 ring-1 ring-emerald-300/50 transition-all hover:bg-emerald-400 hover:shadow-emerald-500/40"
           >
             <Sparkles className="h-6 w-6" strokeWidth={2.4} />
           </button>
@@ -136,8 +136,8 @@ function ChatHeader({ onClose }: { onClose: () => void }) {
   return (
     <div className="flex items-center justify-between border-b border-neutral-800 bg-neutral-900/60 px-4 py-3">
       <div className="flex items-center gap-2">
-        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-500/15 ring-1 ring-amber-500/30">
-          <Sparkles className="h-3.5 w-3.5 text-amber-300" strokeWidth={2.4} />
+        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-emerald-500/15 ring-1 ring-emerald-500/30">
+          <Sparkles className="h-3.5 w-3.5 text-emerald-300" strokeWidth={2.4} />
         </div>
         <div>
           <div className="text-sm font-semibold text-neutral-100">
@@ -164,7 +164,7 @@ function MessageBubble({ message }: { message: Message }) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-amber-500/90 px-3.5 py-2 text-sm leading-5 text-neutral-950 shadow-sm">
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-emerald-500/90 px-3.5 py-2 text-sm leading-5 text-neutral-950 shadow-sm">
           {message.content}
         </div>
       </div>
@@ -172,8 +172,8 @@ function MessageBubble({ message }: { message: Message }) {
   }
   return (
     <div className="flex items-start gap-2">
-      <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-amber-500/15 ring-1 ring-amber-500/30">
-        <Sparkles className="h-3 w-3 text-amber-300" strokeWidth={2.4} />
+      <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-emerald-500/15 ring-1 ring-emerald-500/30">
+        <Sparkles className="h-3 w-3 text-emerald-300" strokeWidth={2.4} />
       </div>
       <div className="max-w-[85%] rounded-2xl rounded-tl-md border border-neutral-800 bg-neutral-900/60 px-3.5 py-2 text-sm leading-5 text-neutral-200 shadow-sm">
         {message.content}
@@ -185,9 +185,9 @@ function MessageBubble({ message }: { message: Message }) {
 function TypingBubble() {
   return (
     <div className="flex items-start gap-2">
-      <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-amber-500/15 ring-1 ring-amber-500/30">
+      <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-emerald-500/15 ring-1 ring-emerald-500/30">
         <Loader2
-          className="h-3 w-3 animate-spin text-amber-300"
+          className="h-3 w-3 animate-spin text-emerald-300"
           strokeWidth={2.4}
         />
       </div>
@@ -230,7 +230,7 @@ function ChatComposer({
   const canSend = draft.trim().length > 0 && !busy;
   return (
     <div className="border-t border-neutral-800 bg-neutral-900/60 p-3">
-      <div className="flex items-end gap-2 rounded-lg border border-neutral-800 bg-neutral-950 px-2 py-1.5 focus-within:border-amber-500/50 focus-within:ring-1 focus-within:ring-amber-500/20">
+      <div className="flex items-end gap-2 rounded-lg border border-neutral-800 bg-neutral-950 px-2 py-1.5 focus-within:border-emerald-500/50 focus-within:ring-1 focus-within:ring-emerald-500/20">
         <textarea
           ref={inputRef}
           value={draft}
@@ -246,7 +246,7 @@ function ChatComposer({
           onClick={onSend}
           disabled={!canSend}
           aria-label="Send message"
-          className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-500/90 text-neutral-950 transition-colors hover:bg-amber-400 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-600"
+          className="flex h-7 w-7 items-center justify-center rounded-md bg-emerald-500/90 text-neutral-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-600"
         >
           <Send className="h-3.5 w-3.5" strokeWidth={2.4} />
         </button>

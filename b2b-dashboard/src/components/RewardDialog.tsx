@@ -32,15 +32,15 @@ export function RewardDialog({
       >
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-x-0 top-0 h-[180px] bg-gradient-to-b from-amber-300/50 via-amber-100/30 to-transparent"
+          className="pointer-events-none absolute inset-x-0 top-0 h-[180px] bg-gradient-to-b from-emerald-300/50 via-emerald-100/30 to-transparent"
         />
 
         <div className="relative px-6 pt-8 pb-2 text-center">
-          <div className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-full bg-amber-400/20 text-amber-700 ring-1 ring-amber-400/40">
+          <div className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-full bg-emerald-400/20 text-emerald-700 ring-1 ring-emerald-400/40">
             <PartyPopper className="h-6 w-6" strokeWidth={2.25} />
           </div>
 
-          <span className="mx-auto mb-3 inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-400/10 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-amber-800">
+          <span className="mx-auto mb-3 inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-400/10 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-emerald-800">
             <Sparkles className="h-3 w-3" strokeWidth={2.25} />
             Reward ready
           </span>
@@ -72,8 +72,8 @@ export function RewardDialog({
               <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                 Status
               </div>
-              <div className="flex items-center gap-1.5 text-[12.5px] font-medium text-amber-800">
-                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+              <div className="flex items-center gap-1.5 text-[12.5px] font-medium text-emerald-800">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
                 Awaiting barista
               </div>
             </div>

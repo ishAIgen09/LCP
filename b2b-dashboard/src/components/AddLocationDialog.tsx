@@ -481,14 +481,14 @@ export function AddLocationDialog({
               on add. Inactive brands go through Stripe Checkout after the
               create, so the £5 is disclosed there instead. */}
           {brand.subscriptionStatus === "active" && (
-            <div className="rounded-md border border-amber-200 bg-amber-50/70 p-3">
+            <div className="rounded-md border border-emerald-200 bg-emerald-50/70 p-3">
               <div className="flex items-start gap-2.5">
                 <Info
-                  className="mt-0.5 h-4 w-4 shrink-0 text-amber-700"
+                  className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700"
                   strokeWidth={2.25}
                 />
                 <div className="min-w-0 flex-1 space-y-2">
-                  <p className="text-[12.5px] leading-snug text-amber-900">
+                  <p className="text-[12.5px] leading-snug text-emerald-900">
                     Adding this location will automatically increase your plan
                     by{" "}
                     <span className="font-semibold">£5/month</span>. This will
@@ -499,7 +499,7 @@ export function AddLocationDialog({
                     onClick={openPortal}
                     disabled={submitting || openingPortal}
                     className={cn(
-                      "inline-flex items-center gap-1.5 text-[11.5px] font-medium text-amber-900 underline-offset-4 hover:underline disabled:pointer-events-none disabled:opacity-60",
+                      "inline-flex items-center gap-1.5 text-[11.5px] font-medium text-emerald-900 underline-offset-4 hover:underline disabled:pointer-events-none disabled:opacity-60",
                     )}
                   >
                     {openingPortal ? (

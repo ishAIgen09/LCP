@@ -38,14 +38,16 @@ export function Sidebar() {
   return (
     <aside className="flex h-screen w-60 shrink-0 flex-col border-r border-neutral-800 bg-neutral-950">
       <div className="flex items-center gap-2 border-b border-neutral-800 px-5 py-5">
-        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-amber-500/15 ring-1 ring-amber-500/30">
-          <ShieldCheck className="h-4 w-4 text-amber-400" strokeWidth={2.2} />
+        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-emerald-500/15 ring-1 ring-emerald-500/30">
+          <ShieldCheck className="h-4 w-4 text-emerald-400" strokeWidth={2.2} />
         </div>
         <div className="flex flex-col leading-tight">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-400">
-            LCP Admin
+          <span className="text-[12px] font-semibold tracking-tight text-neutral-50">
+            Local Coffee Perks
           </span>
-          <span className="text-[10px] text-neutral-500">Command Center</span>
+          <span className="text-[10px] uppercase tracking-[0.18em] text-emerald-400">
+            Admin · Command Center
+          </span>
         </div>
       </div>
 
@@ -69,7 +71,7 @@ export function Sidebar() {
                     <Icon
                       className={
                         isActive
-                          ? "h-4 w-4 text-amber-400"
+                          ? "h-4 w-4 text-emerald-400"
                           : "h-4 w-4 text-neutral-500 group-hover:text-neutral-300"
                       }
                       strokeWidth={2}

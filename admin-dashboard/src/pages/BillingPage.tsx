@@ -96,8 +96,8 @@ export function BillingPage() {
   return (
     <div>
       <div className="flex items-center gap-2">
-        <CreditCard className="h-4 w-4 text-amber-400" strokeWidth={2.2} />
-        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-400">
+        <CreditCard className="h-4 w-4 text-emerald-400" strokeWidth={2.2} />
+        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-400">
           Billing
         </span>
       </div>
@@ -169,7 +169,7 @@ function SummaryCard({
       style={{ backgroundColor: "#1A1A1A" }}
     >
       <div className="flex items-center gap-2">
-        <Icon className="h-3.5 w-3.5 text-amber-400" strokeWidth={2.4} />
+        <Icon className="h-3.5 w-3.5 text-emerald-400" strokeWidth={2.4} />
         <span className="text-[10.5px] font-semibold uppercase tracking-wider text-neutral-500">
           {label}
         </span>
@@ -189,7 +189,7 @@ function LoadingCard() {
       style={{ backgroundColor: "#1A1A1A" }}
     >
       <Loader2
-        className="h-5 w-5 animate-spin text-amber-400"
+        className="h-5 w-5 animate-spin text-emerald-400"
         strokeWidth={2.2}
       />
       <span className="text-sm text-neutral-400">Loading billing…</span>

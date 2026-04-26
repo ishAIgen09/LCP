@@ -11,7 +11,7 @@ import type { SchemeType, SubscriptionStatus } from "@/lib/api";
 export function PlanTypePill({ scheme }: { scheme: SchemeType }) {
   if (scheme === "global") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2.5 py-0.5 text-[11px] font-semibold tracking-wide text-amber-300 ring-1 ring-amber-500/30">
+      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-semibold tracking-wide text-emerald-300 ring-1 ring-emerald-500/30">
         <Sparkles className="h-3 w-3" strokeWidth={2.4} />
         LCP+
       </span>

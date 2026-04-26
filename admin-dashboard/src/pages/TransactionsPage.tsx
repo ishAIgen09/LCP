@@ -82,8 +82,8 @@ export function TransactionsPage() {
   return (
     <div>
       <div className="flex items-center gap-2">
-        <Receipt className="h-4 w-4 text-amber-400" strokeWidth={2.2} />
-        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-400">
+        <Receipt className="h-4 w-4 text-emerald-400" strokeWidth={2.2} />
+        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-400">
           Transactions
         </span>
       </div>
@@ -120,7 +120,7 @@ function LoadingCard() {
       style={{ backgroundColor: "#1A1A1A" }}
     >
       <Loader2
-        className="h-5 w-5 animate-spin text-amber-400"
+        className="h-5 w-5 animate-spin text-emerald-400"
         strokeWidth={2.2}
       />
       <span className="text-sm text-neutral-400">Loading ledger…</span>
@@ -170,13 +170,13 @@ function TxnTable({
         <div className="flex flex-wrap items-center gap-2">
           <SearchBar value={filterValue} onChange={onFilterChange} />
           {eventFilter ? (
-            <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-amber-300">
+            <span className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-emerald-300">
               Event · {eventFilter}
               <button
                 type="button"
                 onClick={onClearEventFilter}
                 aria-label="Clear event filter"
-                className="ml-0.5 flex h-4 w-4 items-center justify-center rounded text-amber-300/80 transition-colors hover:bg-amber-500/20 hover:text-amber-200"
+                className="ml-0.5 flex h-4 w-4 items-center justify-center rounded text-emerald-300/80 transition-colors hover:bg-emerald-500/20 hover:text-emerald-200"
               >
                 <X className="h-3 w-3" strokeWidth={2.4} />
               </button>
@@ -248,7 +248,7 @@ function SearchBar({
         onChange={(e) => onChange(e.target.value)}
         placeholder="Filter by cafe name…"
         aria-label="Filter transactions by cafe name"
-        className="w-full rounded-md border border-neutral-800 bg-neutral-950 py-1.5 pl-8 pr-8 text-[13px] text-neutral-100 placeholder-neutral-500 outline-none transition-colors focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/30"
+        className="w-full rounded-md border border-neutral-800 bg-neutral-950 py-1.5 pl-8 pr-8 text-[13px] text-neutral-100 placeholder-neutral-500 outline-none transition-colors focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/30"
       />
       {value ? (
         <button

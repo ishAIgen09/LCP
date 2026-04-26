@@ -19,8 +19,8 @@ export function PlaceholderPage({
   return (
     <div>
       <div className="flex items-center gap-2">
-        <Icon className="h-4 w-4 text-amber-400" strokeWidth={2.2} />
-        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-400">
+        <Icon className="h-4 w-4 text-emerald-400" strokeWidth={2.2} />
+        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-400">
           {kicker}
         </span>
       </div>

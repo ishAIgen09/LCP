@@ -119,8 +119,8 @@ export function CustomersPage() {
   return (
     <div>
       <div className="flex items-center gap-2">
-        <Users className="h-4 w-4 text-amber-400" strokeWidth={2.2} />
-        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-400">
+        <Users className="h-4 w-4 text-emerald-400" strokeWidth={2.2} />
+        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-400">
           Customers
         </span>
       </div>
@@ -181,7 +181,7 @@ function LoadingCard() {
       style={{ backgroundColor: "#1A1A1A" }}
     >
       <Loader2
-        className="h-5 w-5 animate-spin text-amber-400"
+        className="h-5 w-5 animate-spin text-emerald-400"
         strokeWidth={2.2}
       />
       <span className="text-sm text-neutral-400">Loading customers…</span>
@@ -302,7 +302,7 @@ function SearchBar({
         onChange={(e) => onChange(e.target.value)}
         placeholder="Filter by till code or email…"
         aria-label="Filter customers by till code or email"
-        className="w-full rounded-md border border-neutral-800 bg-neutral-950 py-1.5 pl-8 pr-8 text-[13px] text-neutral-100 placeholder-neutral-500 outline-none transition-colors focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/30"
+        className="w-full rounded-md border border-neutral-800 bg-neutral-950 py-1.5 pl-8 pr-8 text-[13px] text-neutral-100 placeholder-neutral-500 outline-none transition-colors focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/30"
       />
       {value ? (
         <button
@@ -423,7 +423,7 @@ function RowActionButton({
     "flex h-7 w-7 items-center justify-center rounded-md border transition-colors";
   const tone = danger
     ? "border-neutral-800 text-neutral-400 hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-300"
-    : "border-neutral-800 text-neutral-400 hover:border-amber-500/40 hover:bg-amber-500/10 hover:text-amber-300";
+    : "border-neutral-800 text-neutral-400 hover:border-emerald-500/40 hover:bg-emerald-500/10 hover:text-emerald-300";
   return (
     <button
       type="button"
@@ -637,7 +637,7 @@ function AdjustStampsDialog({
             <select
               value={selectedKey}
               onChange={(e) => setSelectedKey(e.target.value)}
-              className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/30"
+              className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 outline-none focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/30"
             >
               {schemes.map((opt) => (
                 <option key={schemeKey(opt)} value={schemeKey(opt)}>
@@ -659,7 +659,7 @@ function AdjustStampsDialog({
             inputMode="numeric"
             value={amountStr}
             onChange={(e) => setAmountStr(e.target.value)}
-            className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/30"
+            className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 outline-none focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/30"
           />
           <p className="mt-1.5 text-[11px] leading-5 text-neutral-500">
             Positive = credit (EARN). Negative = claw-back (REDEEM, must be
@@ -687,7 +687,7 @@ function AdjustStampsDialog({
           type="button"
           onClick={handleSave}
           disabled={busy || !selected || !amountIsValid}
-          className="inline-flex items-center gap-1.5 rounded-md bg-amber-500/90 px-3 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-amber-500 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500/90 px-3 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.2} />

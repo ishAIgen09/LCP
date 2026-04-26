@@ -655,7 +655,7 @@ export function BaristaPOSView({
                     className={cn(
                       "rounded-lg border p-3",
                       customerStatus!.banked_rewards > 0
-                        ? "border-amber-300 bg-amber-50"
+                        ? "border-emerald-300 bg-emerald-50"
                         : "border-border bg-muted/30",
                     )}
                   >
@@ -663,7 +663,7 @@ export function BaristaPOSView({
                       className={cn(
                         "inline-flex items-center gap-1 text-[10.5px] font-medium uppercase tracking-wider",
                         customerStatus!.banked_rewards > 0
-                          ? "text-amber-800"
+                          ? "text-emerald-800"
                           : "text-muted-foreground",
                       )}
                     >
@@ -674,7 +674,7 @@ export function BaristaPOSView({
                       className={cn(
                         "mt-1 font-mono text-2xl font-semibold tabular-nums",
                         customerStatus!.banked_rewards > 0
-                          ? "text-amber-800"
+                          ? "text-emerald-800"
                           : "text-foreground",
                       )}
                     >
@@ -793,7 +793,7 @@ export function BaristaPOSView({
             "pointer-events-none fixed inset-x-0 bottom-6 z-50 mx-auto flex w-full max-w-sm items-center gap-2.5 rounded-xl px-4 py-3 text-[13px] font-medium shadow-lg ring-1",
             toast.variant === "success" && "bg-emerald-600 text-white ring-emerald-700/40",
             toast.variant === "error" && "bg-rose-600 text-white ring-rose-700/40",
-            toast.variant === "warn" && "bg-amber-500 text-white ring-amber-600/40",
+            toast.variant === "warn" && "bg-emerald-500 text-white ring-emerald-600/40",
             toast.variant === "info" && "bg-foreground text-background ring-foreground/40",
           )}
           role="status"
@@ -821,8 +821,8 @@ const statePills: Record<
   },
   starting: {
     label: "Starting",
-    className: "border-amber-200 bg-amber-50 text-amber-800",
-    dot: "bg-amber-500",
+    className: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    dot: "bg-emerald-500",
   },
   running: {
     label: "Scanning",

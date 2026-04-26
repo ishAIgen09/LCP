@@ -49,41 +49,52 @@
 }
 
 :root {
-    /* Local Coffee Perks brand palette (2026-04-19).
-       Espresso #2A211C · Crema #FBF7F1 · Oat #F3E9DC ·
-       Terracotta #C96E4B · Success #3FAE5A · Roasted Almond #C8AA8D · Moss #5E6B4E */
-    --background: #FBF7F1;              /* Crema */
-    --foreground: #2A211C;              /* Espresso */
+    /* Local Coffee Perks brand palette — aligned to the main website
+       (waitlist + landing) so b2b dashboard, admin dashboard, and the
+       public site share the same Espresso + Mint identity.
+
+       Mint        #2AF598   electrifying primary / accents / focus
+       Espresso    #1C1412   typographic dark + sidebar fill
+       Cream       #F5F2ED   primary surface (off-white, no beige tint)
+       Off-white   #FFFFFF   card surface
+       Slate-cream #ECE7DF   neutral border / muted (beige stripped)
+       Mint ink    #1C1412   text colour for use on mint backgrounds
+
+       The previous palette (Crema/Oat/Terracotta) deliberately removed —
+       the orange terracotta + beige oat tones were the off-brand hues
+       being stripped per the espresso+mint mandate. */
+    --background: #F5F2ED;              /* Cream */
+    --foreground: #1C1412;              /* Espresso */
     --card: #FFFFFF;
-    --card-foreground: #2A211C;
+    --card-foreground: #1C1412;
     --popover: #FFFFFF;
-    --popover-foreground: #2A211C;
-    --primary: #C96E4B;                 /* Terracotta */
-    --primary-foreground: #FBF7F1;
-    --secondary: #F3E9DC;               /* Oat */
-    --secondary-foreground: #2A211C;
-    --muted: #F3E9DC;                   /* Oat */
-    --muted-foreground: #6B5D52;        /* muted espresso */
-    --accent: #F3E9DC;
-    --accent-foreground: #2A211C;
+    --popover-foreground: #1C1412;
+    --primary: #2AF598;                 /* Electrifying Mint */
+    --primary-foreground: #1C1412;      /* Espresso ink on mint */
+    --secondary: #ECE7DF;               /* neutral cream-slate */
+    --secondary-foreground: #1C1412;
+    --muted: #ECE7DF;
+    --muted-foreground: #5A4F47;        /* muted espresso */
+    --accent: #2AF598;                  /* mint accent — matches primary */
+    --accent-foreground: #1C1412;
     --destructive: oklch(0.577 0.245 27.325);
-    --border: #E8DCC9;                  /* warm beige */
-    --input: #E8DCC9;
-    --ring: #C96E4B;                    /* Terracotta focus ring */
-    --chart-1: #C96E4B;                 /* Terracotta */
-    --chart-2: #5E6B4E;                 /* Moss */
-    --chart-3: #C8AA8D;                 /* Roasted Almond */
+    --border: #E2DCD2;                  /* neutral cream border (no beige) */
+    --input: #E2DCD2;
+    --ring: #2AF598;                    /* Mint focus ring */
+    --chart-1: #2AF598;                 /* Mint */
+    --chart-2: #1C1412;                 /* Espresso */
+    --chart-3: #5E6B4E;                 /* Moss (kept — it's a green, not beige) */
     --chart-4: #3FAE5A;                 /* Success Green */
-    --chart-5: #2A211C;                 /* Espresso */
+    --chart-5: #5A4F47;                 /* muted espresso */
     --radius: 0.875rem;                 /* softer, friendlier corners */
-    --sidebar: #F3E9DC;                 /* Oat rail */
-    --sidebar-foreground: #2A211C;
-    --sidebar-primary: #C96E4B;
-    --sidebar-primary-foreground: #FBF7F1;
-    --sidebar-accent: #FBF7F1;
-    --sidebar-accent-foreground: #2A211C;
-    --sidebar-border: #E8DCC9;
-    --sidebar-ring: #C96E4B;
+    --sidebar: #1C1412;                 /* Espresso rail */
+    --sidebar-foreground: #F5F2ED;
+    --sidebar-primary: #2AF598;
+    --sidebar-primary-foreground: #1C1412;
+    --sidebar-accent: #2A211C;
+    --sidebar-accent-foreground: #F5F2ED;
+    --sidebar-border: #2A211C;
+    --sidebar-ring: #2AF598;
 }
 
 .dark {

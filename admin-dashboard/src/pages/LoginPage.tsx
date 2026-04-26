@@ -34,11 +34,11 @@ export function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-neutral-950 px-6">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center gap-3">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-amber-500/15 ring-1 ring-amber-500/30">
-            <ShieldCheck className="h-6 w-6 text-amber-400" strokeWidth={2.2} />
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-500/15 ring-1 ring-emerald-500/30">
+            <ShieldCheck className="h-6 w-6 text-emerald-400" strokeWidth={2.2} />
           </div>
           <div className="text-center">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-amber-400">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-emerald-400">
               LCP Admin
             </div>
             <div className="mt-1 text-xl font-semibold text-neutral-50">
@@ -65,7 +65,7 @@ export function LoginPage() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="admin@localcoffeeperks.com"
-              className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none transition-colors focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/30"
+              className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none transition-colors focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/30"
             />
           </label>
 
@@ -80,7 +80,7 @@ export function LoginPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
-              className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none transition-colors focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/30"
+              className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none transition-colors focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/30"
             />
           </label>
 
@@ -93,7 +93,7 @@ export function LoginPage() {
           <button
             type="submit"
             disabled={submitting}
-            className="w-full rounded-md bg-amber-500 px-3 py-2 text-sm font-semibold text-neutral-950 transition-colors hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-60"
+            className="w-full rounded-md bg-emerald-500 px-3 py-2 text-sm font-semibold text-neutral-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {submitting ? "Signing in…" : "Sign in"}
           </button>

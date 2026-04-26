@@ -18,12 +18,12 @@ export function MetricCard({
   delta?: number
   deltaLabel?: string
   icon: LucideIcon
-  accent?: "emerald" | "violet" | "amber"
+  accent?: "emerald" | "violet" | "stone"
 }) {
   const accentBar = {
     emerald: "bg-emerald-500",
     violet: "bg-violet-500",
-    amber: "bg-amber-500",
+    stone: "bg-stone-500",
   }[accent ?? "emerald"]
 
   const isDown = typeof delta === "number" && delta < 0

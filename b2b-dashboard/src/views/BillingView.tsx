@@ -67,13 +67,33 @@ const PLANS: PlanRow[] = [
       "Use cross-cafe stamps across the entire network",
       "Customer earned perks across the network",
       "Enhanced in-app discovery to find new customers",
-      "Priority email support",
     ],
   },
 ]
 
 function formatGBP(pence: number): string {
   return `£${(pence / 100).toFixed(2)}`
+}
+
+// Mirror of app/billing.py::_compute_proration_pence — same rounding rule
+// (half-up to nearest pence). Lets the modal show the exact pro-rata
+// charge the server will commit when the plan flips today. Pass a TOTAL
+// monthly delta in pence (i.e. per-location delta × cafeCount) so the
+// returned figure is the all-locations charge, not per-location.
+function previewProration(
+  monthlyTotalDeltaPence: number,
+  now: Date = new Date(),
+): { pence: number; daysRemaining: number; daysInMonth: number } {
+  const year = now.getFullYear()
+  const month = now.getMonth() // 0-indexed
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const daysRemaining = daysInMonth - now.getDate() + 1
+  const numerator = Math.abs(monthlyTotalDeltaPence) * daysRemaining
+  const prorationAbs = Math.floor(
+    (numerator + Math.floor(daysInMonth / 2)) / daysInMonth,
+  )
+  const pence = monthlyTotalDeltaPence >= 0 ? prorationAbs : -prorationAbs
+  return { pence, daysRemaining, daysInMonth }
 }
 
 type ToastShape = { message: string; variant: "success" | "error" }
@@ -89,7 +109,7 @@ const STATUS_META: Record<
   },
   trialing: {
     label: "Trialing",
-    tint: "border-amber-200 bg-amber-50 text-amber-800",
+    tint: "border-emerald-200 bg-emerald-50 text-emerald-800",
     icon: CheckCircle2,
   },
   past_due: {
@@ -131,10 +151,15 @@ export function BillingView({
   const [opening, setOpening] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Plan-change flow state. The brand model doesn't carry a plan tier
-  // yet — every brand sits on Starter. When `currentPlan` becomes a
-  // backend-driven field, swap the literal here for `brand.plan_tier`.
-  const currentPlan: PlanTier = "starter"
+  // Plan-change flow state. The brand model doesn't carry a plan tier yet —
+  // every brand starts on the Private Plan ("starter"). Held in local state
+  // so a successful confirm flips the CURRENT pill + per-loc price + total
+  // monthly cost across the whole tab in one render. When the backend
+  // exposes brand.plan_tier, seed the initial value from there.
+  const [currentPlan, setCurrentPlan] = useState<PlanTier>("starter")
+  const currentPlanRow =
+    PLANS.find((p) => p.id === currentPlan) ?? PLANS[0]
+  const totalMonthlyPence = currentPlanRow.pricePence * cafeCount
   const [pending, setPending] = useState<PlanRow | null>(null)
   const [submittingPlan, setSubmittingPlan] = useState(false)
   const [toast, setToast] = useState<ToastShape | null>(null)
@@ -188,6 +213,11 @@ export function BillingView({
         `Plan switched to ${pending.name}. Your new rate will appear on your ` +
         `next invoice — the Local Perks team has been notified.`
       setToast({ message, variant: "success" })
+      // Flip the local currentPlan so the CURRENT pill jumps to the new
+      // card, the previously-current card flips to a Downgrade button,
+      // and the "Current plan" widget at the top instantly reflects the
+      // new name + per-loc price + monthly total.
+      setCurrentPlan(pending.id)
       setPending(null)
     } catch (e) {
       setToast({
@@ -206,7 +236,7 @@ export function BillingView({
         <CardHeader>
           <CardTitle className="text-[15px] tracking-tight">Subscription</CardTitle>
           <CardDescription>
-            £5 / month per active location — managed securely via Stripe.
+            Per-active-location billing — managed securely via Stripe.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4 pt-0">
@@ -218,10 +248,10 @@ export function BillingView({
                 </div>
                 <div className="mt-1 flex items-baseline gap-2">
                   <span className="text-2xl font-semibold tracking-tight text-foreground">
-                    £5
+                    {currentPlanRow.name}
                   </span>
                   <span className="text-sm text-muted-foreground">
-                    / month · per active location
+                    · {formatGBP(currentPlanRow.pricePence)} / month per location
                   </span>
                 </div>
                 <p className="mt-1.5 text-[12px] text-muted-foreground">
@@ -231,7 +261,7 @@ export function BillingView({
                   </span>
                   {" · "}
                   <span className="font-medium text-foreground">
-                    £{(cafeCount * 5).toFixed(2)}/mo
+                    {formatGBP(totalMonthlyPence)}/mo
                   </span>
                   {" · "}
                   {formatRenewal(brand.currentPeriodEnd)}
@@ -249,11 +279,11 @@ export function BillingView({
           </div>
 
           {!isActive && (
-            <div className="flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50/70 px-3.5 py-2.5 text-[12.5px] text-amber-900">
+            <div className="flex items-start gap-2.5 rounded-lg border border-emerald-200 bg-emerald-50/70 px-3.5 py-2.5 text-[12.5px] text-emerald-900">
               <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={2.25} />
               <div>
                 <div className="font-medium">Your brand isn't active yet.</div>
-                <p className="text-[11.5px] leading-snug text-amber-900/80">
+                <p className="text-[11.5px] leading-snug text-emerald-900/80">
                   Subscriptions start automatically when you add your first
                   location — head to the Locations tab and click Add Location
                   to begin.
@@ -328,14 +358,19 @@ export function BillingView({
       <CardContent className="grid grid-cols-1 gap-3 pt-0 md:grid-cols-2">
         {PLANS.map((plan) => {
           const isCurrent = plan.id === currentPlan
-          const fromPlan = PLANS.find((p) => p.id === currentPlan)!
-          const deltaPence = plan.pricePence - fromPlan.pricePence
+          const deltaPerLocationPence =
+            plan.pricePence - currentPlanRow.pricePence
+          // The button must promise the brand-wide monthly delta — multiply
+          // by cafeCount so a 3-location upgrade from £5→£7.99 reads
+          // "+£8.97/mo" instead of the misleading per-location "+£2.99".
+          const deltaTotalPence = deltaPerLocationPence * cafeCount
           return (
             <PlanCard
               key={plan.id}
               plan={plan}
               isCurrent={isCurrent}
-              deltaPence={deltaPence}
+              deltaTotalPence={deltaTotalPence}
+              cafeCount={cafeCount}
               onSelect={() => setPending(plan)}
             />
           )
@@ -361,22 +396,32 @@ export function BillingView({
 function PlanCard({
   plan,
   isCurrent,
-  deltaPence,
+  deltaTotalPence,
+  cafeCount,
   onSelect,
 }: {
   plan: PlanRow
   isCurrent: boolean
-  deltaPence: number
+  // Brand-wide monthly delta in pence (per-location delta × cafeCount).
+  // Already accounts for every active location, so the button just
+  // formats and renders.
+  deltaTotalPence: number
+  cafeCount: number
   onSelect: () => void
 }) {
-  const isUpgrade = deltaPence > 0
-  const isDowngrade = deltaPence < 0
+  const isUpgrade = deltaTotalPence > 0
+  const isDowngrade = deltaTotalPence < 0
+  const absDeltaLabel = formatGBP(Math.abs(deltaTotalPence))
+  // No active locations → the brand can't be charged anything until they
+  // add their first cafe. Flip the button copy so we don't promise a £0
+  // delta that's about to become a real charge.
+  const noLocations = cafeCount === 0
   return (
     <div
       className={cn(
         "flex flex-col gap-3 rounded-lg border p-4",
         isCurrent
-          ? "border-emerald-300 bg-emerald-50/40"
+          ? "border-primary/50 bg-primary/5"
           : "border-border bg-muted/20",
       )}
     >
@@ -385,7 +430,7 @@ function PlanCard({
           {plan.name}
         </div>
         {isCurrent ? (
-          <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-emerald-700">
+          <span className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-primary">
             <Star className="h-2.5 w-2.5" strokeWidth={2.5} /> Current
           </span>
         ) : null}
@@ -400,7 +445,7 @@ function PlanCard({
       <ul className="space-y-1 text-[12px] text-foreground">
         {plan.features.map((feat) => (
           <li key={feat} className="flex items-start gap-1.5">
-            <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-emerald-600" strokeWidth={2.4} />
+            <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-primary" strokeWidth={2.4} />
             {feat}
           </li>
         ))}
@@ -420,11 +465,15 @@ function PlanCard({
             onClick={onSelect}
           >
             {isUpgrade ? <ArrowUpRight className="h-3.5 w-3.5" strokeWidth={2.4} /> : null}
-            {isUpgrade
-              ? `Upgrade · +${formatGBP(deltaPence)}/mo`
-              : isDowngrade
-                ? `Downgrade · ${formatGBP(deltaPence)}/mo`
-                : "Switch plan"}
+            {noLocations
+              ? isUpgrade
+                ? "Upgrade"
+                : "Downgrade"
+              : isUpgrade
+                ? `Upgrade · +${absDeltaLabel}/mo`
+                : isDowngrade
+                  ? `Downgrade · −${absDeltaLabel}/mo`
+                  : "Switch plan"}
           </Button>
         )}
       </div>
@@ -455,21 +504,29 @@ function PlanChangeDialog({
     return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent /></Dialog>
   }
   const deltaPerLocation = toPlan.pricePence - fromPlan.pricePence
-  const isUpgrade = deltaPerLocation > 0
-  const isDowngrade = deltaPerLocation < 0
-  const verb = isUpgrade ? "Upgrade" : isDowngrade ? "Downgrade" : "Switch"
+  const totalDelta = deltaPerLocation * cafeCount
+  const isUpgrade = totalDelta > 0
+  const isDowngrade = totalDelta < 0
+  const verb = isUpgrade ? "Upgrading" : isDowngrade ? "Downgrading" : "Switching"
+  const action = isUpgrade ? "upgrade" : isDowngrade ? "downgrade" : "switch"
+  // Pro-rata charge applies on upgrades only — downgrades land on the next
+  // invoice as a credit per the brand-voice copy ("new rate will be
+  // reflected on your next invoice"), so we deliberately don't surface a
+  // pro-rata credit line for the negative path.
+  const proration = previewProration(totalDelta)
+  const newMonthlyTotal = toPlan.pricePence * cafeCount
 
   return (
     <Dialog open={open} onOpenChange={(v) => (!submitting ? onOpenChange(v) : null)}>
-      <DialogContent className="sm:max-w-[440px]">
+      <DialogContent className="sm:max-w-[480px]">
         <DialogHeader>
           <div className="mb-1 flex items-center gap-2">
             <span
               className={cn(
                 "grid h-8 w-8 place-items-center rounded-md ring-1",
                 isUpgrade
-                  ? "bg-emerald-500/10 text-emerald-600 ring-emerald-500/30"
-                  : "bg-amber-500/10 text-amber-700 ring-amber-500/30",
+                  ? "bg-primary/10 text-primary ring-primary/30"
+                  : "bg-muted text-muted-foreground ring-border",
               )}
             >
               {isUpgrade ? (
@@ -479,25 +536,50 @@ function PlanChangeDialog({
               )}
             </span>
             <DialogTitle className="text-[16px] tracking-tight">
-              {verb} to {toPlan.name}?
+              Confirm plan change
             </DialogTitle>
           </div>
           <DialogDescription>
-            Switch from{" "}
-            <span className="font-medium text-foreground">
-              {fromPlan.name} ({formatGBP(fromPlan.pricePence)}/mo per location)
-            </span>{" "}
-            to{" "}
-            <span className="font-medium text-foreground">
-              {toPlan.name} ({formatGBP(toPlan.pricePence)}/mo per location)
-            </span>
-            . The new rate will be reflected on your next invoice across
-            your {cafeCount} location{cafeCount === 1 ? "" : "s"}, and the
-            Local Perks team will be automatically notified.
+            Self-serve plan switch — no approval gate. The Local Perks team
+            is auto-notified.
           </DialogDescription>
         </DialogHeader>
 
-        <DialogFooter>
+        {/* Receipt-style layout: one airy stacked block per fact so the
+            dialog reads like a check-out summary instead of a paragraph. */}
+        <div className="mt-2 divide-y divide-border rounded-lg border border-border bg-muted/20">
+          <ReceiptRow
+            label={`${verb} ${cafeCount} location${cafeCount === 1 ? "" : "s"} to`}
+            value={toPlan.name}
+            valueClass="text-foreground"
+          />
+          {isUpgrade ? (
+            <ReceiptRow
+              label={`Immediate charge today (prorated for ${proration.daysRemaining} of ${proration.daysInMonth} days)`}
+              value={`~${formatGBP(Math.abs(proration.pence))}`}
+              valueClass="text-primary"
+            />
+          ) : isDowngrade ? (
+            <ReceiptRow
+              label="Charged today"
+              value="£0.00"
+              valueClass="text-muted-foreground"
+              hint="Downgrades take effect on your next invoice — no charge today."
+            />
+          ) : null}
+          <ReceiptRow
+            label="New monthly total starting next invoice"
+            value={`${formatGBP(newMonthlyTotal)}/mo`}
+            valueClass="text-foreground"
+            hint={
+              cafeCount > 0
+                ? `${formatGBP(toPlan.pricePence)}/mo × ${cafeCount} location${cafeCount === 1 ? "" : "s"}`
+                : "No active locations yet — total kicks in once you add your first cafe."
+            }
+          />
+        </div>
+
+        <DialogFooter className="mt-2">
           <Button
             variant="outline"
             onClick={() => onOpenChange(false)}
@@ -515,12 +597,48 @@ function PlanChangeDialog({
                 <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.25} /> Switching…
               </>
             ) : (
-              `Confirm ${verb.toLowerCase()}`
+              `Confirm ${action}`
             )}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+// One stacked label/value row for the receipt-style PlanChangeDialog.
+// Generous vertical padding + uppercase micro-label keep each fact its
+// own glanceable line instead of a wall of prose.
+function ReceiptRow({
+  label,
+  value,
+  valueClass,
+  hint,
+}: {
+  label: string
+  value: string
+  valueClass?: string
+  hint?: string
+}) {
+  return (
+    <div className="px-4 py-3.5">
+      <div className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {label}
+      </div>
+      <div
+        className={cn(
+          "mt-1.5 text-[18px] font-semibold tracking-tight",
+          valueClass ?? "text-foreground",
+        )}
+      >
+        {value}
+      </div>
+      {hint ? (
+        <div className="mt-1 text-[11.5px] leading-snug text-muted-foreground">
+          {hint}
+        </div>
+      ) : null}
+    </div>
   )
 }
 

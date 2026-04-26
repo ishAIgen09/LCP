@@ -137,12 +137,12 @@ export function LocationsView({
                     className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium ${
                       c.status === "live"
                         ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                        : "border-amber-200 bg-amber-50 text-amber-700"
+                        : "border-emerald-200 bg-emerald-50 text-emerald-700"
                     }`}
                   >
                     <span
                       className={`h-1.5 w-1.5 rounded-full ${
-                        c.status === "live" ? "bg-emerald-500" : "bg-amber-500"
+                        c.status === "live" ? "bg-emerald-500" : "bg-emerald-500"
                       }`}
                     />
                     {c.status === "live" ? "Live" : "Paused"}

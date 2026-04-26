@@ -1,22 +1,31 @@
 @import url("https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&display=swap");
 @import "tailwindcss";
 
-/* Tailwind v4 design tokens. Keeping it lean — dark theme comes from
-   utility classes (bg-neutral-950, text-neutral-100, etc.) rather than
-   a full shadcn/radix CSS-variable system, since admin is a tool for
-   staff rather than a brand-facing surface. */
+/* Tailwind v4 design tokens. Dark espresso shell, electrifying mint
+   accent — matches the main website + b2b dashboard so all three
+   surfaces share one palette. The amber accents that used to live
+   throughout the admin pages were swept to emerald (the closest named
+   Tailwind colour to brand mint #2AF598) so we don't have to hand-roll
+   custom utility classes for every text/bg/border combination. */
 @theme {
   --font-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system,
     "Segoe UI", sans-serif;
+
+  /* Brand canonical hexes available as arbitrary-value escape hatches
+     when the named palette doesn't get close enough (e.g. precise hero
+     accents). Keep them as CSS vars so they're swappable in one spot. */
+  --color-mint: #2AF598;
+  --color-espresso: #1C1412;
+  --color-cream: #F5F2ED;
 }
 
 html,
 body,
 #root {
   height: 100%;
-  background: #0a0a0a; /* neutral-950 — sits behind the app shell so the
-                          viewport doesn't flash white on load before React
-                          mounts. */
+  background: #1C1412; /* Espresso — sits behind the app shell so the
+                          viewport doesn't flash white on load before
+                          React mounts. */
 }
 
 body {
@@ -24,5 +33,5 @@ body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  color: #f5f5f5; /* neutral-100 */
+  color: #F5F2ED; /* Cream */
 }

@@ -22,14 +22,18 @@ import {
   type AdminOverview,
 } from "@/lib/api";
 
-type Tint = "sky" | "amber" | "emerald" | "rose" | "violet";
+// Brand palette pivoted to Espresso + Mint, so the previous "amber" tint
+// (Tailwind yellow-orange) was retired. "stone" replaces it as a neutral,
+// off-white-on-dark KPI accent that doesn't compete with the mint
+// emerald used by the headline action signals.
+type Tint = "sky" | "stone" | "emerald" | "rose" | "violet";
 
 // Tailwind needs to see the full class names as string literals to include
 // them in the JIT output — keeping this lookup inline (vs. string
 // concatenation) guarantees each combo lands in the generated CSS.
 const TINT_CLASSES: Record<Tint, string> = {
   sky: "bg-sky-500/15 ring-sky-500/30 text-sky-400",
-  amber: "bg-amber-500/15 ring-amber-500/30 text-amber-400",
+  stone: "bg-stone-500/15 ring-stone-500/30 text-stone-300",
   emerald: "bg-emerald-500/15 ring-emerald-500/30 text-emerald-400",
   rose: "bg-rose-500/15 ring-rose-500/30 text-rose-400",
   violet: "bg-violet-500/15 ring-violet-500/30 text-violet-400",
@@ -85,8 +89,8 @@ export function OverviewPage() {
   return (
     <div>
       <div className="flex items-center gap-2">
-        <LayoutDashboard className="h-4 w-4 text-amber-400" strokeWidth={2.2} />
-        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-400">
+        <LayoutDashboard className="h-4 w-4 text-emerald-400" strokeWidth={2.2} />
+        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-400">
           Platform Overview
         </span>
       </div>
@@ -126,7 +130,7 @@ export function OverviewPage() {
             />
             <KpiCard
               Icon={Coffee}
-              tint="amber"
+              tint="stone"
               label="Total Cafes"
               value={data.total_cafes}
               onClick={() => navigate("/cafes")}
@@ -159,7 +163,7 @@ function LoadingCard() {
       style={{ backgroundColor: "#1A1A1A" }}
     >
       <Loader2
-        className="h-5 w-5 animate-spin text-amber-400"
+        className="h-5 w-5 animate-spin text-emerald-400"
         strokeWidth={2.2}
       />
       <span className="text-sm text-neutral-400">
@@ -189,7 +193,7 @@ function KpiCard({
       type="button"
       onClick={onClick}
       aria-label={`${label}: ${hint}`}
-      className="group relative rounded-xl border border-neutral-800 p-5 text-left transition-colors hover:border-amber-500/40 focus:outline-none focus-visible:border-amber-500/60 focus-visible:ring-2 focus-visible:ring-amber-500/30"
+      className="group relative rounded-xl border border-neutral-800 p-5 text-left transition-colors hover:border-emerald-500/40 focus:outline-none focus-visible:border-emerald-500/60 focus-visible:ring-2 focus-visible:ring-emerald-500/30"
       style={{ backgroundColor: "#1A1A1A", borderRadius: 12 }}
     >
       <div className="flex items-center gap-3">
@@ -205,7 +209,7 @@ function KpiCard({
       <div className="mt-5 text-4xl font-semibold tracking-tight tabular-nums text-neutral-50">
         {value.toLocaleString()}
       </div>
-      <div className="mt-2 text-[11px] font-medium text-neutral-500 transition-colors group-hover:text-amber-300">
+      <div className="mt-2 text-[11px] font-medium text-neutral-500 transition-colors group-hover:text-emerald-300">
         {hint} →
       </div>
     </button>
@@ -231,7 +235,7 @@ function EarnedRedeemedNetGrowth({
   return (
     <div className="mt-4">
       <div className="flex items-center gap-2 text-[10.5px] font-semibold uppercase tracking-wider text-neutral-500">
-        <TrendingUp className="h-3.5 w-3.5 text-amber-400" strokeWidth={2.2} />
+        <TrendingUp className="h-3.5 w-3.5 text-emerald-400" strokeWidth={2.2} />
         Loyalty engine — earn vs redeem
       </div>
       <div className="mt-2 grid grid-cols-1 gap-4 md:grid-cols-3">

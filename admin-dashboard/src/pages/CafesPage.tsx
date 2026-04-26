@@ -146,8 +146,8 @@ export function CafesPage() {
   return (
     <div>
       <div className="flex items-center gap-2">
-        <Coffee className="h-4 w-4 text-amber-400" strokeWidth={2.2} />
-        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-400">
+        <Coffee className="h-4 w-4 text-emerald-400" strokeWidth={2.2} />
+        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-400">
           Cafes
         </span>
       </div>
@@ -238,7 +238,7 @@ function LoadingCard() {
       style={{ backgroundColor: "#1A1A1A" }}
     >
       <Loader2
-        className="h-5 w-5 animate-spin text-amber-400"
+        className="h-5 w-5 animate-spin text-emerald-400"
         strokeWidth={2.2}
       />
       <span className="text-sm text-neutral-400">Loading cafe roster…</span>
@@ -396,7 +396,7 @@ function CafeRow({
           className="group block text-left"
           aria-label={`Open ${cafe.name} dossier`}
         >
-          <div className="font-medium text-neutral-100 transition-colors group-hover:text-amber-300">
+          <div className="font-medium text-neutral-100 transition-colors group-hover:text-emerald-300">
             {cafe.name}
           </div>
           <div
@@ -434,7 +434,7 @@ function CafeRow({
             onClick={handleImpersonate}
             aria-label={`Impersonate ${cafe.brand_name} admin`}
             title="Impersonate brand admin (stub)"
-            className="rounded-md p-1.5 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-amber-300"
+            className="rounded-md p-1.5 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-emerald-300"
           >
             <UserCog className="h-4 w-4" strokeWidth={2} />
           </button>
@@ -443,7 +443,7 @@ function CafeRow({
             onClick={handleReverse}
             aria-label={`Reverse last transaction at ${cafe.name}`}
             title="Reverse last transaction (stub)"
-            className="rounded-md p-1.5 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-amber-300"
+            className="rounded-md p-1.5 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-emerald-300"
           >
             <Undo2 className="h-4 w-4" strokeWidth={2} />
           </button>
@@ -528,7 +528,7 @@ function EditCafeModal({
             />
           </div>
           {scheme !== cafe.scheme_type ? (
-            <p className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-300">
+            <p className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-emerald-500/10 px-2.5 py-1 text-[11px] text-emerald-300">
               <AlertTriangle className="h-3 w-3" strokeWidth={2.4} />
               Plan changes affect every cafe under {cafe.brand_name}.
             </p>
@@ -542,7 +542,7 @@ function EditCafeModal({
             onChange={(e) =>
               setBillingStatus(e.target.value as SubscriptionStatus)
             }
-            className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/30 [&>option]:bg-neutral-900"
+            className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 outline-none focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/30 [&>option]:bg-neutral-900"
           >
             <option value="active">Active</option>
             <option value="trialing">Trialing</option>
@@ -578,7 +578,7 @@ function EditCafeModal({
           type="button"
           onClick={handleSave}
           disabled={!dirty || busy}
-          className="inline-flex items-center gap-1.5 rounded-md bg-amber-500/90 px-3 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500/90 px-3 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.2} />
@@ -639,7 +639,7 @@ function CafeSecuritySection({ cafeId }: { cafeId: string }) {
   return (
     <div>
       <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-neutral-400">
-        <Shield className="h-3.5 w-3.5 text-amber-400" strokeWidth={2.4} />
+        <Shield className="h-3.5 w-3.5 text-emerald-400" strokeWidth={2.4} />
         Security &amp; Network
       </div>
       <div
@@ -788,8 +788,8 @@ function CafeDetailPanel({
       </button>
 
       <div className="mt-5 flex items-center gap-2">
-        <Coffee className="h-4 w-4 text-amber-400" strokeWidth={2.2} />
-        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-400">
+        <Coffee className="h-4 w-4 text-emerald-400" strokeWidth={2.2} />
+        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-400">
           Cafe dossier
         </span>
       </div>
@@ -859,7 +859,7 @@ function StatsLoadingCard() {
       style={{ backgroundColor: "#1A1A1A" }}
     >
       <Loader2
-        className="h-5 w-5 animate-spin text-amber-400"
+        className="h-5 w-5 animate-spin text-emerald-400"
         strokeWidth={2.2}
       />
       <span className="text-sm text-neutral-400">Crunching ledger…</span>
@@ -968,7 +968,7 @@ function SecondaryStatCard({
       style={{ backgroundColor: "#1A1A1A" }}
     >
       <div className="flex items-center gap-2">
-        <Icon className="h-3.5 w-3.5 text-amber-400" strokeWidth={2.4} />
+        <Icon className="h-3.5 w-3.5 text-emerald-400" strokeWidth={2.4} />
         <div>
           <div className="text-[10.5px] font-semibold uppercase tracking-wider text-neutral-500">
             {label}
@@ -1165,7 +1165,7 @@ function AddNewButton({
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="inline-flex items-center gap-1.5 rounded-md bg-amber-500/90 px-3 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-amber-400"
+        className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500/90 px-3 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-emerald-400"
       >
         <Plus className="h-3.5 w-3.5" strokeWidth={2.6} />
         Add New
@@ -1227,7 +1227,7 @@ function MenuItem({
       onClick={onClick}
       className="flex w-full items-center gap-2 border-b border-neutral-800 px-3 py-2 text-left text-xs font-semibold text-neutral-200 transition-colors last:border-b-0 hover:bg-neutral-800"
     >
-      <Icon className="h-3.5 w-3.5 text-amber-400" strokeWidth={2.4} />
+      <Icon className="h-3.5 w-3.5 text-emerald-400" strokeWidth={2.4} />
       {label}
     </button>
   );
@@ -1306,7 +1306,7 @@ function TextInput({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/30"
+      className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/30"
     />
   );
 }
@@ -1409,7 +1409,7 @@ function AddBrandModal({
           type="button"
           onClick={handleSubmit}
           disabled={!canSubmit || busy}
-          className="inline-flex items-center gap-1.5 rounded-md bg-amber-500/90 px-3 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500/90 px-3 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.2} />
@@ -1439,14 +1439,14 @@ function SchemeChoice({
       className={
         "rounded-md border px-3 py-2 text-left transition-colors " +
         (selected
-          ? "border-amber-500/60 bg-amber-500/10"
+          ? "border-emerald-500/60 bg-emerald-500/10"
           : "border-neutral-800 bg-neutral-950 hover:border-neutral-700")
       }
     >
       <div
         className={
           "text-xs font-semibold " +
-          (selected ? "text-amber-300" : "text-neutral-100")
+          (selected ? "text-emerald-300" : "text-neutral-100")
         }
       >
         {label}
@@ -1549,7 +1549,7 @@ function BrandCombobox({
         aria-autocomplete="list"
         aria-expanded={open}
         role="combobox"
-        className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/30"
+        className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/30"
       />
       {open && filtered.length > 0 ? (
         <ul
@@ -1574,7 +1574,7 @@ function BrandCombobox({
                 className={
                   "cursor-pointer px-3 py-2 text-xs " +
                   (active
-                    ? "bg-amber-500/15 text-amber-200"
+                    ? "bg-emerald-500/15 text-emerald-200"
                     : "text-neutral-200 hover:bg-neutral-800") +
                   (selected ? " font-semibold" : "")
                 }
@@ -1689,7 +1689,7 @@ function AddCafeModal({
           type="button"
           onClick={handleSubmit}
           disabled={!canSubmit || busy}
-          className="inline-flex items-center gap-1.5 rounded-md bg-amber-500/90 px-3 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500/90 px-3 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.2} />
@@ -1810,7 +1810,7 @@ function InviteAdminModal({
               type="button"
               onClick={handleSubmit}
               disabled={!canSubmit}
-              className="inline-flex items-center gap-1.5 rounded-md bg-amber-500/90 px-3 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500/90 px-3 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {busy ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.2} />
@@ -1893,7 +1893,7 @@ function InviteAdminModal({
             <button
               type="button"
               onClick={onDismiss}
-              className="inline-flex items-center gap-1.5 rounded-md bg-amber-500/90 px-3 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-amber-400"
+              className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500/90 px-3 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-emerald-400"
             >
               Done
             </button>
