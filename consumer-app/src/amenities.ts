@@ -7,6 +7,7 @@ import {
   Laptop,
   Leaf,
   Milk,
+  Moon,
   Toilet,
   type LucideIcon,
 } from "lucide-react-native";
@@ -30,6 +31,7 @@ export const AMENITIES: readonly AmenityDef[] = [
   { id: "wheelchair_accessible", label: "Wheelchair Access",       Icon: Accessibility },
   { id: "toilets",               label: "Toilets",                 Icon: Toilet },
   { id: "gluten_free_vegan",     label: "Gluten-Free & Vegan",     Icon: Leaf },
+  { id: "halal",                 label: "Halal",                   Icon: Moon },
   { id: "drive_thru",            label: "Drive-thru",              Icon: Car },
 ];
 

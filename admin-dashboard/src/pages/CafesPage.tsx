@@ -3,18 +3,26 @@ import {
   AlertTriangle,
   ArrowLeft,
   CalendarClock,
+  CheckCircle2,
   ChevronDown,
+  ClipboardCopy,
   Coffee,
   Download,
   Filter,
   Gift,
   Loader2,
+  Mail,
   Pencil,
   Plus,
   Power,
+  RefreshCw,
   Scale,
+  Shield,
+  ShieldAlert,
   Stamp,
   Store,
+  Undo2,
+  UserCog,
   X,
 } from "lucide-react";
 
@@ -23,9 +31,15 @@ import {
   createBrand,
   createPlatformCafe,
   exportCafesCsv,
+  fetchCafeSecurity,
   fetchCafeStats,
   fetchCafes,
+  inviteBrandAdmin,
+  resetCafeNetworkLock,
+  updatePlatformCafe,
   type AdminCafe,
+  type AdminCafeSecurity,
+  type BrandInviteResponse,
   type CafeJoinedWindow,
   type CafeListFilter,
   type CafeStats,
@@ -58,7 +72,10 @@ export function CafesPage() {
     status: "all",
     joined: "all",
   });
-  const [addOpen, setAddOpen] = useState<null | "brand" | "cafe">(null);
+  const [addOpen, setAddOpen] = useState<null | "brand" | "cafe" | "invite">(
+    null,
+  );
+  const [editingCafe, setEditingCafe] = useState<AdminCafe | null>(null);
   // Bumps on every successful create → forces the fetch effect to re-run.
   const [refreshKey, setRefreshKey] = useState(0);
   const [exporting, setExporting] = useState(false);
@@ -147,6 +164,7 @@ export function CafesPage() {
         onFilterChange={setFilter}
         onAddBrand={() => setAddOpen("brand")}
         onAddCafe={() => setAddOpen("cafe")}
+        onInviteAdmin={() => setAddOpen("invite")}
         onExport={handleExport}
         exporting={exporting}
       />
@@ -166,8 +184,23 @@ export function CafesPage() {
           onResetFilters={() => setFilter({ status: "all", joined: "all" })}
         />
       ) : (
-        <CafesTable cafes={cafes} onSelect={setSelectedCafeId} />
+        <CafesTable
+          cafes={cafes}
+          onSelect={setSelectedCafeId}
+          onEdit={setEditingCafe}
+        />
       )}
+
+      {editingCafe ? (
+        <EditCafeModal
+          cafe={editingCafe}
+          onDismiss={() => setEditingCafe(null)}
+          onSaved={() => {
+            setEditingCafe(null);
+            setRefreshKey((k) => k + 1);
+          }}
+        />
+      ) : null}
 
       {addOpen === "brand" ? (
         <AddBrandModal
@@ -186,6 +219,12 @@ export function CafesPage() {
             setAddOpen(null);
             setRefreshKey((k) => k + 1);
           }}
+        />
+      ) : null}
+      {addOpen === "invite" ? (
+        <InviteAdminModal
+          brands={brandOptions}
+          onDismiss={() => setAddOpen(null)}
         />
       ) : null}
     </div>
@@ -261,9 +300,11 @@ function EmptyCard({
 function CafesTable({
   cafes,
   onSelect,
+  onEdit,
 }: {
   cafes: AdminCafe[];
   onSelect: (cafeId: string) => void;
+  onEdit: (cafe: AdminCafe) => void;
 }) {
   return (
     <div
@@ -293,6 +334,7 @@ function CafesTable({
                 cafe={cafe}
                 isLast={i === cafes.length - 1}
                 onSelect={() => onSelect(cafe.id)}
+                onEdit={() => onEdit(cafe)}
               />
             ))}
           </tbody>
@@ -306,22 +348,38 @@ function CafeRow({
   cafe,
   isLast,
   onSelect,
+  onEdit,
 }: {
   cafe: AdminCafe;
   isLast: boolean;
   onSelect: () => void;
+  onEdit: () => void;
 }) {
   const handleEdit = (e: React.MouseEvent) => {
     e.stopPropagation();
-    // eslint-disable-next-line no-console
-    console.info("[admin] edit cafe:", cafe.id, cafe.name);
-    alert(`Edit "${cafe.name}" — endpoint not wired yet.`);
+    onEdit();
   };
   const handleToggle = (e: React.MouseEvent) => {
     e.stopPropagation();
+    // Suspend is the cafe-level billing toggle — keep this as a quick
+    // action that opens the same modal, focused on the status field.
+    onEdit();
+  };
+  const handleImpersonate = (e: React.MouseEvent) => {
+    e.stopPropagation();
     // eslint-disable-next-line no-console
-    console.info("[admin] suspend/toggle cafe:", cafe.id, cafe.name);
-    alert(`Suspend "${cafe.name}" — endpoint not wired yet.`);
+    console.info("[admin] impersonate brand admin:", cafe.brand_id, cafe.brand_name);
+    alert(
+      `Impersonate ${cafe.brand_name} — feature stubbed; backend session-mint endpoint not wired yet.`,
+    );
+  };
+  const handleReverse = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    // eslint-disable-next-line no-console
+    console.info("[admin] reverse latest transaction at cafe:", cafe.id, cafe.name);
+    alert(
+      `Reverse last transaction at ${cafe.name} — feature stubbed; ledger-reversal endpoint not wired yet.`,
+    );
   };
 
   return (
@@ -366,10 +424,28 @@ function CafeRow({
             type="button"
             onClick={handleEdit}
             aria-label={`Edit ${cafe.name}`}
-            title="Edit"
+            title="Edit plan + status"
             className="rounded-md p-1.5 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-100"
           >
             <Pencil className="h-4 w-4" strokeWidth={2} />
+          </button>
+          <button
+            type="button"
+            onClick={handleImpersonate}
+            aria-label={`Impersonate ${cafe.brand_name} admin`}
+            title="Impersonate brand admin (stub)"
+            className="rounded-md p-1.5 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-amber-300"
+          >
+            <UserCog className="h-4 w-4" strokeWidth={2} />
+          </button>
+          <button
+            type="button"
+            onClick={handleReverse}
+            aria-label={`Reverse last transaction at ${cafe.name}`}
+            title="Reverse last transaction (stub)"
+            className="rounded-md p-1.5 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-amber-300"
+          >
+            <Undo2 className="h-4 w-4" strokeWidth={2} />
           </button>
           <button
             type="button"
@@ -383,6 +459,292 @@ function CafeRow({
         </div>
       </td>
     </tr>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Edit Cafe modal — Super Admin manual override of plan + status.
+// Sends to POST /api/admin/platform/cafes/{id}/update which atomically
+// updates brand.scheme_type and cafes.billing_status. Plan changes
+// affect every cafe under the brand (it's a brand-level field), so
+// the dialog surfaces that warning explicitly.
+// ─────────────────────────────────────────────────────────────────
+
+function EditCafeModal({
+  cafe,
+  onDismiss,
+  onSaved,
+}: {
+  cafe: AdminCafe;
+  onDismiss: () => void;
+  onSaved: () => void;
+}) {
+  const [scheme, setScheme] = useState<SchemeType>(cafe.scheme_type);
+  const [billingStatus, setBillingStatus] = useState<SubscriptionStatus>(
+    cafe.billing_status,
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const dirty =
+    scheme !== cafe.scheme_type || billingStatus !== cafe.billing_status;
+
+  const handleSave = async () => {
+    if (!dirty || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await updatePlatformCafe(cafe.id, {
+        scheme_type: scheme,
+        billing_status: billingStatus,
+      });
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to update cafe.");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <ModalShell
+      title={`Edit ${cafe.name}`}
+      onDismiss={busy ? () => undefined : onDismiss}
+    >
+      <div className="space-y-5 px-5 py-4">
+        <div>
+          <FieldLabel>Plan (brand-wide)</FieldLabel>
+          <div className="grid grid-cols-2 gap-2">
+            <SchemeChoice
+              selected={scheme === "global"}
+              onSelect={() => setScheme("global")}
+              label="LCP+ (global)"
+              hint="Shared network"
+            />
+            <SchemeChoice
+              selected={scheme === "private"}
+              onSelect={() => setScheme("private")}
+              label="Private"
+              hint="Walled-garden"
+            />
+          </div>
+          {scheme !== cafe.scheme_type ? (
+            <p className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-300">
+              <AlertTriangle className="h-3 w-3" strokeWidth={2.4} />
+              Plan changes affect every cafe under {cafe.brand_name}.
+            </p>
+          ) : null}
+        </div>
+
+        <div>
+          <FieldLabel>Status (this cafe)</FieldLabel>
+          <select
+            value={billingStatus}
+            onChange={(e) =>
+              setBillingStatus(e.target.value as SubscriptionStatus)
+            }
+            className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/30 [&>option]:bg-neutral-900"
+          >
+            <option value="active">Active</option>
+            <option value="trialing">Trialing</option>
+            <option value="pending_cancellation">Pending Cancellation</option>
+            <option value="past_due">Past due</option>
+            <option value="incomplete">Incomplete</option>
+            <option value="canceled">Suspended (Cancelled)</option>
+          </select>
+          <p className="mt-1.5 text-[11px] text-neutral-500">
+            Cafe-level only — brand subscription with Stripe is unaffected.
+          </p>
+        </div>
+
+        <CafeSecuritySection cafeId={cafe.id} />
+      </div>
+
+      {error ? (
+        <div className="mx-5 mb-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+          {error}
+        </div>
+      ) : null}
+
+      <div className="flex items-center justify-end gap-2 border-t border-neutral-800 px-5 py-3">
+        <button
+          type="button"
+          onClick={onDismiss}
+          disabled={busy}
+          className="rounded-md border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-xs font-semibold text-neutral-300 transition-colors hover:bg-neutral-800 disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={!dirty || busy}
+          className="inline-flex items-center gap-1.5 rounded-md bg-amber-500/90 px-3 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {busy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.2} />
+          ) : null}
+          Save changes
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+// Security & Network section embedded in the Edit modal. Renders the
+// last known IP + the network-lock status, with a Super-Admin-only
+// "Reset Network Lock" button that wipes the lock so the next login from
+// any IP becomes the new pinned address.
+function CafeSecuritySection({ cafeId }: { cafeId: string }) {
+  const [data, setData] = useState<AdminCafeSecurity | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    setData(null);
+    fetchCafeSecurity(cafeId)
+      .then((d) => {
+        if (!cancelled) setData(d);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : "Couldn't load security.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cafeId]);
+
+  const handleReset = async () => {
+    if (resetting) return;
+    if (
+      !window.confirm(
+        "Reset the network lock for this cafe? The next successful login from any IP becomes the new pinned address.",
+      )
+    ) {
+      return;
+    }
+    setResetting(true);
+    try {
+      const next = await resetCafeNetworkLock(cafeId);
+      setData(next);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Reset failed.");
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  return (
+    <div>
+      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-neutral-400">
+        <Shield className="h-3.5 w-3.5 text-amber-400" strokeWidth={2.4} />
+        Security &amp; Network
+      </div>
+      <div
+        className="rounded-md border border-neutral-800 p-3"
+        style={{ backgroundColor: "#0F0F0F" }}
+      >
+        {error ? (
+          <div className="text-[11px] text-rose-300">{error}</div>
+        ) : data === null ? (
+          <div className="flex items-center gap-2 text-[11px] text-neutral-500">
+            <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2.2} />
+            Loading network state…
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3 text-[11px]">
+              <div>
+                <div className="font-semibold uppercase tracking-wider text-neutral-500">
+                  Last Known IP
+                </div>
+                <div
+                  className="mt-1 text-neutral-200"
+                  style={{
+                    fontFamily:
+                      "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                  }}
+                >
+                  {data.last_known_ip ?? "— never logged in —"}
+                </div>
+              </div>
+              <div>
+                <div className="font-semibold uppercase tracking-wider text-neutral-500">
+                  Lock state
+                </div>
+                <div className="mt-1">
+                  {data.network_locked_at ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-rose-300">
+                      <ShieldAlert className="h-3 w-3" strokeWidth={2.4} />
+                      Locked
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-300">
+                      <Shield className="h-3 w-3" strokeWidth={2.4} />
+                      Open
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {data.recent_attempts.length > 0 ? (
+              <div className="mt-3">
+                <div className="text-[10.5px] font-semibold uppercase tracking-wider text-neutral-500">
+                  Recent mismatched-IP attempts
+                </div>
+                <ul className="mt-1.5 space-y-1">
+                  {data.recent_attempts.slice(0, 5).map((row) => (
+                    <li
+                      key={row.id}
+                      className="flex items-center justify-between rounded border border-neutral-800/60 bg-neutral-950 px-2.5 py-1.5 text-[11px]"
+                    >
+                      <span
+                        className="text-rose-300"
+                        style={{
+                          fontFamily:
+                            "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                        }}
+                      >
+                        {row.attempted_ip}
+                      </span>
+                      <span className="text-neutral-500">
+                        {new Date(row.attempted_at).toLocaleString("en-GB", {
+                          day: "numeric",
+                          month: "short",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            <button
+              type="button"
+              onClick={handleReset}
+              disabled={resetting || (!data.network_locked_at && !data.last_known_ip)}
+              className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-rose-900/60 bg-rose-950/40 px-2.5 py-1.5 text-[11px] font-semibold text-rose-200 transition-colors hover:bg-rose-950/60 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {resetting ? (
+                <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2.4} />
+              ) : (
+                <RefreshCw className="h-3 w-3" strokeWidth={2.4} />
+              )}
+              Reset Network Lock
+            </button>
+            <p className="mt-1.5 text-[10px] text-neutral-500">
+              Super-admin only. Clears Last Known IP + 30-day cooldown so the
+              next login from any IP becomes the new pinned address.
+            </p>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -653,6 +1015,7 @@ function CafesFilterBar({
   onFilterChange,
   onAddBrand,
   onAddCafe,
+  onInviteAdmin,
   onExport,
   exporting,
 }: {
@@ -660,6 +1023,7 @@ function CafesFilterBar({
   onFilterChange: (next: CafeListFilter) => void;
   onAddBrand: () => void;
   onAddCafe: () => void;
+  onInviteAdmin: () => void;
   onExport: () => void;
   exporting: boolean;
 }) {
@@ -728,7 +1092,11 @@ function CafesFilterBar({
             )}
             Export Report (CSV)
           </button>
-          <AddNewButton onAddBrand={onAddBrand} onAddCafe={onAddCafe} />
+          <AddNewButton
+            onAddBrand={onAddBrand}
+            onAddCafe={onAddCafe}
+            onInviteAdmin={onInviteAdmin}
+          />
         </div>
       </div>
     </div>
@@ -770,9 +1138,11 @@ function FilterDropdown({
 function AddNewButton({
   onAddBrand,
   onAddCafe,
+  onInviteAdmin,
 }: {
   onAddBrand: () => void;
   onAddCafe: () => void;
+  onInviteAdmin: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -825,6 +1195,14 @@ function AddNewButton({
             onClick={() => {
               setOpen(false);
               onAddCafe();
+            }}
+          />
+          <MenuItem
+            Icon={Mail}
+            label="Invite Brand Admin"
+            onClick={() => {
+              setOpen(false);
+              onInviteAdmin();
             }}
           />
         </div>
@@ -1078,6 +1456,144 @@ function SchemeChoice({
   );
 }
 
+// Inline searchable autocomplete for the brand picker. Built without
+// a 3rd-party combobox lib — keystroke-driven filter, ↑/↓ to move
+// through results, Enter to pick, Esc to close. The input value
+// shows the selected brand's name once chosen; clearing the input
+// reopens the menu.
+function BrandCombobox({
+  brands,
+  value,
+  onChange,
+}: {
+  brands: { id: string; name: string }[];
+  value: string;
+  onChange: (brandId: string) => void;
+}) {
+  const selectedName = useMemo(
+    () => brands.find((b) => b.id === value)?.name ?? "",
+    [brands, value],
+  );
+  const [query, setQuery] = useState(selectedName);
+  const [open, setOpen] = useState(false);
+  const [activeIdx, setActiveIdx] = useState(0);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // Keep the visible text in sync if the parent picks a brand
+  // programmatically (e.g. defaulting to brands[0]).
+  useEffect(() => {
+    setQuery(selectedName);
+  }, [selectedName]);
+
+  // Click-outside to close.
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (!wrapperRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", handler);
+    return () => window.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    // Showing only the selected brand's name (no edit) shouldn't filter
+    // the menu down to one — show everything when the input matches the
+    // current selection exactly.
+    if (!needle || needle === selectedName.toLowerCase()) return brands;
+    return brands.filter((b) => b.name.toLowerCase().includes(needle));
+  }, [brands, query, selectedName]);
+
+  const pick = (brandId: string) => {
+    onChange(brandId);
+    const name = brands.find((b) => b.id === brandId)?.name ?? "";
+    setQuery(name);
+    setOpen(false);
+    setActiveIdx(0);
+  };
+
+  const handleKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setOpen(true);
+      setActiveIdx((i) => Math.min(i + 1, filtered.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIdx((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
+      if (open && filtered[activeIdx]) {
+        e.preventDefault();
+        pick(filtered[activeIdx].id);
+      }
+    } else if (e.key === "Escape") {
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div ref={wrapperRef} className="relative">
+      <input
+        ref={inputRef}
+        type="text"
+        value={query}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+          setActiveIdx(0);
+        }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={handleKey}
+        placeholder="Search brands…"
+        aria-label="Brand"
+        aria-autocomplete="list"
+        aria-expanded={open}
+        role="combobox"
+        className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/30"
+      />
+      {open && filtered.length > 0 ? (
+        <ul
+          role="listbox"
+          className="absolute left-0 right-0 z-20 mt-1 max-h-56 overflow-y-auto rounded-md border border-neutral-800 bg-neutral-900 shadow-lg"
+        >
+          {filtered.map((b, i) => {
+            const active = i === activeIdx;
+            const selected = b.id === value;
+            return (
+              <li
+                key={b.id}
+                role="option"
+                aria-selected={selected}
+                onMouseEnter={() => setActiveIdx(i)}
+                onMouseDown={(e) => {
+                  // mousedown (not click) so the input doesn't blur and
+                  // close the menu before the pick lands.
+                  e.preventDefault();
+                  pick(b.id);
+                }}
+                className={
+                  "cursor-pointer px-3 py-2 text-xs " +
+                  (active
+                    ? "bg-amber-500/15 text-amber-200"
+                    : "text-neutral-200 hover:bg-neutral-800") +
+                  (selected ? " font-semibold" : "")
+                }
+              >
+                {b.name}
+              </li>
+            );
+          })}
+        </ul>
+      ) : open && filtered.length === 0 ? (
+        <div className="absolute left-0 right-0 z-20 mt-1 rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-500 shadow-lg">
+          No brands match "{query.trim()}"
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+
 function AddCafeModal({
   brands,
   onDismiss,
@@ -1126,17 +1642,11 @@ function AddCafeModal({
               No brands on the platform yet — add a brand first.
             </div>
           ) : (
-            <select
+            <BrandCombobox
+              brands={brands}
               value={brandId}
-              onChange={(e) => setBrandId(e.target.value)}
-              className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/30"
-            >
-              {brands.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
+              onChange={setBrandId}
+            />
           )}
         </div>
         <div>
@@ -1187,6 +1697,209 @@ function AddCafeModal({
           Create cafe
         </button>
       </div>
+    </ModalShell>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Invite Brand Admin — Super Admin → email + brand → setup_url
+// ─────────────────────────────────────────────────────────────────
+
+function InviteAdminModal({
+  brands,
+  onDismiss,
+}: {
+  brands: { id: string; name: string }[];
+  onDismiss: () => void;
+}) {
+  const [email, setEmail] = useState("");
+  const [brandId, setBrandId] = useState(brands[0]?.id ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<BrandInviteResponse | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const canSubmit =
+    email.trim().length > 0 &&
+    email.includes("@") &&
+    brandId.length > 0 &&
+    !busy;
+
+  const handleSubmit = async () => {
+    if (!canSubmit) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await inviteBrandAdmin({
+        email: email.trim().toLowerCase(),
+        brand_id: brandId,
+      });
+      setResult(res);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to issue invite.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = async () => {
+    if (!result) return;
+    try {
+      await navigator.clipboard.writeText(result.setup_url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Older browsers / non-https origins. Fall through silently.
+    }
+  };
+
+  return (
+    <ModalShell
+      title="Invite brand admin"
+      onDismiss={busy ? () => undefined : onDismiss}
+    >
+      {result === null ? (
+        <>
+          <div className="space-y-4 px-5 py-4">
+            <div>
+              <FieldLabel>Brand</FieldLabel>
+              {brands.length === 0 ? (
+                <div className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
+                  No brands on the platform yet — add a brand first.
+                </div>
+              ) : (
+                <BrandCombobox
+                  brands={brands}
+                  value={brandId}
+                  onChange={setBrandId}
+                />
+              )}
+            </div>
+            <div>
+              <FieldLabel>Admin email</FieldLabel>
+              <TextInput
+                value={email}
+                onChange={setEmail}
+                placeholder="owner@brand.co"
+                type="email"
+              />
+              <p className="mt-1.5 text-[11px] text-neutral-500">
+                A signed 48-hour setup link is generated. Paste it into
+                whatever email/chat you're using until SMTP delivery
+                lands.
+              </p>
+            </div>
+          </div>
+
+          {error ? (
+            <div className="mx-5 mb-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+              {error}
+            </div>
+          ) : null}
+
+          <div className="flex items-center justify-end gap-2 border-t border-neutral-800 px-5 py-3">
+            <button
+              type="button"
+              onClick={onDismiss}
+              disabled={busy}
+              className="rounded-md border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-xs font-semibold text-neutral-300 transition-colors hover:bg-neutral-800 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={!canSubmit}
+              className="inline-flex items-center gap-1.5 rounded-md bg-amber-500/90 px-3 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busy ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.2} />
+              ) : (
+                <Mail className="h-3.5 w-3.5" strokeWidth={2.4} />
+              )}
+              Generate setup link
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="space-y-4 px-5 py-4">
+            <div className="flex items-center gap-2 rounded-md border border-emerald-700/40 bg-emerald-950/40 px-3 py-2 text-xs text-emerald-200">
+              <CheckCircle2 className="h-4 w-4" strokeWidth={2.4} />
+              Invite issued for{" "}
+              <span className="font-semibold">{result.email}</span> — link
+              expires{" "}
+              {new Date(result.expires_at).toLocaleString("en-GB", {
+                day: "numeric",
+                month: "short",
+                year: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+              .
+            </div>
+            <div>
+              <FieldLabel>Setup URL</FieldLabel>
+              <div className="flex items-center gap-2">
+                <input
+                  readOnly
+                  value={result.setup_url}
+                  onFocus={(e) => e.currentTarget.select()}
+                  className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-[11px] text-neutral-100 outline-none"
+                  style={{
+                    fontFamily:
+                      "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={copy}
+                  aria-label="Copy setup link"
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-neutral-800 bg-neutral-900 px-2.5 py-2 text-xs font-semibold text-neutral-200 transition-colors hover:border-neutral-700 hover:bg-neutral-800"
+                >
+                  {copied ? (
+                    <>
+                      <CheckCircle2
+                        className="h-3.5 w-3.5 text-emerald-400"
+                        strokeWidth={2.4}
+                      />
+                      Copied
+                    </>
+                  ) : (
+                    <>
+                      <ClipboardCopy className="h-3.5 w-3.5" strokeWidth={2.4} />
+                      Copy
+                    </>
+                  )}
+                </button>
+              </div>
+              <p className="mt-2 text-[11px] text-neutral-500">
+                Brand: <span className="text-neutral-300">{result.brand_name}</span>
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 border-t border-neutral-800 px-5 py-3">
+            <button
+              type="button"
+              onClick={() => {
+                setResult(null);
+                setEmail("");
+              }}
+              className="rounded-md border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-xs font-semibold text-neutral-300 transition-colors hover:bg-neutral-800"
+            >
+              Issue another
+            </button>
+            <button
+              type="button"
+              onClick={onDismiss}
+              className="inline-flex items-center gap-1.5 rounded-md bg-amber-500/90 px-3 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-amber-400"
+            >
+              Done
+            </button>
+          </div>
+        </>
+      )}
     </ModalShell>
   );
 }

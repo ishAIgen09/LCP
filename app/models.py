@@ -170,6 +170,15 @@ class Cafe(Base):
     # geocodes them; Discover sorts cafes with missing coords to the end.
     latitude: Mapped[float | None] = mapped_column(Float)
     longitude: Mapped[float | None] = mapped_column(Float)
+    # IP / network lock for the till login. `last_known_ip` is the pinned
+    # source the cafe is allowed to log in from; `network_locked_at` is the
+    # timestamp that lock was established. A login from a different IP
+    # before the 30-day cooldown elapses → 403. Both null = open (no lock,
+    # accept any IP and pin on first successful login). See migration 0015.
+    last_known_ip: Mapped[str | None] = mapped_column(Text)
+    network_locked_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
     # Per-cafe billing status, separate from brand-level Stripe state. The
     # super-admin Billing tab uses this to cancel a single location without
     # mutating the brand's real subscription. See migration 0012.
@@ -189,6 +198,47 @@ class Cafe(Base):
         CheckConstraint(
             r"store_number IS NULL OR store_number ~ '^[A-Z0-9]{3,10}$'",
             name="store_number_format",
+        ),
+    )
+
+
+class NetworkLockEvent(Base):
+    """Append-only audit trail of mismatched-IP login attempts + admin
+    resets, per cafe. Powers the Super Admin's Flagged Activities widget
+    and the Security & Network section of the Edit Cafe modal. See
+    migration 0015 for schema."""
+
+    __tablename__ = "network_lock_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    cafe_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("cafes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # 'mismatch' for blocked logins, 'reset' for super-admin clears.
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    attempted_ip: Mapped[str] = mapped_column(Text, nullable=False)
+    expected_ip: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_network_lock_events_cafe_id_created_at",
+            "cafe_id",
+            "created_at",
+        ),
+        CheckConstraint(
+            "kind IN ('mismatch', 'reset')",
+            name="network_lock_event_kind",
         ),
     )
 

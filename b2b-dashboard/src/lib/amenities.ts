@@ -7,6 +7,7 @@ import {
   Laptop,
   Leaf,
   Milk,
+  Moon,
   Toilet,
   type LucideIcon,
 } from "lucide-react"
@@ -24,6 +25,7 @@ export const AMENITIES = [
   { id: "wheelchair_accessible", label: "Wheelchair Accessible",     Icon: Accessibility },
   { id: "toilets",               label: "Toilets",                   Icon: Toilet },
   { id: "gluten_free_vegan",     label: "Gluten-Free & Vegan Options", Icon: Leaf },
+  { id: "halal",                 label: "Halal",                     Icon: Moon },
   { id: "drive_thru",            label: "Drive-thru",                Icon: Car },
 ] as const satisfies ReadonlyArray<{ id: string; label: string; Icon: LucideIcon }>
 

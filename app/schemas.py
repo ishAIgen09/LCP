@@ -334,6 +334,46 @@ class AdminCustomerResponse(BaseModel):
     global_stamps: int
     total_private_stamps: int
     is_suspended: bool
+    # Server-derived velocity flag — true when this customer earned
+    # SUSPICIOUS_STAMPS_PER_HOUR or more EARN ledger rows in the last
+    # rolling hour. Surfaces a "Suspicious" pill in the Customers table
+    # so admins can spot a barista (or fraudster) machine-gunning stamps
+    # at a single till.
+    is_suspicious: bool = False
+
+
+# Mismatched-IP attempt or admin reset for a single cafe. Powers the
+# Super Admin's Flagged Activities widget + the Security & Network
+# section of the Edit Cafe modal.
+class AdminFlaggedActivityResponse(BaseModel):
+    id: UUID
+    cafe_id: UUID
+    cafe_name: str
+    brand_id: UUID
+    brand_name: str
+    attempted_ip: str
+    expected_ip: str | None
+    attempted_at: datetime
+
+
+# Per-cafe security dossier. `last_known_ip` + `network_locked_at` are
+# the pinned IP + the timestamp the lock was set. `recent_attempts`
+# carries the last few mismatched-IP rows so the admin can decide
+# whether to reset.
+class AdminCafeSecurityResponse(BaseModel):
+    cafe_id: UUID
+    last_known_ip: str | None
+    network_locked_at: datetime | None
+    recent_attempts: list[AdminFlaggedActivityResponse]
+
+
+# POST body for the Super Admin's manual override modal. Both fields are
+# optional — sending only one mutates that single field. `scheme_type`
+# is brand-wide (mutates `brands.scheme_type` since every cafe under the
+# brand shares the same plan); `billing_status` is cafe-scoped.
+class AdminCafeUpdateRequest(BaseModel):
+    scheme_type: SchemeType | None = None
+    billing_status: SubscriptionStatus | None = None
 
 
 # PATCH body for the Customers tab's Suspend toggle. Idempotent on purpose

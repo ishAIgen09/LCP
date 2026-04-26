@@ -77,6 +77,29 @@ export type AdminCustomer = {
   global_stamps: number;
   total_private_stamps: number;
   is_suspended: boolean;
+  // Server-derived velocity flag — true when the customer has earned
+  // ≥ N stamps in the last hour (see /api/admin/platform/customers).
+  // Optional so older backends that haven't shipped this column yet
+  // still hydrate the table without crashing.
+  is_suspicious?: boolean;
+};
+
+export type AdminFlaggedActivity = {
+  id: string;
+  cafe_id: string;
+  cafe_name: string;
+  brand_id: string;
+  brand_name: string;
+  attempted_ip: string;
+  expected_ip: string | null;
+  attempted_at: string;
+};
+
+export type AdminCafeSecurity = {
+  cafe_id: string;
+  last_known_ip: string | null;
+  network_locked_at: string | null;
+  recent_attempts: AdminFlaggedActivity[];
 };
 
 export type AdjustStampsBody = {
@@ -142,6 +165,43 @@ export function fetchOverview(): Promise<AdminOverview> {
   return getJSON<AdminOverview>("/api/admin/overview");
 }
 
+export function fetchFlaggedActivities(): Promise<AdminFlaggedActivity[]> {
+  return getJSON<AdminFlaggedActivity[]>(
+    "/api/admin/platform/flagged-activities",
+  );
+}
+
+export function fetchCafeSecurity(cafeId: string): Promise<AdminCafeSecurity> {
+  return getJSON<AdminCafeSecurity>(
+    `/api/admin/platform/cafes/${encodeURIComponent(cafeId)}/security`,
+  );
+}
+
+export function resetCafeNetworkLock(
+  cafeId: string,
+): Promise<AdminCafeSecurity> {
+  return sendJSON<AdminCafeSecurity>(
+    "POST",
+    `/api/admin/platform/cafes/${encodeURIComponent(cafeId)}/reset-network-lock`,
+  );
+}
+
+export type AdminCafeUpdate = {
+  scheme_type?: SchemeType;
+  billing_status?: SubscriptionStatus;
+};
+
+export function updatePlatformCafe(
+  cafeId: string,
+  body: AdminCafeUpdate,
+): Promise<AdminCafe> {
+  return sendJSON<AdminCafe>(
+    "POST",
+    `/api/admin/platform/cafes/${encodeURIComponent(cafeId)}/update`,
+    body,
+  );
+}
+
 // Platform-wide cafe list. Namespaced under /api/admin/platform/ because
 // /api/admin/cafes is already taken by the brand-scoped B2B endpoint
 // that requires a brand-admin JWT.
@@ -192,6 +252,29 @@ export function createPlatformCafe(body: {
   store_number?: string;
 }): Promise<AdminCafe> {
   return sendJSON<AdminCafe>("POST", "/api/admin/platform/cafes", body);
+}
+
+export type BrandInviteResponse = {
+  setup_url: string;
+  token: string;
+  expires_at: string;
+  brand_id: string;
+  brand_name: string;
+  email: string;
+};
+
+// Super-Admin → brand-admin onboarding handshake. Returns a signed
+// 48h JWT setup link the operator can paste into an email/Slack DM
+// until SMTP delivery lands.
+export function inviteBrandAdmin(body: {
+  email: string;
+  brand_id: string;
+}): Promise<BrandInviteResponse> {
+  return sendJSON<BrandInviteResponse>(
+    "POST",
+    "/api/admin/platform/invite-brand-admin",
+    body,
+  );
 }
 
 // Platform-wide ledger feed. Default cap of 500 matches the backend's

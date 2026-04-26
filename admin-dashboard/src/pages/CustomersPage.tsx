@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   Ban,
+  Flame,
   Loader2,
   Pencil,
   Search,
@@ -363,7 +364,20 @@ function CustomerRow({
         {joined}
       </td>
       <td className="px-5 py-3">
-        <StatusPill status={customer.is_suspended ? "suspended" : "active"} />
+        <div className="flex flex-wrap items-center gap-1.5">
+          <StatusPill
+            status={customer.is_suspended ? "suspended" : "active"}
+          />
+          {customer.is_suspicious ? (
+            <span
+              className="inline-flex items-center gap-1 rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-rose-300"
+              title="High-velocity stamp earner — flagged for review"
+            >
+              <Flame className="h-3 w-3" strokeWidth={2.4} />
+              Suspicious
+            </span>
+          ) : null}
+        </div>
       </td>
       <td className="px-5 py-3">
         <div className="flex items-center justify-end gap-1">

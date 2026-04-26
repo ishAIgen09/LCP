@@ -42,6 +42,7 @@ from app.models import (
     GlobalLedger,
     GlobalLedgerAction,
     LedgerEventType,
+    NetworkLockEvent,
     Offer,
     SchemeType,
     StampLedger,
@@ -68,7 +69,10 @@ from app.schemas import (
     AdminBillingRow,
     AdminCreateBrandRequest,
     AdminCreateCafeRequest,
+    AdminCafeSecurityResponse,
+    AdminCafeUpdateRequest,
     AdminCustomerResponse,
+    AdminFlaggedActivityResponse,
     AdminOverviewResponse,
     AdminPlatformCafeResponse,
     AdminTransactionResponse,
@@ -89,6 +93,11 @@ from app.schemas import (
     UserResponse,
 )
 from app.security import hash_password
+from app import tokens
+from pydantic import BaseModel, Field
+import logging
+
+logger = logging.getLogger(__name__)
 
 TILL_CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 REWARD_THRESHOLD = 10
@@ -644,6 +653,186 @@ async def platform_cafes(
     ]
 
 
+# Threshold for the "Suspicious Activity" velocity flag on the Customers
+# tab. A consumer who pulls more than this many EARN rows in a rolling
+# hour gets a Suspicious pill — could be a barista mass-stamping a single
+# till, could be a fraud ring bouncing one barcode around. Either way,
+# admin-worthy.
+SUSPICIOUS_STAMPS_PER_HOUR = 12
+SUSPICIOUS_WINDOW = timedelta(hours=1)
+
+
+async def _suspicious_user_ids(session: AsyncSession) -> set[UUID]:
+    """Set of user_ids whose EARN rate in the last rolling hour exceeds
+    SUSPICIOUS_STAMPS_PER_HOUR. Cheap single GROUP BY pass over a small
+    time-windowed slice of stamp_ledger."""
+
+    cutoff = datetime.now(timezone.utc) - SUSPICIOUS_WINDOW
+    rows = (
+        await session.execute(
+            select(StampLedger.customer_id, func.count())
+            .where(StampLedger.event_type == LedgerEventType.EARN)
+            .where(StampLedger.created_at >= cutoff)
+            .group_by(StampLedger.customer_id)
+            .having(func.count() >= SUSPICIOUS_STAMPS_PER_HOUR)
+        )
+    ).all()
+    return {row[0] for row in rows}
+
+
+# IP / network lock — Super Admin platform endpoints. Mirrors the
+# auth_routes login-time enforcement: the cafes table carries
+# last_known_ip + network_locked_at; mismatches are appended to
+# network_lock_events. These endpoints power the Edit Cafe modal's
+# Security & Network section + the Overview tab's Flagged Activities
+# widget.
+def _flagged_to_response(
+    event: NetworkLockEvent, cafe: Cafe, brand: Brand
+) -> AdminFlaggedActivityResponse:
+    return AdminFlaggedActivityResponse(
+        id=event.id,
+        cafe_id=cafe.id,
+        cafe_name=cafe.name,
+        brand_id=brand.id,
+        brand_name=brand.name,
+        attempted_ip=event.attempted_ip,
+        expected_ip=event.expected_ip,
+        attempted_at=event.created_at,
+    )
+
+
+@app.get(
+    "/api/admin/platform/flagged-activities",
+    response_model=list[AdminFlaggedActivityResponse],
+)
+async def platform_flagged_activities(
+    session: AsyncSession = Depends(get_session),
+) -> list[AdminFlaggedActivityResponse]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    rows = (
+        await session.execute(
+            select(NetworkLockEvent, Cafe, Brand)
+            .join(Cafe, Cafe.id == NetworkLockEvent.cafe_id)
+            .join(Brand, Brand.id == Cafe.brand_id)
+            .where(NetworkLockEvent.kind == "mismatch")
+            .where(NetworkLockEvent.created_at >= cutoff)
+            .order_by(NetworkLockEvent.created_at.desc())
+            .limit(50)
+        )
+    ).all()
+    return [_flagged_to_response(event, cafe, brand) for event, cafe, brand in rows]
+
+
+@app.get(
+    "/api/admin/platform/cafes/{cafe_id}/security",
+    response_model=AdminCafeSecurityResponse,
+)
+async def platform_cafe_security(
+    cafe_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> AdminCafeSecurityResponse:
+    cafe = await session.get(Cafe, cafe_id)
+    if cafe is None:
+        raise HTTPException(status_code=404, detail="Cafe not found.")
+    brand = await session.get(Brand, cafe.brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Cafe brand missing.")
+    events = (
+        await session.execute(
+            select(NetworkLockEvent)
+            .where(NetworkLockEvent.cafe_id == cafe_id)
+            .where(NetworkLockEvent.kind == "mismatch")
+            .order_by(NetworkLockEvent.created_at.desc())
+            .limit(10)
+        )
+    ).scalars().all()
+    return AdminCafeSecurityResponse(
+        cafe_id=cafe.id,
+        last_known_ip=cafe.last_known_ip,
+        network_locked_at=cafe.network_locked_at,
+        recent_attempts=[_flagged_to_response(e, cafe, brand) for e in events],
+    )
+
+
+@app.post(
+    "/api/admin/platform/cafes/{cafe_id}/reset-network-lock",
+    response_model=AdminCafeSecurityResponse,
+)
+async def platform_cafe_reset_network_lock(
+    cafe_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> AdminCafeSecurityResponse:
+    cafe = await session.get(Cafe, cafe_id)
+    if cafe is None:
+        raise HTTPException(status_code=404, detail="Cafe not found.")
+    brand = await session.get(Brand, cafe.brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Cafe brand missing.")
+    # Audit the reset before we wipe the columns so the trail survives.
+    if cafe.last_known_ip:
+        session.add(
+            NetworkLockEvent(
+                cafe_id=cafe.id,
+                kind="reset",
+                attempted_ip="<admin-reset>",
+                expected_ip=cafe.last_known_ip,
+            )
+        )
+    cafe.last_known_ip = None
+    cafe.network_locked_at = None
+    await session.commit()
+    await session.refresh(cafe)
+    return AdminCafeSecurityResponse(
+        cafe_id=cafe.id,
+        last_known_ip=cafe.last_known_ip,
+        network_locked_at=cafe.network_locked_at,
+        recent_attempts=[],
+    )
+
+
+@app.post(
+    "/api/admin/platform/cafes/{cafe_id}/update",
+    response_model=AdminPlatformCafeResponse,
+)
+async def platform_cafe_update(
+    cafe_id: UUID,
+    payload: AdminCafeUpdateRequest,
+    session: AsyncSession = Depends(get_session),
+) -> AdminPlatformCafeResponse:
+    """Super Admin manual override — flips a cafe's billing_status and/or
+    its parent brand's scheme_type. Plan changes are brand-wide because
+    every cafe under a brand inherits the brand's scheme; that's surfaced
+    in the modal copy. Send-only-what-you-want-to-change semantics.
+    """
+
+    cafe = await session.get(Cafe, cafe_id)
+    if cafe is None:
+        raise HTTPException(status_code=404, detail="Cafe not found.")
+    brand = await session.get(Brand, cafe.brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Cafe brand missing.")
+
+    if payload.billing_status is not None:
+        cafe.billing_status = payload.billing_status
+    if payload.scheme_type is not None:
+        brand.scheme_type = payload.scheme_type
+
+    await session.commit()
+    await session.refresh(cafe)
+    await session.refresh(brand)
+    return AdminPlatformCafeResponse(
+        id=cafe.id,
+        name=cafe.name,
+        address=cafe.address,
+        brand_id=brand.id,
+        brand_name=brand.name,
+        scheme_type=brand.scheme_type,
+        subscription_status=brand.subscription_status,
+        billing_status=cafe.billing_status,
+        created_at=cafe.created_at,
+    )
+
+
 # SECURITY — unauth'd, same posture as the other /api/admin/platform/*
 # routes. Wrap with Depends(get_super_admin_session) once that role ships.
 #
@@ -741,6 +930,8 @@ async def platform_customers(
     for customer_id, scheme_type, net in aggregate_rows:
         net_by_user.setdefault(customer_id, {})[scheme_type] = int(net)
 
+    suspicious = await _suspicious_user_ids(session)
+
     return [
         AdminCustomerResponse(
             id=user.id,
@@ -754,6 +945,7 @@ async def platform_customers(
                 SchemeType.PRIVATE, 0
             ),
             is_suspended=user.is_suspended,
+            is_suspicious=user.id in suspicious,
         )
         for user in users
     ]
@@ -781,6 +973,7 @@ async def _build_customer_response(
     nets: dict[SchemeType, int] = {
         scheme: int(net) for scheme, net in aggregate_rows
     }
+    suspicious = await _suspicious_user_ids(session)
     return AdminCustomerResponse(
         id=user.id,
         till_code=user.till_code.strip(),
@@ -789,6 +982,7 @@ async def _build_customer_response(
         global_stamps=nets.get(SchemeType.GLOBAL, 0),
         total_private_stamps=nets.get(SchemeType.PRIVATE, 0),
         is_suspended=user.is_suspended,
+        is_suspicious=user.id in suspicious,
     )
 
 
@@ -1329,6 +1523,89 @@ async def platform_create_brand(
         )
     await session.refresh(brand)
     return brand
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Brand-admin invite — Super Admin generates a setup link
+# ─────────────────────────────────────────────────────────────────────
+#
+# Super Admin enters an email + selects a brand → backend signs a JWT
+# with `aud=brand-invite` and 48h TTL → returns the setup_url so the
+# UI can show the operator a copyable link they can paste into an
+# email or chat. No persistence yet — the JWT itself is the
+# invitation. When/if the b2b-dashboard adds a `/setup?token=…`
+# route, it'll decode the token via tokens.decode(token, "brand-invite"),
+# prompt for password, and finalize the admin user.
+#
+# We don't send the email here yet; OTP delivery is still the
+# print-to-stdout stub (memory: project_otp_delivery_stdout_stub).
+# When Resend/SendGrid lands, plug it in around the return.
+class BrandInviteRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+    brand_id: UUID
+
+
+class BrandInviteResponse(BaseModel):
+    setup_url: str
+    token: str
+    expires_at: datetime
+    brand_id: UUID
+    brand_name: str
+    email: str
+
+
+@app.post(
+    "/api/admin/platform/invite-brand-admin",
+    response_model=BrandInviteResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def platform_invite_brand_admin(
+    payload: BrandInviteRequest,
+    session: AsyncSession = Depends(get_session),
+) -> BrandInviteResponse:
+    email = payload.email.strip().lower()
+    if "@" not in email or "." not in email:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="email must be a valid email address.",
+        )
+
+    brand = await session.get(Brand, payload.brand_id)
+    if brand is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Brand not found.",
+        )
+
+    token, exp = tokens.encode_brand_invite(email=email, brand_id=str(brand.id))
+    base = settings.frontend_base_url.rstrip("/")
+    setup_url = f"{base}/setup?token={token}"
+    expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
+
+    # Audit log so the Super Admin can correlate "I sent an invite to X
+    # at 10:42" with what's actually in the system.
+    logger.warning(
+        "BRAND-INVITE email=%s brand_id=%s brand_name=%s expires_at=%s",
+        email,
+        brand.id,
+        brand.name,
+        expires_at.isoformat(),
+        extra={
+            "event": "brand_invite_issued",
+            "email": email,
+            "brand_id": str(brand.id),
+            "expires_at": expires_at.isoformat(),
+        },
+    )
+
+    return BrandInviteResponse(
+        setup_url=setup_url,
+        token=token,
+        expires_at=expires_at,
+        brand_id=brand.id,
+        brand_name=brand.name,
+        email=email,
+    )
 
 
 # SECURITY — unauth'd, same posture as other /api/admin/platform/*.

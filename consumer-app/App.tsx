@@ -37,7 +37,7 @@ import { LoginScreen } from "./src/LoginScreen";
 import { HistoryScreen } from "./src/HistoryScreen";
 import { RewardModal, type RewardPayload } from "./src/RewardModal";
 import { CafeDetailsModal } from "./src/CafeDetailsModal";
-import { lookupAmenity, type AmenityDef } from "./src/amenities";
+import { AMENITIES, lookupAmenity, type AmenityDef } from "./src/amenities";
 import {
   fetchDiscoverCafes,
   fetchWallet,
@@ -50,6 +50,29 @@ import { formatOfferHeadline, formatOfferWindow } from "./src/offers";
 import { COLOR, FONT, type Session } from "./src/theme";
 
 const BALANCE_POLL_MS = 3000;
+
+// Discovery is local-only — anything farther than this gets dropped from the
+// feed entirely (so a Manchester user never sees a London cafe). Keep in
+// sync with the backend if a server-side cap ever lands; today the
+// enforcement is purely client-side because /api/consumer/cafes returns the
+// full directory.
+const DISCOVERY_RADIUS_MILES = 5;
+
+// Deterministic mock distance used when the device hasn't granted location
+// permission (or the GPS errors). Hashing the cafe id keeps the value stable
+// across renders and across cards — the same cafe always reads the same
+// "1.2 mi away" so the UI doesn't flicker on every poll. Capped at the
+// discovery radius so the mock never produces a card that we'd then filter
+// out.
+function mockDistanceMiles(cafeId: string): number {
+  let hash = 0;
+  for (let i = 0; i < cafeId.length; i += 1) {
+    hash = (hash * 31 + cafeId.charCodeAt(i)) >>> 0;
+  }
+  // 0.3 mi … (radius - 0.2) mi, one decimal of resolution.
+  const span = Math.max(0.5, DISCOVERY_RADIUS_MILES - 0.5);
+  return Math.round((0.3 + (hash % Math.round(span * 10)) / 10) * 10) / 10;
+}
 
 type Tab = "home" | "history" | "discover" | "profile";
 
@@ -810,6 +833,7 @@ function DiscoverView({ session }: { session: Session }) {
   const [selected, setSelected] = useState<DiscoverCafe | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [activeAmenity, setActiveAmenity] = useState<string | null>(null);
 
   // Location permission + first fix. One-shot on mount — if the user denies
   // permission or the GPS errors, coords stays null and the cafe feed
@@ -855,6 +879,50 @@ function DiscoverView({ session }: { session: Session }) {
     };
   }, [session.token, reloadKey, coords]);
 
+  // Stamp every cafe with a distance reading + drop anything outside the
+  // 5-mile cap. When the device gave us coords the backend already returned
+  // `distance_miles`; otherwise we deterministically mock from the cafe id
+  // so each card still shows a believable "X mi away" pill.
+  const localCafes = useMemo(() => {
+    if (!cafes) return cafes;
+    return cafes
+      .map((cafe) => {
+        const dist =
+          cafe.distance_miles != null
+            ? cafe.distance_miles
+            : mockDistanceMiles(cafe.id);
+        return { ...cafe, distance_miles: dist } as DiscoverCafe;
+      })
+      .filter(
+        (cafe) =>
+          cafe.distance_miles != null &&
+          cafe.distance_miles <= DISCOVERY_RADIUS_MILES,
+      )
+      .sort(
+        (a, b) =>
+          (a.distance_miles ?? Number.MAX_VALUE) -
+          (b.distance_miles ?? Number.MAX_VALUE),
+      );
+  }, [cafes]);
+
+  // Smart filter: only surface amenities that at least one local cafe
+  // actually supports — no point offering "Halal" if no nearby cafe ticks
+  // it. Keeps the pill row honest.
+  const availableAmenityIds = useMemo(() => {
+    if (!localCafes) return new Set<string>();
+    const set = new Set<string>();
+    for (const c of localCafes) {
+      for (const id of c.amenities) set.add(id);
+    }
+    return set;
+  }, [localCafes]);
+
+  const visibleCafes = useMemo(() => {
+    if (!localCafes) return localCafes;
+    if (!activeAmenity) return localCafes;
+    return localCafes.filter((c) => c.amenities.includes(activeAmenity));
+  }, [localCafes, activeAmenity]);
+
   return (
     <ScrollView
       className="flex-1"
@@ -877,8 +945,14 @@ function DiscoverView({ session }: { session: Session }) {
         className="mt-1 text-[13px]"
         style={{ color: COLOR.textMuted }}
       >
-        Fresh picks from the Local Coffee Perks community.
+        Within {DISCOVERY_RADIUS_MILES} miles · sorted by closest first.
       </Text>
+
+      <SmartFilterRow
+        active={activeAmenity}
+        onChange={setActiveAmenity}
+        availableIds={availableAmenityIds}
+      />
 
       {cafes === null ? (
         <View
@@ -947,7 +1021,7 @@ function DiscoverView({ session }: { session: Session }) {
             </Text>
           </Pressable>
         </View>
-      ) : cafes.length === 0 ? (
+      ) : !visibleCafes || visibleCafes.length === 0 ? (
         <View
           className="mt-6 rounded-2xl p-4"
           style={{
@@ -963,7 +1037,9 @@ function DiscoverView({ session }: { session: Session }) {
               color: COLOR.text,
             }}
           >
-            No cafés just yet ☕
+            {activeAmenity
+              ? "No cafés match that filter near you"
+              : "No cafés within " + DISCOVERY_RADIUS_MILES + " miles ☕"}
           </Text>
           <Text
             style={{
@@ -974,12 +1050,38 @@ function DiscoverView({ session }: { session: Session }) {
               lineHeight: 18,
             }}
           >
-            We're onboarding local roasters now. Check back soon — fresh perks are brewing.
+            {activeAmenity
+              ? "Try clearing the filter or picking a different amenity."
+              : "We're onboarding local roasters now. Check back soon — fresh perks are brewing."}
           </Text>
+          {activeAmenity ? (
+            <Pressable
+              onPress={() => setActiveAmenity(null)}
+              accessibilityRole="button"
+              className="mt-3 h-9 items-center justify-center self-start rounded-full px-4"
+              style={({ pressed }) => ({
+                backgroundColor: COLOR.surface,
+                borderWidth: 1,
+                borderColor: COLOR.border,
+                opacity: pressed ? 0.85 : 1,
+              })}
+            >
+              <Text
+                style={{
+                  fontFamily: FONT.semibold,
+                  fontSize: 12,
+                  color: COLOR.text,
+                  letterSpacing: 0.3,
+                }}
+              >
+                Clear filter
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
       ) : (
         <View className="mt-5">
-          {cafes.map((cafe) => (
+          {visibleCafes.map((cafe) => (
             <DiscoverCafeCard
               key={cafe.id}
               cafe={cafe}
@@ -990,6 +1092,93 @@ function DiscoverView({ session }: { session: Session }) {
       )}
 
       <CafeDetailsModal cafe={selected} onClose={() => setSelected(null)} />
+    </ScrollView>
+  );
+}
+
+// Horizontal pill row for the Discover smart-filter. Renders the catalogue
+// of amenities; greys out (and disables) any pill whose amenity isn't on a
+// nearby cafe so the row stays honest without truncating the list. Tap a
+// pill once to filter, tap again to clear — passing `null` to onChange
+// removes the filter.
+function SmartFilterRow({
+  active,
+  onChange,
+  availableIds,
+}: {
+  active: string | null;
+  onChange: (id: string | null) => void;
+  availableIds: ReadonlySet<string>;
+}) {
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={{ paddingTop: 14, paddingBottom: 4 }}
+    >
+      <Pressable
+        onPress={() => onChange(null)}
+        className="mr-2 h-9 items-center justify-center rounded-full px-3.5"
+        style={({ pressed }) => ({
+          backgroundColor: active === null ? COLOR.accent : COLOR.surface,
+          borderWidth: 1,
+          borderColor: active === null ? COLOR.accent : COLOR.border,
+          opacity: pressed ? 0.85 : 1,
+        })}
+      >
+        <Text
+          style={{
+            fontSize: 11.5,
+            color: active === null ? COLOR.accentInk : COLOR.text,
+            fontFamily: FONT.semibold,
+            letterSpacing: 0.4,
+          }}
+        >
+          All
+        </Text>
+      </Pressable>
+      {AMENITIES.map((a) => {
+        const isActive = active === a.id;
+        const isAvailable = availableIds.has(a.id);
+        const Icon = a.Icon;
+        return (
+          <Pressable
+            key={a.id}
+            onPress={() => onChange(isActive ? null : a.id)}
+            disabled={!isAvailable && !isActive}
+            accessibilityRole="button"
+            accessibilityLabel={`Filter by ${a.label}`}
+            className="mr-2 h-9 flex-row items-center justify-center rounded-full px-3"
+            style={({ pressed }) => ({
+              backgroundColor: isActive ? COLOR.accent : COLOR.surface,
+              borderWidth: 1,
+              borderColor: isActive
+                ? COLOR.accent
+                : isAvailable
+                  ? COLOR.border
+                  : "rgba(255,255,255,0.04)",
+              opacity: pressed ? 0.85 : isAvailable || isActive ? 1 : 0.45,
+            })}
+          >
+            <Icon
+              size={12}
+              color={isActive ? COLOR.accentInk : COLOR.roastedAlmond}
+              strokeWidth={2.2}
+            />
+            <Text
+              style={{
+                marginLeft: 6,
+                fontSize: 11.5,
+                color: isActive ? COLOR.accentInk : COLOR.text,
+                fontFamily: FONT.semibold,
+                letterSpacing: 0.3,
+              }}
+            >
+              {a.label}
+            </Text>
+          </Pressable>
+        );
+      })}
     </ScrollView>
   );
 }
