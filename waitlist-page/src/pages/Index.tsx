@@ -38,8 +38,8 @@ const Index = () => {
       <Hero />
       <UrgencyStrip />
       <WhyLCP />
-      <MidPageWaitlistCTA />
       <Plans />
+      <MidPageWaitlistCTA />
       <ProductGlimpse />
       <Founding100 />
       <CustomerExperience />

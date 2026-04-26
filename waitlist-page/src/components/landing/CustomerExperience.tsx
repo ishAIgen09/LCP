@@ -4,12 +4,12 @@ const benefits = [
   {
     icon: Heart,
     title: "Support your favorite independent cafes",
-    body: "Every stamp keeps the corner cafe on the corner. Your morning coffee becomes a vote for the local high street, not the chain on every block.",
+    body: "Every stamp is a small thank-you to the people who pull your morning coffee — the indie cafes, baristas and local communities you love spending time in.",
   },
   {
     icon: Smartphone,
-    title: "Never lose a paper loyalty card again",
-    body: "Your stamps live in the LCP app — safe in your pocket, always with you, never crumpled at the bottom of a bag or left in last winter's coat.",
+    title: "One app for every local cafe you love",
+    body: "Whether your favourite cafe is on the Private plan or the LCP+ Global network, you collect every stamp inside one Local Coffee Perks app. No juggling a dozen cafe apps. No more paper cards lost at the bottom of your bag.",
   },
   {
     icon: Compass,
