@@ -12,15 +12,24 @@ not reveal whether the identifier matched a row.
 
 from __future__ import annotations
 
+import os
+import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import tokens
 from app.database import get_session
-from app.models import Brand, Cafe, NetworkLockEvent, SubscriptionStatus
+from app.models import (
+    Brand,
+    Cafe,
+    NetworkLockEvent,
+    PasswordResetToken,
+    SubscriptionStatus,
+)
 from app.schemas import (
     AdminLoginRequest,
     AdminLoginResponse,
@@ -183,3 +192,126 @@ async def store_login(
         cafe=CafeProfile.model_validate(cafe),
         brand=BrandProfile.model_validate(brand),
     )
+
+
+# ─────────────────────────────────────────────────────────────────
+# Brand-admin "Forgot password" — token-based reset, console-stub
+# delivery (mirrors the consumer OTP delivery stub today).
+# ─────────────────────────────────────────────────────────────────
+
+# 60-minute single-use TTL. Long enough to survive a context switch
+# (read email → click link → fill form), short enough to limit blast
+# radius if the link leaks.
+PASSWORD_RESET_TTL = timedelta(minutes=60)
+
+# `FRONTEND_BASE_URL` is the b2b dashboard origin; the reset link is
+# rendered as `${BASE}/reset-password?token=…`. The default keeps
+# local dev working out of the box.
+_FRONTEND_BASE_URL = (
+    os.environ.get("FRONTEND_BASE_URL", "http://localhost:5173").rstrip("/")
+)
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ForgotPasswordResponse(BaseModel):
+    # Always reports success — the response is intentionally identical
+    # whether the email matched a brand or not, so this endpoint can't
+    # be used as an account-existence oracle.
+    ok: bool = True
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=8, max_length=200)
+    new_password: str = Field(min_length=8, max_length=200)
+
+
+class ResetPasswordResponse(BaseModel):
+    ok: bool = True
+
+
+@router.post("/forgot-password", response_model=ForgotPasswordResponse)
+async def forgot_password(
+    payload: ForgotPasswordRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ForgotPasswordResponse:
+    normalized_email = payload.email.strip().lower()
+    brand = (
+        await session.execute(
+            select(Brand).where(func.lower(Brand.contact_email) == normalized_email)
+        )
+    ).scalar_one_or_none()
+
+    if brand is not None:
+        # Generate 32 bytes of URL-safe entropy. We hash it before
+        # storing so a DB read doesn't hand an attacker a working link;
+        # the raw token only ever lives in the printed reset URL.
+        raw_token = secrets.token_urlsafe(32)
+        token_row = PasswordResetToken(
+            brand_id=brand.id,
+            token_hash=hash_password(raw_token),
+            expires_at=datetime.now(timezone.utc) + PASSWORD_RESET_TTL,
+        )
+        session.add(token_row)
+        await session.commit()
+
+        reset_url = f"{_FRONTEND_BASE_URL}/reset-password?token={raw_token}"
+        # SMTP-less stub identical to the consumer OTP delivery path.
+        # Read these out of the API container's stdout via:
+        #   docker compose logs api | grep "Password reset"
+        print(
+            f"[auth] Password reset for {normalized_email} ({brand.name}): {reset_url}",
+            flush=True,
+        )
+
+    # Same shape regardless of brand presence — see ForgotPasswordResponse.
+    return ForgotPasswordResponse()
+
+
+@router.post("/reset-password", response_model=ResetPasswordResponse)
+async def reset_password(
+    payload: ResetPasswordRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ResetPasswordResponse:
+    # Pull the most recent unused, unexpired token across all brands and
+    # bcrypt-verify the supplied plaintext against each candidate's
+    # token_hash. Bcrypt verify is intentionally slow, so we cap the
+    # candidate window at the 50 most recently issued tokens — way more
+    # than realistic concurrent reset traffic, but a hard ceiling on the
+    # CPU cost of an attacker firing junk tokens.
+    now = datetime.now(timezone.utc)
+    rows = (
+        await session.execute(
+            select(PasswordResetToken)
+            .where(PasswordResetToken.used_at.is_(None))
+            .where(PasswordResetToken.expires_at > now)
+            .order_by(PasswordResetToken.created_at.desc())
+            .limit(50)
+        )
+    ).scalars().all()
+
+    matched: PasswordResetToken | None = None
+    for row in rows:
+        if verify_password(payload.token, row.token_hash):
+            matched = row
+            break
+
+    if matched is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Reset link is invalid or has expired.",
+        )
+
+    brand = await session.get(Brand, matched.brand_id)
+    if brand is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Reset link is invalid or has expired.",
+        )
+
+    brand.password_hash = hash_password(payload.new_password)
+    matched.used_at = now
+    await session.commit()
+    return ResetPasswordResponse()

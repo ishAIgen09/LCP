@@ -296,6 +296,7 @@ export function cafeFromApi(apiCafe: ApiCafe, brandActive: boolean): Cafe {
     amenities: apiCafe.amenities ?? [],
     phone: apiCafe.phone ?? null,
     foodHygieneRating: apiCafe.food_hygiene_rating ?? "Awaiting Inspection",
+    storeNumber: apiCafe.store_number ?? null,
   }
 }
 
@@ -541,6 +542,42 @@ export async function deleteCafe(
     `/api/admin/cafes/${id}/delete`,
     {},
     authHeader(token),
+  )
+}
+
+export async function resetCafePin(
+  token: string,
+  cafeId: string,
+  pin: string,
+): Promise<ApiCafe> {
+  const id = requireCafeId(cafeId, "resetCafePin")
+  return request<ApiCafe>(
+    "POST",
+    `/api/admin/cafes/${id}/reset-pin`,
+    { pin },
+    authHeader(token),
+  )
+}
+
+// Brand-admin "forgot password" — fires off the reset request. The
+// backend always responds 200 regardless of whether the email matched,
+// so the caller never reveals account existence to the user.
+export async function forgotPassword(email: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(
+    "POST",
+    "/api/auth/forgot-password",
+    { email },
+  )
+}
+
+export async function resetPassword(
+  token: string,
+  newPassword: string,
+): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(
+    "POST",
+    "/api/auth/reset-password",
+    { token, new_password: newPassword },
   )
 }
 

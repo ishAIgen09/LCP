@@ -48,6 +48,10 @@ export type Cafe = {
   amenities: string[]
   phone: string | null
   foodHygieneRating: FoodHygieneRating
+  // Sequential 3-digit store ID allocated by the backend
+  // (see _allocate_store_number). Nullable for legacy rows that pre-date
+  // the allocator change; UI falls back to initials in that case.
+  storeNumber: string | null
 }
 
 // The current owner's brand. In a real build this would come from the
@@ -80,6 +84,7 @@ export const initialCafes: Cafe[] = [
     amenities: [],
     phone: null,
     foodHygieneRating: "Awaiting Inspection",
+    storeNumber: null,
   },
   {
     id: "c-02",
@@ -90,6 +95,7 @@ export const initialCafes: Cafe[] = [
     amenities: [],
     phone: null,
     foodHygieneRating: "Awaiting Inspection",
+    storeNumber: null,
   },
   {
     id: "c-03",
@@ -100,6 +106,7 @@ export const initialCafes: Cafe[] = [
     amenities: [],
     phone: null,
     foodHygieneRating: "Awaiting Inspection",
+    storeNumber: null,
   },
   {
     id: "c-04",
@@ -110,5 +117,6 @@ export const initialCafes: Cafe[] = [
     amenities: [],
     phone: null,
     foodHygieneRating: "Awaiting Inspection",
+    storeNumber: null,
   },
 ]

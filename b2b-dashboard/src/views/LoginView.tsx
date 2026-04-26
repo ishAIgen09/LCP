@@ -16,7 +16,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
-import { adminLogin, humanizeError, storeLogin } from "@/lib/api"
+import { adminLogin, forgotPassword, humanizeError, storeLogin } from "@/lib/api"
 import type { Brand, Session } from "@/lib/mock"
 
 type Mode = "select" | "admin" | "store"
@@ -192,6 +192,30 @@ function AdminForm({
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  // Forgot-password sub-flow state. Kept inline (vs. a separate view) so
+  // owners don't lose context — they switch back and forth between
+  // login + reset request without leaving the page.
+  const [forgotMode, setForgotMode] = useState(false)
+  const [forgotSubmitting, setForgotSubmitting] = useState(false)
+  const [forgotSent, setForgotSent] = useState(false)
+  const [forgotError, setForgotError] = useState<string | null>(null)
+
+  const requestReset = async () => {
+    if (!/.+@.+\..+/.test(email.trim())) {
+      setForgotError("Enter the email tied to your brand admin account.")
+      return
+    }
+    setForgotError(null)
+    setForgotSubmitting(true)
+    try {
+      await forgotPassword(email.trim())
+      setForgotSent(true)
+    } catch (e) {
+      setForgotError(humanizeError(e))
+    } finally {
+      setForgotSubmitting(false)
+    }
+  }
 
   const shapeValid = /.+@.+\..+/.test(email.trim()) && password.length >= 1
 
@@ -271,15 +295,78 @@ function AdminForm({
         )}
       </Button>
 
-      <p className="mt-4 text-center text-[11.5px] text-muted-foreground">
-        Forgot your password?{" "}
-        <a
-          className="font-medium text-foreground underline-offset-4 hover:underline"
-          href="#"
-        >
-          Reset it here
-        </a>
-      </p>
+      {!forgotMode ? (
+        <p className="mt-4 text-center text-[11.5px] text-muted-foreground">
+          Forgot your password?{" "}
+          <button
+            type="button"
+            onClick={() => {
+              setForgotMode(true)
+              setForgotSent(false)
+              setForgotError(null)
+            }}
+            className="font-medium text-primary underline-offset-4 hover:underline"
+          >
+            Reset it here
+          </button>
+        </p>
+      ) : forgotSent ? (
+        <div className="mt-5 rounded-md border border-primary/30 bg-primary/5 px-3.5 py-3 text-[12.5px] text-foreground">
+          <p className="font-medium">Reset link sent.</p>
+          <p className="mt-1 leading-snug text-muted-foreground">
+            If <span className="font-mono">{email.trim()}</span> matches a
+            brand on file, we've emailed a one-time reset link. Check your
+            inbox (and spam) — it expires in 60 minutes.
+          </p>
+          <button
+            type="button"
+            onClick={() => setForgotMode(false)}
+            className="mt-2 text-[11.5px] font-medium text-primary underline-offset-4 hover:underline"
+          >
+            ← Back to sign in
+          </button>
+        </div>
+      ) : (
+        <div className="mt-5 rounded-md border border-border bg-muted/30 px-3.5 py-3">
+          <p className="text-[12.5px] font-medium text-foreground">
+            Send a reset link to <span className="font-mono">{email.trim() || "your email"}</span>
+          </p>
+          <p className="mt-1 text-[11.5px] leading-snug text-muted-foreground">
+            We'll email a one-time link valid for 60 minutes. If the email
+            doesn't match a brand, you'll still see this confirmation.
+          </p>
+          {forgotError ? (
+            <p className="mt-2 text-[11.5px] text-destructive">{forgotError}</p>
+          ) : null}
+          <div className="mt-3 flex gap-2">
+            <Button
+              type="button"
+              size="sm"
+              onClick={requestReset}
+              disabled={forgotSubmitting}
+              className="gap-1.5"
+            >
+              {forgotSubmitting ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.25} />
+                  Sending…
+                </>
+              ) : (
+                "Send reset link"
+              )}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => setForgotMode(false)}
+              disabled={forgotSubmitting}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
     </FormShell>
   )
 }

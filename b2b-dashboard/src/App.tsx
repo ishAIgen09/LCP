@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { Sidebar, type NavKey } from "@/components/Sidebar"
 import { Topbar } from "@/components/Topbar"
 import { AddLocationDialog } from "@/components/AddLocationDialog"
+import { BaristaCredentialsModal } from "@/components/BaristaCredentialsModal"
+import { ResetPasswordView } from "@/views/ResetPasswordView"
 import { LoginView } from "@/views/LoginView"
 import { BaristaPOSView } from "@/views/BaristaPOSView"
 import { BillingCancelView } from "@/views/BillingCancelView"
@@ -57,7 +59,26 @@ function App() {
   const [cafes, setCafes] = useState<Cafe[]>([])
   const [metrics, setMetrics] = useState<ApiMetrics | null>(null)
   const [addLocationOpen, setAddLocationOpen] = useState(false)
+  // After a successful Add Location, we hold onto the new cafe id so the
+  // BaristaCredentialsModal can pick it out of the refreshed `cafes` list
+  // (the list is the source of truth for store_number once the backend
+  // allocator runs). Cleared when the modal closes.
+  const [credentialsCafeId, setCredentialsCafeId] = useState<string | null>(null)
+  // Locations tab opens the same modal when the owner hits "Reset POS
+  // Password" — drives credentialsCafeId for an existing cafe rather than
+  // a freshly-created one.
   const [billingRoute, setBillingRoute] = useState(() => detectBillingRoute())
+
+  // Reset password landing — handled BEFORE auth gates so a logged-out
+  // owner with a reset link can complete the flow without first logging
+  // in. Detected via window.location.pathname so we don't have to add a
+  // router for one route.
+  const [resetPath] = useState<{ token: string | null }>(() => {
+    if (typeof window === "undefined") return { token: null }
+    if (window.location.pathname !== "/reset-password") return { token: null }
+    const params = new URLSearchParams(window.location.search)
+    return { token: params.get("token") }
+  })
 
   useEffect(() => {
     persistSession(session)
@@ -185,10 +206,24 @@ function App() {
         console.warn("[addLocation] refresh-after-create failed:", e)
       }
 
+      // 4. Hand off to the Barista Credentials modal so the owner sets a
+      //    PIN + grabs a copy-pasteable login string before they leave the
+      //    flow. Held in state so the modal renders against the refreshed
+      //    `cafes` list (which has the auto-allocated store_number).
+      setCredentialsCafeId(cafe.id)
+
       return cafe.id
     },
     [session, brand, refreshAdminData]
   )
+
+  // The cafe object the credentials modal binds to. Looked up against
+  // the live `cafes` state so storeNumber is populated by the backend
+  // allocator, not stale from the create response.
+  const credentialsCafe = useMemo<Cafe | null>(() => {
+    if (!credentialsCafeId) return null
+    return cafes.find((c) => c.id === credentialsCafeId) ?? null
+  }, [cafes, credentialsCafeId])
 
   const handleOpenPortal = useCallback(async (): Promise<void> => {
     if (session?.role !== "admin") {
@@ -221,6 +256,13 @@ function App() {
     setBillingRoute({ route: null, sessionId: null })
     setNav(goTo)
   }, [])
+
+  // Handle the password-reset landing page first — works whether the
+  // user is signed in or not. After completing, the view itself
+  // navigates to "/" so we drop back into the auth-gated render below.
+  if (resetPath.token) {
+    return <ResetPasswordView token={resetPath.token} />
+  }
 
   if (billingRoute.route === "success") {
     return (
@@ -286,6 +328,7 @@ function App() {
                 onOptimisticRemove={(cafeId) =>
                   setCafes((prev) => prev.filter((c) => c.id !== cafeId))
                 }
+                onResetPin={(cafeId) => setCredentialsCafeId(cafeId)}
               />
             )}
             {nav === "promotions" && (
@@ -311,6 +354,12 @@ function App() {
         brand={brand}
         onSubmit={handleAddLocation}
         onOpenPortal={handleOpenPortal}
+      />
+
+      <BaristaCredentialsModal
+        cafe={credentialsCafe}
+        token={session.token}
+        onClose={() => setCredentialsCafeId(null)}
       />
     </div>
   )

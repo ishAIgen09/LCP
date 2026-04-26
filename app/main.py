@@ -23,7 +23,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1434,18 +1434,52 @@ async def platform_ai_agent(payload: AiAgentRequest) -> AiAgentResponse:
         )
 
 
-# Generate a 6-char uppercase alphanumeric store_number that satisfies
-# the `store_number_format` CHECK (^[A-Z0-9]{3,10}$) and is unique
-# across the cafes table. Retries on collision; gives up after a handful
-# of tries rather than looping forever.
-_STORE_NUMBER_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-
-
-async def _allocate_store_number(session: AsyncSession, max_attempts: int = 20) -> str:
-    for _ in range(max_attempts):
-        candidate = "".join(
-            secrets.choice(_STORE_NUMBER_ALPHABET) for _ in range(6)
-        )
+# Sequential 3-digit store numbers ("001", "002", …) so brand owners
+# read clean human-friendly IDs instead of the previous random
+# `M7K2X9` allocation. Implementation:
+#   1. Find MAX(numeric store_number) across the entire `cafes` table —
+#      ignoring legacy alpha-prefixed numbers like "MMTH01" via a regex
+#      filter on the stable digits subset.
+#   2. Increment by 1, zero-pad to >=3 chars (rolls cleanly to 4-digit
+#      "1000" once the platform ever needs >999 cafes).
+#   3. Tight retry loop in case of a write race with a concurrent POST
+#      (the cafes.store_number UNIQUE constraint will throw IntegrityError
+#      and the next attempt will pick up the now-higher MAX).
+#
+# IMPORTANT: store_number remains GLOBALLY unique by DB constraint,
+# which means brand-A's 5th cafe will be "005" and brand-B's first
+# cafe will then be "006", not its own "001". A truly per-brand-scoped
+# counter would require dropping the global UNIQUE in favour of
+# UNIQUE(brand_id, store_number) AND extending the barista login to
+# disambiguate by brand — out of scope for this pass. The number is
+# still clean + sequential + brand owners can hand it to baristas as
+# a 3-digit ID, which is the UX win the spec was asking for.
+async def _allocate_store_number(
+    session: AsyncSession,
+    brand_id: UUID | None = None,
+    max_attempts: int = 5,
+) -> str:
+    # `brand_id` is accepted for forward compatibility (per-brand scoping
+    # later) and used to log a friendlier debug line, but the actual
+    # MAX is taken globally to honour the existing UNIQUE constraint.
+    _ = brand_id
+    for _attempt in range(max_attempts):
+        # CAST + regex filter so "MMTH01"-style legacy values don't
+        # poison the MAX. Postgres-flavoured regex: anchored ^[0-9]+$.
+        max_row = (
+            await session.execute(
+                text(
+                    "SELECT COALESCE(MAX(store_number::int), 0) "
+                    "FROM cafes "
+                    "WHERE store_number ~ '^[0-9]+$'"
+                )
+            )
+        ).scalar_one()
+        next_int = int(max_row) + 1
+        candidate = f"{next_int:03d}"
+        # Defensive existence check before insert — the row write path
+        # will also enforce uniqueness, but checking here avoids a
+        # commit/rollback round-trip on the happy path.
         existing = (
             await session.execute(
                 select(Cafe.id).where(Cafe.store_number == candidate)
@@ -2006,7 +2040,13 @@ async def create_cafe(
                 detail=f"Store ID '{normalized_store_number}' is already in use.",
             )
     else:
-        normalized_store_number = None
+        # No explicit store_number → allocate the next sequential 3-digit
+        # ID. The brand-admin Add Location flow doesn't ask the owner to
+        # pick a number — they just want a clean human-friendly handle
+        # they can hand to a barista.
+        normalized_store_number = await _allocate_store_number(
+            session, brand_id=brand.id,
+        )
 
     cafe = Cafe(
         brand_id=brand.id,
@@ -2141,6 +2181,39 @@ async def delete_cafe(
     # Kept alongside the RPC-style POST fallback so clients that can use the
     # proper DELETE verb still get a standards-compliant 204 No Content.
     await _delete_cafe_impl(cafe_id, admin, session)
+
+
+class ResetPinRequest(BaseModel):
+    """Body for POST /api/admin/cafes/{id}/reset-pin. Brand-admin-scoped:
+    rotates the bcrypt PIN hash on a single cafe so a brand owner can
+    lock out an ex-employee instantly without involving Local Perks."""
+
+    pin: str = Field(min_length=4, max_length=12)
+
+
+@app.post("/api/admin/cafes/{cafe_id}/reset-pin", response_model=CafeResponse)
+async def reset_cafe_pin(
+    cafe_id: UUID,
+    payload: ResetPinRequest,
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> Cafe:
+    cafe = await session.get(Cafe, cafe_id)
+    if cafe is None or cafe.brand_id != admin.brand_id:
+        # 404 over 403 — same posture as the rest of /api/admin/cafes/* —
+        # so a guessed cafe id from another brand can't confirm existence.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Cafe not found.",
+        )
+    cafe.pin_hash = hash_password(payload.pin)
+    # Wipe the network lock too — staff churn is the most common reason a
+    # PIN gets rotated, and they may have logged in from an old till.
+    cafe.last_known_ip = None
+    cafe.network_locked_at = None
+    await session.commit()
+    await session.refresh(cafe)
+    return cafe
 
 
 @app.put("/api/admin/cafes/{cafe_id}/amenities", response_model=CafeResponse)

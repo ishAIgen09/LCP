@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Pencil, Plus, Trash2 } from "lucide-react"
+import { KeyRound, Pencil, Plus, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import {
@@ -35,12 +35,18 @@ export function LocationsView({
   token,
   onRefresh,
   onOptimisticRemove,
+  onResetPin,
 }: {
   cafes: Cafe[]
   onAdd: () => void
   token: string
   onRefresh: () => void | Promise<void>
   onOptimisticRemove?: (cafeId: string) => void
+  // Hand control of the BaristaCredentialsModal back up to App.tsx so
+  // the same modal that handles post-create handoff also handles the
+  // "lock out an ex-employee" reset path. App keeps the modal mounted;
+  // this just tells it which cafe to bind to.
+  onResetPin?: (cafeId: string) => void
 }) {
   const [editing, setEditing] = useState<Cafe | null>(null)
   const [deleting, setDeleting] = useState<Cafe | null>(null)
@@ -89,7 +95,7 @@ export function LocationsView({
           <TableHeader>
             <TableRow className="hover:bg-transparent">
               <TableHead className="h-10 pl-5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                Cafe
+                Store
               </TableHead>
               <TableHead className="h-10 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                 Address
@@ -117,12 +123,23 @@ export function LocationsView({
               <TableRow key={c.id} className="border-t border-border">
                 <TableCell className="py-3.5 pl-5">
                   <div className="flex items-center gap-3">
-                    <div className="grid h-8 w-8 place-items-center rounded-md border border-border bg-muted/40 font-mono text-[10px] font-semibold uppercase text-muted-foreground">
-                      {initialsFromName(c.name)}
-                    </div>
+                    {/* Store-number tile in mint primary so the new
+                        sequential ID is the first thing the eye lands
+                        on. Falls back to the legacy initials chip when a
+                        cafe has no store_number on file (e.g. orphaned
+                        seed rows from before the allocator change). */}
+                    {c.storeNumber ? (
+                      <div className="grid h-8 min-w-[2.5rem] place-items-center rounded-md bg-primary px-1.5 font-mono text-[11px] font-semibold tracking-tight text-primary-foreground">
+                        {c.storeNumber}
+                      </div>
+                    ) : (
+                      <div className="grid h-8 w-8 place-items-center rounded-md border border-border bg-muted/40 font-mono text-[10px] font-semibold uppercase text-muted-foreground">
+                        {initialsFromName(c.name)}
+                      </div>
+                    )}
                     <div>
                       <div className="text-[13px] font-medium tracking-tight text-foreground">
-                        {c.name}
+                        {c.storeNumber ? `Store ${c.storeNumber} — ${c.name}` : c.name}
                       </div>
                       <div className="font-mono text-[10.5px] text-muted-foreground">{c.id}</div>
                     </div>
@@ -152,13 +169,24 @@ export function LocationsView({
                   <div className="inline-flex items-center gap-2">
                     <Button
                       size="sm"
-                      className="h-8 gap-1.5 text-[12px] text-white shadow-sm"
-                      style={{ backgroundColor: "#C96E4B" }}
+                      className="h-8 gap-1.5 bg-primary text-primary-foreground text-[12px] shadow-sm hover:bg-primary/90"
                       onClick={() => setEditing(c)}
                     >
                       <Pencil className="h-3.5 w-3.5" strokeWidth={2.25} />
                       Edit
                     </Button>
+                    {onResetPin ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 gap-1.5 text-[12px]"
+                        onClick={() => onResetPin(c.id)}
+                        title="Rotate the barista PIN — useful for staff churn"
+                      >
+                        <KeyRound className="h-3.5 w-3.5" strokeWidth={2.25} />
+                        Reset POS Password
+                      </Button>
+                    ) : null}
                     <Button
                       size="sm"
                       variant="ghost"

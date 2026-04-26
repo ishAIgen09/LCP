@@ -243,6 +243,44 @@ class NetworkLockEvent(Base):
     )
 
 
+class PasswordResetToken(Base):
+    """Single-use bcrypt-hashed reset token for the brand-admin
+    "Forgot password" flow. TTL is enforced at the endpoint layer; the
+    DB just stores expiry + used_at so a token can't be replayed once
+    consumed. See migration 0016."""
+
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    brand_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("brands.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    used_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_password_reset_tokens_brand_id_created_at",
+            "brand_id",
+            "created_at",
+        ),
+    )
+
+
 class User(Base):
     __tablename__ = "users"
 
