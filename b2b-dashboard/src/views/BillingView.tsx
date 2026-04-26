@@ -360,17 +360,17 @@ export function BillingView({
           const isCurrent = plan.id === currentPlan
           const deltaPerLocationPence =
             plan.pricePence - currentPlanRow.pricePence
-          // The button must promise the brand-wide monthly delta — multiply
-          // by cafeCount so a 3-location upgrade from £5→£7.99 reads
-          // "+£8.97/mo" instead of the misleading per-location "+£2.99".
-          const deltaTotalPence = deltaPerLocationPence * cafeCount
+          // Show only the per-location delta on the button — softer
+          // psychology than slapping the brand-wide total on the CTA.
+          // The full multi-location math is still surfaced inside the
+          // PlanChangeDialog receipt (per-loc × N locations) so nothing
+          // is hidden, just sequenced.
           return (
             <PlanCard
               key={plan.id}
               plan={plan}
               isCurrent={isCurrent}
-              deltaTotalPence={deltaTotalPence}
-              cafeCount={cafeCount}
+              deltaPerLocationPence={deltaPerLocationPence}
               onSelect={() => setPending(plan)}
             />
           )
@@ -396,26 +396,21 @@ export function BillingView({
 function PlanCard({
   plan,
   isCurrent,
-  deltaTotalPence,
-  cafeCount,
+  deltaPerLocationPence,
   onSelect,
 }: {
   plan: PlanRow
   isCurrent: boolean
-  // Brand-wide monthly delta in pence (per-location delta × cafeCount).
-  // Already accounts for every active location, so the button just
-  // formats and renders.
-  deltaTotalPence: number
-  cafeCount: number
+  // Per-location monthly delta in pence — the button label deliberately
+  // shows the per-cafe figure, not the brand-wide total, so the CTA
+  // doesn't trigger sticker shock on multi-location brands. The total
+  // is still revealed inside the PlanChangeDialog receipt.
+  deltaPerLocationPence: number
   onSelect: () => void
 }) {
-  const isUpgrade = deltaTotalPence > 0
-  const isDowngrade = deltaTotalPence < 0
-  const absDeltaLabel = formatGBP(Math.abs(deltaTotalPence))
-  // No active locations → the brand can't be charged anything until they
-  // add their first cafe. Flip the button copy so we don't promise a £0
-  // delta that's about to become a real charge.
-  const noLocations = cafeCount === 0
+  const isUpgrade = deltaPerLocationPence > 0
+  const isDowngrade = deltaPerLocationPence < 0
+  const absDeltaLabel = formatGBP(Math.abs(deltaPerLocationPence))
   return (
     <div
       className={cn(
@@ -465,15 +460,11 @@ function PlanCard({
             onClick={onSelect}
           >
             {isUpgrade ? <ArrowUpRight className="h-3.5 w-3.5" strokeWidth={2.4} /> : null}
-            {noLocations
-              ? isUpgrade
-                ? "Upgrade"
-                : "Downgrade"
-              : isUpgrade
-                ? `Upgrade · +${absDeltaLabel}/mo`
-                : isDowngrade
-                  ? `Downgrade · −${absDeltaLabel}/mo`
-                  : "Switch plan"}
+            {isUpgrade
+              ? `Upgrade · +${absDeltaLabel}/mo per cafe`
+              : isDowngrade
+                ? `Downgrade · −${absDeltaLabel}/mo per cafe`
+                : "Switch plan"}
           </Button>
         )}
       </div>
@@ -555,7 +546,7 @@ function PlanChangeDialog({
           />
           {isUpgrade ? (
             <ReceiptRow
-              label={`Immediate charge today (prorated for ${proration.daysRemaining} of ${proration.daysInMonth} days)`}
+              label={`Immediate charge today (prorated for ${proration.daysRemaining} of ${proration.daysInMonth} days × ${cafeCount} location${cafeCount === 1 ? "" : "s"})`}
               value={`~${formatGBP(Math.abs(proration.pence))}`}
               valueClass="text-primary"
             />
