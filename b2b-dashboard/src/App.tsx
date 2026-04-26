@@ -309,7 +309,7 @@ function App() {
         />
 
         <main className="flex-1 overflow-y-auto px-8 py-6">
-          <div className="mx-auto w-full max-w-6xl">
+          <div className="mx-auto flex w-full max-w-6xl flex-col gap-8">
             {nav === "overview" && (
               <OverviewView
                 brand={brand}
@@ -344,6 +344,7 @@ function App() {
             {nav === "settings" && (
               <SettingsView brand={brand} onSave={handleUpdateBrand} />
             )}
+            <BuildCreditFooter />
           </div>
         </main>
       </div>
@@ -362,6 +363,25 @@ function App() {
         onClose={() => setCredentialsCafeId(null)}
       />
     </div>
+  )
+}
+
+// Quiet attribution at the absolute bottom of the dashboard shell.
+// Same string + link target as the main website + admin dashboard so
+// every Local Coffee Perks surface credits the build agency identically.
+function BuildCreditFooter() {
+  return (
+    <footer className="mt-auto pt-6 text-center text-[11px] text-muted-foreground/70">
+      Developed and managed by{" "}
+      <a
+        href="https://impactvisualbranding.co.uk"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="underline-offset-4 transition-colors hover:text-primary hover:underline"
+      >
+        Impact Visual Branding
+      </a>
+    </footer>
   )
 }
 

@@ -123,6 +123,17 @@ const Index = () => {
         <span className="font-display normal-case italic tracking-normal text-cream/60">Local Coffee Perks.</span>
         <span className="mx-2">·</span>
         Keep the high street local.
+        <div className="mt-4 text-[10px] normal-case tracking-normal text-cream/30">
+          Developed and managed by{" "}
+          <a
+            href="https://impactvisualbranding.co.uk"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline-offset-4 transition-colors hover:text-mint hover:underline"
+          >
+            Impact Visual Branding
+          </a>
+        </div>
       </footer>
     </main>
   );

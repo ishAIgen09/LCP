@@ -10,5 +10,18 @@ export const Footer = () => (
       </a>
       <p className="text-xs text-white/40">© {new Date().getFullYear()} Local Coffee Perks.</p>
     </div>
+    {/* Build credit — kept on its own row, dimmer than the brand line so
+        it reads as a quiet attribution instead of competing for the eye. */}
+    <div className="container mx-auto mt-6 px-6 text-center text-[11px] text-white/35">
+      Developed and managed by{" "}
+      <a
+        href="https://impactvisualbranding.co.uk"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="underline-offset-4 transition-colors hover:text-mint hover:underline"
+      >
+        Impact Visual Branding
+      </a>
+    </div>
   </footer>
 );
