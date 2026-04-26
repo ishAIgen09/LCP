@@ -1,6 +1,9 @@
 import type { Session, Brand, Cafe, FoodHygieneRating, SchemeType } from "@/lib/mock"
 
-const DEFAULT_BASE_URL = "http://localhost:8000"
+// Production droplet (DigitalOcean, plain HTTP on :8000 until TLS lands).
+// Override locally with VITE_API_BASE_URL=http://localhost:8000 in
+// .env.local when running the backend on the dev machine.
+const DEFAULT_BASE_URL = "http://178.62.123.228:8000"
 
 const envBase =
   typeof import.meta !== "undefined" &&
@@ -435,6 +438,15 @@ export type PlanChangeResponse = {
   notified: boolean
   request_id: string
   received_at: string
+  // Proration breakdown — backend computes from day-of-month so the
+  // dialog/toast can show "you'll be charged £X today" or "you'll get
+  // £X off next month".
+  direction: "upgrade" | "downgrade" | "noop"
+  days_remaining_in_month: number
+  days_in_month: number
+  proration_pence: number
+  immediate_charge_pence: number | null
+  next_invoice_credit_pence: number | null
 }
 
 // Submits a plan-change request to the Super Admin audit log. Backend

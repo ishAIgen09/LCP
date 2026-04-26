@@ -1,12 +1,12 @@
 import type { Session } from "./theme";
 
-// Local dev target — iOS Simulator + any container sharing the host's
-// network reach the uvicorn on 127.0.0.1:8000 directly. Heads-up:
-// - Android emulator: change to http://10.0.2.2:8000 (emulator alias for host)
-// - Physical device: change to http://<your-LAN-IP>:8000 (same Wi-Fi as dev machine)
-// - Production: swap back to http://178.62.123.228:8000 (the DO droplet)
-// Plain http:// until TLS is added; on Android needs usesCleartextTraffic=true.
-export const API_BASE_URL = "http://127.0.0.1:8000";
+// Production droplet (DigitalOcean, plain HTTP on :8000 until TLS lands).
+// To run against a local backend instead, swap back to:
+// - iOS Simulator + host containers: http://127.0.0.1:8000
+// - Android emulator: http://10.0.2.2:8000 (emulator alias for host)
+// - Physical device on your LAN: http://<your-LAN-IP>:8000
+// On Android, plain http:// requires usesCleartextTraffic=true in app.json.
+export const API_BASE_URL = "http://178.62.123.228:8000";
 
 if (__DEV__) {
   // eslint-disable-next-line no-console
