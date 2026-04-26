@@ -1,13 +1,18 @@
 import { Coffee, Heart } from "lucide-react";
-import { useWaitlistCounts } from "@/hooks/useWaitlistCounts";
 import { cn } from "@/lib/utils";
 
 interface Props {
   variant?: "hero" | "default";
 }
 
+// Pre-launch we don't have an honest live count to show, so the two
+// "live" slots carry static, on-brand copy instead — "100 Founding spots"
+// (the actual scarcity number) and "Join the local movement" (the
+// invitation). The Live dot + icons are kept so the visual rhythm of
+// the pill is preserved; the dynamic count animation hooks were
+// removed alongside useWaitlistCounts since neither slot is numeric
+// any more.
 export const LiveCounters = ({ variant = "default" }: Props) => {
-  const { counts, flash } = useWaitlistCounts();
   const dark = variant === "hero";
 
   return (
@@ -30,28 +35,12 @@ export const LiveCounters = ({ variant = "default" }: Props) => {
       <span className="h-4 w-px bg-current opacity-20" />
       <span className="flex items-center gap-2 text-sm">
         <Coffee className="h-4 w-4 text-mint" />
-        <span
-          className={cn(
-            "tabular-nums font-semibold",
-            flash === "owner" && "animate-scale-flash",
-          )}
-        >
-          {counts.owner}
-        </span>
-        <span className="opacity-80">cafes interested</span>
+        <span className="font-semibold">100 Founding spots</span>
       </span>
       <span className="h-4 w-px bg-current opacity-20" />
       <span className="flex items-center gap-2 text-sm">
         <Heart className="h-4 w-4 text-mint" />
-        <span
-          className={cn(
-            "tabular-nums font-semibold",
-            flash === "consumer" && "animate-scale-flash",
-          )}
-        >
-          {counts.consumer}
-        </span>
-        <span className="opacity-80">coffee lovers waiting</span>
+        <span className="font-semibold">Join the local movement</span>
       </span>
     </div>
   );
