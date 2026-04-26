@@ -39,42 +39,35 @@ type PlanRow = {
 }
 
 // Hardcoded tier table. Backend has no tier mapping yet — when it does,
-// these stay in sync via a /api/billing/plans endpoint we'll add.
+// these stay in sync via a /api/billing/plans endpoint we'll add. The
+// `id` strings are the wire format the backend logs; `name` is the
+// brand-facing label.
 const PLANS: PlanRow[] = [
   {
     id: "starter",
-    name: "Starter",
+    name: "Private Plan",
     pricePence: 500,
-    blurb: "What every brand starts on today.",
+    blurb: "Just your cafe. Just your customers.",
     features: [
-      "Unlimited stamps + redeems",
-      "Per-location billing",
-      "B2B dashboard + Barista POS",
-      "Stripe Customer Portal",
+      "Branded loyalty card on your customers' phones",
+      "Limitless stamps and redemptions",
+      "Stop paper card fraud instantly",
+      "Track daily stamps and redemptions in real-time",
+      "Dedicated per-location billing",
     ],
   },
   {
     id: "pro",
-    name: "Pro",
+    name: "LCP+ Global Pass",
     pricePence: 799,
-    blurb: "For brands ready to push promotions.",
+    blurb: "Get discovered by coffee lovers nearby.",
     features: [
-      "Everything in Starter",
-      "Targeted offers + scheduling",
-      "Customer CRM + segments",
+      "Everything in the Private Plan, plus:",
+      "Join the shared Local Perks loyalty network",
+      "Use cross-cafe stamps across the entire network",
+      "Customer earned perks across the network",
+      "Enhanced in-app discovery to find new customers",
       "Priority email support",
-    ],
-  },
-  {
-    id: "premium",
-    name: "Premium",
-    pricePence: 1499,
-    blurb: "Multi-location operators going hard.",
-    features: [
-      "Everything in Pro",
-      "Custom branded consumer card",
-      "Advanced analytics + CSV exports",
-      "Dedicated onboarding manager",
     ],
   },
 ]
@@ -183,14 +176,18 @@ export function BillingView({
         price_delta_pence_per_location: deltaPerLocation,
         cafe_count: cafeCount,
       })
-      // Mirror the audit-log id locally so support tickets can be
+      // Mirror the request id locally so support tickets can be
       // cross-referenced. Best-effort only — never breaks the UX.
       // eslint-disable-next-line no-console
-      console.info("[plan-change] super-admin notified", res)
-      setToast({
-        message: `Plan change requested — Super Admin notified (${res.request_id}).`,
-        variant: "success",
-      })
+      console.info("[plan-change] LCP team notified", res)
+      // Self-serve, immediate-effect: there's no approval gate, so the
+      // confirmation just states the new plan + when the rate kicks in.
+      // Backend still computes proration figures but we deliberately
+      // don't surface them — "next invoice" is the simpler promise.
+      const message =
+        `Plan switched to ${pending.name}. Your new rate will appear on your ` +
+        `next invoice — the Local Perks team has been notified.`
+      setToast({ message, variant: "success" })
       setPending(null)
     } catch (e) {
       setToast({
@@ -323,12 +320,12 @@ export function BillingView({
       <CardHeader>
         <CardTitle className="text-[15px] tracking-tight">Choose your plan</CardTitle>
         <CardDescription>
-          Per-location pricing. Changing plan sends an audit-logged
-          request to the Super Admin — no Stripe charge until they
-          flip the switch on their end.
+          Change your plan instantly. Your new rate will be reflected on
+          your next invoice. The Local Perks team will be automatically
+          notified.
         </CardDescription>
       </CardHeader>
-      <CardContent className="grid grid-cols-1 gap-3 pt-0 md:grid-cols-3">
+      <CardContent className="grid grid-cols-1 gap-3 pt-0 md:grid-cols-2">
         {PLANS.map((plan) => {
           const isCurrent = plan.id === currentPlan
           const fromPlan = PLANS.find((p) => p.id === currentPlan)!
@@ -458,16 +455,13 @@ function PlanChangeDialog({
     return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent /></Dialog>
   }
   const deltaPerLocation = toPlan.pricePence - fromPlan.pricePence
-  const totalDelta = deltaPerLocation * cafeCount
   const isUpgrade = deltaPerLocation > 0
-  const verb = isUpgrade ? "Upgrade" : deltaPerLocation < 0 ? "Downgrade" : "Switch"
-  const sign = isUpgrade ? "+" : deltaPerLocation < 0 ? "−" : ""
-  const absPerLoc = Math.abs(deltaPerLocation)
-  const absTotal = Math.abs(totalDelta)
+  const isDowngrade = deltaPerLocation < 0
+  const verb = isUpgrade ? "Upgrade" : isDowngrade ? "Downgrade" : "Switch"
 
   return (
     <Dialog open={open} onOpenChange={(v) => (!submitting ? onOpenChange(v) : null)}>
-      <DialogContent className="sm:max-w-[480px]">
+      <DialogContent className="sm:max-w-[440px]">
         <DialogHeader>
           <div className="mb-1 flex items-center gap-2">
             <span
@@ -489,7 +483,7 @@ function PlanChangeDialog({
             </DialogTitle>
           </div>
           <DialogDescription>
-            You're moving from{" "}
+            Switch from{" "}
             <span className="font-medium text-foreground">
               {fromPlan.name} ({formatGBP(fromPlan.pricePence)}/mo per location)
             </span>{" "}
@@ -497,42 +491,11 @@ function PlanChangeDialog({
             <span className="font-medium text-foreground">
               {toPlan.name} ({formatGBP(toPlan.pricePence)}/mo per location)
             </span>
-            .
+            . The new rate will be reflected on your next invoice across
+            your {cafeCount} location{cafeCount === 1 ? "" : "s"}, and the
+            Local Perks team will be automatically notified.
           </DialogDescription>
         </DialogHeader>
-
-        <div className="rounded-lg border border-border bg-muted/40 p-3.5">
-          <div className="text-[11.5px] font-medium uppercase tracking-wider text-muted-foreground">
-            Price change
-          </div>
-          <div className="mt-1.5 flex items-baseline gap-2">
-            <span
-              className={cn(
-                "text-2xl font-semibold tracking-tight",
-                isUpgrade ? "text-emerald-700" : deltaPerLocation < 0 ? "text-amber-700" : "text-foreground",
-              )}
-            >
-              {sign}
-              {formatGBP(absPerLoc)}
-            </span>
-            <span className="text-[12px] text-muted-foreground">/mo per location</span>
-          </div>
-          <div className="mt-2 text-[12px] text-muted-foreground">
-            {cafeCount === 0 ? (
-              <>No active locations on the brand yet — total monthly impact is £0.00 until your first location goes live.</>
-            ) : (
-              <>
-                Across your{" "}
-                <span className="font-medium text-foreground">
-                  {cafeCount} location{cafeCount === 1 ? "" : "s"}
-                </span>
-                : {sign}
-                <span className="font-medium text-foreground">{formatGBP(absTotal)}/mo</span>{" "}
-                from next renewal.
-              </>
-            )}
-          </div>
-        </div>
 
         <DialogFooter>
           <Button
@@ -549,7 +512,7 @@ function PlanChangeDialog({
           >
             {submitting ? (
               <>
-                <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.25} /> Submitting…
+                <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.25} /> Switching…
               </>
             ) : (
               `Confirm ${verb.toLowerCase()}`

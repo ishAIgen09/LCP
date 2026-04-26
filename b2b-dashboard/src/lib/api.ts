@@ -424,7 +424,12 @@ export async function createPortalSession(
   )
 }
 
-export type PlanTier = "starter" | "pro" | "premium"
+// Two tiers map to the two products on the Billing tab:
+//   starter → "Private Plan"        (£5.00/mo per location)
+//   pro     → "LCP+ Global Pass"    (£7.99/mo per location)
+// IDs stay short + lowercase so the backend wire format doesn't churn
+// alongside the marketing names.
+export type PlanTier = "starter" | "pro"
 
 export type PlanChangeRequestBody = {
   from_plan: PlanTier
@@ -449,9 +454,12 @@ export type PlanChangeResponse = {
   next_invoice_credit_pence: number | null
 }
 
-// Submits a plan-change request to the Super Admin audit log. Backend
-// doesn't yet swap the brand to a new Stripe price id — this just
-// captures the intent in a structured log line keyed by request_id.
+// Submits an immediate plan change. Brands self-serve — there is no
+// approval gate. The new rate appears on the next invoice; the LCP team
+// is auto-notified for visibility but does NOT need to flip a switch.
+// Backend doesn't yet swap the Stripe price id either; for now this
+// captures the intent in a structured log line keyed by request_id and
+// the dashboard treats the response as a fait accompli.
 export async function requestPlanChange(
   token: string,
   body: PlanChangeRequestBody,
