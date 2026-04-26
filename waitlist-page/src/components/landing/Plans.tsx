@@ -41,7 +41,7 @@ export const Plans = () => (
       <div className="reveal mx-auto max-w-2xl text-center">
         <p className="mb-4 text-xs uppercase tracking-[0.25em] text-muted-foreground">For cafe owners</p>
         <h2 className="font-display text-balance text-4xl font-medium leading-tight sm:text-5xl">
-          Pick the plan that fits. Both up to 50% off for the first 100 cafes.
+          Lock in your founding discount. Save up to 50% for life.
         </h2>
         <p className="mt-5 text-muted-foreground">
           When we launch, the first 100 cafes to sign up lock in this Founding price <span className="font-semibold text-foreground">for life</span>. After that, prices go to standard. The waitlist is your head start.
@@ -84,7 +84,7 @@ export const Plans = () => (
                 <span className="text-sm text-muted-foreground">/ month, locked in for life</span>
               </div>
               <p className="mt-3 text-sm text-muted-foreground">
-                Standard price after the first 100: <span className="font-semibold text-foreground line-through decoration-muted-foreground/60">{plan.standard}/mo</span> — that's a <span className="font-semibold text-mint">{plan.name === "Private Plan" ? "50%" : "38%"} saving, every month, forever</span>.
+                Standard price after the first 100: <span className="font-semibold text-foreground">{plan.standard}/mo</span> — that's a <span className="font-semibold text-mint">{plan.name === "Private Plan" ? "50%" : "38%"} saving, every month, forever</span>.
               </p>
             </div>
 
@@ -107,6 +107,10 @@ export const Plans = () => (
 
       <p className="reveal mt-10 text-center text-sm text-muted-foreground">
         Always free for coffee lovers. No subscription, no hidden fees — ever.
+      </p>
+
+      <p className="reveal mx-auto mt-6 max-w-3xl text-center text-xs leading-relaxed text-muted-foreground/80">
+        * Prices currently exclude VAT. Should Local Coffee Perks become VAT registered in the future, standard VAT rates will apply on top of your locked-in base price.
       </p>
     </div>
   </section>
