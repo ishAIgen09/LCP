@@ -17,7 +17,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -213,7 +213,12 @@ _FRONTEND_BASE_URL = (
 
 
 class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
+    # Plain str (not EmailStr) so we don't need pydantic[email] +
+    # email-validator in the deploy image. Surface-level shape is
+    # enough — the lookup against brands.contact_email is the real
+    # validation, and "looks like an email" doesn't matter once we're
+    # already case-folding + comparing exact strings.
+    email: str = Field(min_length=3, max_length=320)
 
 
 class ForgotPasswordResponse(BaseModel):
