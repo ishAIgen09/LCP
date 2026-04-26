@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 
 const plans = [
   {
-    name: "Private Card",
+    name: "Private Plan",
     tagline: "Just your cafe. Just your customers.",
     description: "Your own branded loyalty card. Customers earn stamps with you, redeem free coffees with you. Simple.",
     bestFor: "Best for: cafes who want a clean, branded card and own their customer relationships.",
@@ -14,21 +14,23 @@ const plans = [
       "Customers scan your custom QR code",
       "Stop paper card fraud instantly",
       "Track daily stamps and redemptions",
+      "Attract brand-new customers using the LCP App",
     ],
   },
   {
     name: "LCP+ Global Pass",
     tagline: "Get discovered by coffee lovers nearby.",
-    description: "Everything in Private Card, plus you join a network of independent cafes. New customers find you in the app, earn stamps with you, and come back.",
+    description: "Everything in the Private plan, plus you join a network of independent cafes. New customers find you in the app, earn stamps with you, and come back.",
     bestFor: "Best for: cafes who want fresh footfall from people already searching for indie coffee in your area.",
     founding: "£7.99",
     standard: "£12.99",
     highlighted: true,
     features: [
-      "Everything in the Private plan",
+      "Everything in the Private plan, plus:",
       "Join the shared worldwide network",
-      "Attract brand new customers using the LCP app",
       "Cross-cafe stamps: customers earn perks across the network",
+      "Get pinned on the LCP+ in-app discovery map",
+      "Featured to coffee lovers travelling through your area",
     ],
   },
 ];
@@ -39,7 +41,7 @@ export const Plans = () => (
       <div className="reveal mx-auto max-w-2xl text-center">
         <p className="mb-4 text-xs uppercase tracking-[0.25em] text-muted-foreground">For cafe owners</p>
         <h2 className="font-display text-balance text-4xl font-medium leading-tight sm:text-5xl">
-          Pick the plan that fits. Both half-price for the first 100 cafes.
+          Pick the plan that fits. Both up to 50% off for the first 100 cafes.
         </h2>
         <p className="mt-5 text-muted-foreground">
           When we launch, the first 100 cafes to sign up lock in this Founding price <span className="font-semibold text-foreground">for life</span>. After that, prices go to standard. The waitlist is your head start.
@@ -82,7 +84,7 @@ export const Plans = () => (
                 <span className="text-sm text-muted-foreground">/ month, locked in for life</span>
               </div>
               <p className="mt-3 text-sm text-muted-foreground">
-                Standard price after the first 100: <span className="font-semibold text-foreground line-through decoration-muted-foreground/60">{plan.standard}/mo</span> — that's a <span className="font-semibold text-mint">{plan.name === "Private Card" ? "50%" : "38%"} saving, every month, forever</span>.
+                Standard price after the first 100: <span className="font-semibold text-foreground line-through decoration-muted-foreground/60">{plan.standard}/mo</span> — that's a <span className="font-semibold text-mint">{plan.name === "Private Plan" ? "50%" : "38%"} saving, every month, forever</span>.
               </p>
             </div>
 

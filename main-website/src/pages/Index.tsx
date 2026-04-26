@@ -59,7 +59,7 @@ const Index = () => {
         </div>
 
         <h2 className="mx-auto mt-12 max-w-2xl font-display text-2xl leading-snug text-cream/90 sm:text-3xl md:text-4xl animate-fade-in">
-          Something special is <em className="text-mint">brewing</em> on your local high street.
+          Something special is <em className="text-mint">brewing</em> at your favorite local cafe.
         </h2>
       </section>
 

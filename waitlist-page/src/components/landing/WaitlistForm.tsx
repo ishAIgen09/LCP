@@ -238,20 +238,25 @@ function Field({ label, id, error, children }: { label: string; id: string; erro
 
 function SubmitButton({ submitting, children }: { submitting: boolean; children: React.ReactNode }) {
   return (
-    <Button
-      type="submit"
-      disabled={submitting}
-      aria-busy={submitting}
-      className="bg-mint text-accent-foreground hover:bg-mint/90 shadow-mint mt-2 h-12 w-full text-base font-semibold disabled:opacity-90 disabled:cursor-not-allowed"
-    >
-      {submitting ? (
-        <span className="inline-flex items-center gap-2">
-          <Loader2 className="h-4 w-4 animate-spin" /> Saving…
-        </span>
-      ) : (
-        children
-      )}
-    </Button>
+    <div className="mt-4 space-y-3">
+      <p className="text-center text-xs leading-relaxed text-white/60">
+        By joining the waitlist, you agree to our privacy policy and consent to us contacting you with updates.
+      </p>
+      <Button
+        type="submit"
+        disabled={submitting}
+        aria-busy={submitting}
+        className="bg-mint text-accent-foreground hover:bg-mint/90 shadow-mint h-12 w-full text-base font-semibold disabled:opacity-90 disabled:cursor-not-allowed"
+      >
+        {submitting ? (
+          <span className="inline-flex items-center gap-2">
+            <Loader2 className="h-4 w-4 animate-spin" /> Saving…
+          </span>
+        ) : (
+          children
+        )}
+      </Button>
+    </div>
   );
 }
 

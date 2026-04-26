@@ -15,7 +15,7 @@ export const WhyLCP = () => (
       <div className="reveal mx-auto max-w-2xl text-center">
         <p className="mb-4 text-xs uppercase tracking-[0.25em] text-muted-foreground">Why Local Coffee Perks</p>
         <h2 className="font-display text-balance text-4xl font-medium leading-tight sm:text-5xl">
-          Built for the cafe on the corner — not the chain on every street.
+          Built exclusively for independent local cafes, not the giant corporate chains.
         </h2>
         <p className="mt-5 text-muted-foreground">
           Paper stamp cards get lost. Big chains buy loyalty with discounts you can't match. We built something simpler — and on your side.
