@@ -11,8 +11,22 @@ from sqlalchemy.orm import DeclarativeBase
 
 class Settings(BaseSettings):
     database_url: str
+    # Stripe is split into 5 distinct env vars:
+    #   secret      — server-side API auth (sk_test_… / sk_live_…)
+    #   publishable — surfaced to the client if/when we ever embed Stripe
+    #                 Elements directly. Not used today; kept here so the
+    #                 .env / .env.example layout stays in sync with reality.
+    #   webhook     — signing secret for /api/billing/webhook
+    #   private/global price ids — fixed monthly recurring prices the
+    #                 Checkout Session quotes against. When unset, the
+    #                 checkout falls back to inline price_data (legacy
+    #                 £5/mo path) so local dev without a Stripe dashboard
+    #                 still works end-to-end.
     stripe_secret_key: str | None = None
+    stripe_publishable_key: str | None = None
     stripe_webhook_secret: str | None = None
+    stripe_private_price_id: str | None = None
+    stripe_global_price_id: str | None = None
     debug_skip_stripe_sig: bool = False
 
     # Auth — JWT signing key. Override in .env before any non-local use.

@@ -21,9 +21,9 @@ import {
 } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
 import {
+  createCheckout,
   createPortalSession,
   humanizeError,
-  requestPlanChange,
   type PlanTier,
 } from "@/lib/api"
 import type { Brand } from "@/lib/mock"
@@ -156,7 +156,14 @@ export function BillingView({
   // so a successful confirm flips the CURRENT pill + per-loc price + total
   // monthly cost across the whole tab in one render. When the backend
   // exposes brand.plan_tier, seed the initial value from there.
+  // currentPlan is reactive even though confirmPlanChange now navigates
+  // away to Stripe Checkout (no optimistic flip happens client-side
+  // here). Once `brands.plan_tier` lands as a backend field, the BillingView
+  // initial value will seed from `brand.plan_tier` and the setter will
+  // be called from the Stripe webhook → state refresh round-trip.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [currentPlan, setCurrentPlan] = useState<PlanTier>("starter")
+  void setCurrentPlan
   const currentPlanRow =
     PLANS.find((p) => p.id === currentPlan) ?? PLANS[0]
   const totalMonthlyPence = currentPlanRow.pricePence * cafeCount
@@ -190,41 +197,27 @@ export function BillingView({
 
   const confirmPlanChange = async () => {
     if (!pending || submittingPlan) return
-    const fromPlan = PLANS.find((p) => p.id === currentPlan)
-    if (!fromPlan) return
-    const deltaPerLocation = pending.pricePence - fromPlan.pricePence
     setSubmittingPlan(true)
     try {
-      const res = await requestPlanChange(token, {
-        from_plan: currentPlan,
-        to_plan: pending.id,
-        price_delta_pence_per_location: deltaPerLocation,
-        cafe_count: cafeCount,
-      })
-      // Mirror the request id locally so support tickets can be
-      // cross-referenced. Best-effort only — never breaks the UX.
-      // eslint-disable-next-line no-console
-      console.info("[plan-change] LCP team notified", res)
-      // Self-serve, immediate-effect: there's no approval gate, so the
-      // confirmation just states the new plan + when the rate kicks in.
-      // Backend still computes proration figures but we deliberately
-      // don't surface them — "next invoice" is the simpler promise.
-      const message =
-        `Plan switched to ${pending.name}. Your new rate will appear on your ` +
-        `next invoice — the Local Perks team has been notified.`
-      setToast({ message, variant: "success" })
-      // Flip the local currentPlan so the CURRENT pill jumps to the new
-      // card, the previously-current card flips to a Downgrade button,
-      // and the "Current plan" widget at the top instantly reflects the
-      // new name + per-loc price + monthly total.
-      setCurrentPlan(pending.id)
-      setPending(null)
+      // Map dashboard tier id (PlanTier wire format) → backend tier slug
+      // ("private" | "global"). The PlanTier ids stay short for backend
+      // logging compatibility; the Stripe price-id lookup keys on the
+      // human slug.
+      const stripeTier: "private" | "global" =
+        pending.id === "pro" ? "global" : "private"
+      const { checkout_url } = await createCheckout(token, stripeTier)
+      // Full-page redirect into Stripe Checkout. On success, Stripe
+      // sends the user back to /success?session_id=… (handled in
+      // App.tsx::detectBillingRoute). On cancel, /cancel.
+      window.location.href = checkout_url
+      // Don't clear submittingPlan — the redirect is in flight; if the
+      // assignment somehow fails (popup blocker, navigation cancelled),
+      // the catch below will surface an error.
     } catch (e) {
       setToast({
         message: humanizeError(e),
         variant: "error",
       })
-    } finally {
       setSubmittingPlan(false)
     }
   }

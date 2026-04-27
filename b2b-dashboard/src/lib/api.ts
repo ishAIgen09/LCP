@@ -408,10 +408,17 @@ export async function updateAdminBrand(
   return brandFromApi(raw)
 }
 
-export async function createCheckout(token: string): Promise<{ checkout_url: string }> {
+// Optional `tier` picks the Stripe price id on the backend
+// (private = £5/mo · global = £7.99/mo). When omitted, defaults to
+// "private" — the historical behaviour for the first-cafe checkout
+// auto-redirect.
+export async function createCheckout(
+  token: string,
+  tier: "private" | "global" = "private",
+): Promise<{ checkout_url: string }> {
   return request<{ checkout_url: string }>(
     "POST",
-    "/api/billing/checkout",
+    `/api/billing/checkout?tier=${encodeURIComponent(tier)}`,
     undefined,
     authHeader(token)
   )
