@@ -5,12 +5,12 @@ import { useCountUp } from "@/hooks/useCountUp";
 import { cn } from "@/lib/utils";
 
 export const UrgencyStrip = () => {
-  const { total, flash } = useWaitlistCounts();
-  // Smoothly tween the displayed total when the live count lands (or
-  // when a fresh signup bumps the optimistic counter). The hook seeds
-  // at the initial target so first paint shows the mock baseline
-  // immediately — only updates after that animate.
-  const animatedTotal = useCountUp(total);
+  const { liveTotal, flash } = useWaitlistCounts();
+  // useCountUp must be called unconditionally (rules of hooks). When
+  // liveTotal is null we feed it 0; the result isn't rendered while
+  // the slot is hidden, so the user never sees the placeholder
+  // value. Once liveTotal lands, the hook tweens cleanly from 0 → N.
+  const animatedTotal = useCountUp(liveTotal ?? 0);
 
   const scrollToForm = () =>
     document.getElementById("waitlist")?.scrollIntoView({ behavior: "smooth" });
@@ -28,16 +28,23 @@ export const UrgencyStrip = () => {
           <p className="text-balance">
             <span className="font-semibold text-mint">100 Founding spots open at launch.</span>{" "}
             <span className="text-white/75">
-              Only waitlist members get the email first —{" "}
-              <span
-                className={cn(
-                  "font-semibold tabular-nums text-white transition-colors",
-                  (flash === "owner" || flash === "consumer") && "animate-scale-flash",
-                )}
-              >
-                {animatedTotal.toLocaleString()}
-              </span>{" "}
-              already on the list.
+              Only waitlist members get the email first
+              {liveTotal !== null ? (
+                <>
+                  {" — "}
+                  <span
+                    className={cn(
+                      "font-semibold tabular-nums text-white transition-colors",
+                      (flash === "owner" || flash === "consumer") && "animate-scale-flash",
+                    )}
+                  >
+                    {animatedTotal.toLocaleString()}
+                  </span>{" "}
+                  already on the list.
+                </>
+              ) : (
+                "."
+              )}
             </span>
           </p>
         </div>

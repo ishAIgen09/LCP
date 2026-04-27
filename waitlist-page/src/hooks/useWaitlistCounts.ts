@@ -2,60 +2,25 @@ import { useEffect, useState, useCallback } from "react";
 
 export type Audience = "owner" | "consumer";
 
-const STORAGE_KEY = "lcp_waitlist_counts_v1";
-const BASELINE = { owner: 47, consumer: 312 };
-
-// Same Google Apps Script Web App URL as the WaitlistForm POST. The Apps
-// Script handler routes GETs to a count-only response shape:
+// Same Google Apps Script Web App URL as the WaitlistForm POST. The
+// Apps Script `doGet` returns the live row count as JSON:
 //   { "waitlist_count": 42 }
-// CORS: GAS allows simple GETs cross-origin (no preflight), so the
-// default `fetch` mode works. We swallow any error silently and fall
-// back to the mock baseline so the UI never shows a broken counter.
+// CORS: GAS allows simple GETs cross-origin (no preflight). On any
+// failure (network / CORS / parse) we leave `liveTotal` null and the
+// UI hides the social-proof slot — there is **no mock fallback** so
+// the number on screen is always the real number, never a baseline.
 const WAITLIST_WEBHOOK_URL =
   "https://script.google.com/macros/s/AKfycbwhzhDwQwr1OLiE_GAuS6SJScuDucZXVYX8y9Wdozt0i5cPq-HVkMpXeQbixOzRbno/exec";
 
-type Counts = { owner: number; consumer: number };
-
-function read(): Counts {
-  if (typeof window === "undefined") return BASELINE;
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return BASELINE;
-    const parsed = JSON.parse(raw) as Counts;
-    return {
-      owner: Math.max(BASELINE.owner, parsed.owner ?? 0),
-      consumer: Math.max(BASELINE.consumer, parsed.consumer ?? 0),
-    };
-  } catch {
-    return BASELINE;
-  }
-}
-
-function write(c: Counts) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(c)); } catch { /* ignore */ }
-}
-
 export function useWaitlistCounts() {
-  const [counts, setCounts] = useState<Counts>(BASELINE);
-  const [flash, setFlash] = useState<Audience | null>(null);
-  // Server-reported total. null until the GAS fetch resolves; any
-  // consumer can fall back to `counts.owner + counts.consumer` (the
-  // mock total) during the brief load window so the pill never reads
-  // zero or "—".
+  // `null` until the GAS fetch resolves successfully. We deliberately
+  // do NOT seed from localStorage / a baseline — consumers must hide
+  // the slot while loading rather than show a fake placeholder.
   const [liveTotal, setLiveTotal] = useState<number | null>(null);
+  const [flash, setFlash] = useState<Audience | null>(null);
 
-  useEffect(() => {
-    setCounts(read());
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY) setCounts(read());
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
-
-  // Single-shot fetch on mount — pulls the live count from the same
-  // Apps Script Web App URL the form POSTs to. Cancel-flag pattern so
-  // a fast unmount doesn't race a setState onto a torn-down component.
+  // Single-shot fetch on mount. Cancel-flag guards against a fast
+  // unmount racing the await.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -68,11 +33,14 @@ export function useWaitlistCounts() {
         const data = await res.json();
         const n = Number(data?.waitlist_count);
         if (!cancelled && Number.isFinite(n) && n >= 0) {
+          // Floor only protects against negative noise from a bad GAS
+          // response — `0` is a legitimate value (empty sheet) and
+          // single-digit values render verbatim, no clamp.
           setLiveTotal(Math.floor(n));
         }
       } catch {
-        // Network / CORS / parse failure — leave liveTotal null so
-        // consumers fall through to the mock total. Deliberate silence.
+        // Deliberate silence — slot stays hidden when the fetch
+        // fails. Better to show no number than a fake one.
       }
     })();
     return () => {
@@ -80,33 +48,14 @@ export function useWaitlistCounts() {
     };
   }, []);
 
+  // Optimistic bump after a successful local signup so the number on
+  // screen reflects the new entry immediately. No-op if the GAS fetch
+  // hasn't returned yet — the next page-load fetch will catch up.
   const increment = useCallback((audience: Audience) => {
-    setCounts((prev) => {
-      const next = { ...prev, [audience]: prev[audience] + 1 };
-      write(next);
-      return next;
-    });
-    // Optimistically bump the live total too — a successful local
-    // signup should reflect immediately rather than waiting for the
-    // next page-load fetch. If the server hasn't reported yet, treat
-    // the mock total as the current value to bump.
-    setLiveTotal((prev) => {
-      const base =
-        prev ??
-        (() => {
-          const c = read();
-          return c.owner + c.consumer;
-        })();
-      return base + 1;
-    });
+    setLiveTotal((prev) => (prev === null ? prev : prev + 1));
     setFlash(audience);
     window.setTimeout(() => setFlash(null), 700);
   }, []);
 
-  // Public total: live if available, mock otherwise. Consumers should
-  // prefer `total` over computing from `counts` themselves so the
-  // social-proof number stays consistent across the page.
-  const total = liveTotal ?? counts.owner + counts.consumer;
-
-  return { counts, increment, flash, total, liveTotal };
+  return { liveTotal, increment, flash };
 }
