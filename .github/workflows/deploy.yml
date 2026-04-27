@@ -36,4 +36,22 @@ jobs:
           # compose can't reconcile across projects. The trailing
           # `|| true` keeps the chain alive when the containers don't
           # exist yet (clean droplet, first deploy).
-          script: cd /var/www/lcp && git fetch --all && git reset --hard origin/main && cp /root/.env-lcp-production .env && chmod 600 .env && chown -R www-data:www-data /var/www/lcp && (docker rm -f lcp_db lcp_api 2>/dev/null || true) && docker compose up -d --build
+          # Wait briefly for any in-flight git process (e.g. a manual
+          # SSH `git fetch` or a previous deploy still finishing) to
+          # release `.git/index.lock` before our own fetch runs. Real
+          # processes finish in milliseconds; if the lock is still
+          # there after 20s it's stale (crashed / killed) and we
+          # force-clear so the deploy isn't permanently blocked.
+          # Without this guard, a race produced
+          #   "fatal: Unable to create '/var/www/lcp/.git/index.lock'"
+          # and the rest of the chain (env restore, docker rebuild)
+          # never executed.
+          script: |
+            cd /var/www/lcp
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+              [ ! -f .git/index.lock ] && break
+              echo "[deploy] git index.lock present, waiting ${i}/10"
+              sleep 2
+            done
+            [ -f .git/index.lock ] && { echo "[deploy] clearing stale lock"; rm -f .git/index.lock; }
+            git fetch --all && git reset --hard origin/main && cp /root/.env-lcp-production .env && chmod 600 .env && chown -R www-data:www-data /var/www/lcp && (docker rm -f lcp_db lcp_api 2>/dev/null || true) && docker compose up -d --build
