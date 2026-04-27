@@ -1,14 +1,17 @@
-// Admin-dashboard API client. Points at the droplet by default. Override
-// via a local `.env.local` with `VITE_API_BASE_URL=http://localhost:8000`
-// when running the backend locally.
+// Empty default → production builds emit same-origin paths (e.g.
+// `/api/admin/overview`) so Nginx on hq.localcoffeeperks.com can
+// reverse-proxy /api/* to FastAPI on :8000 with no mixed-content
+// issues over HTTPS.
+//
+// Local dev still talks to the droplet via .env.local with
+// VITE_API_BASE_URL=http://178.62.123.228:8000.
 //
 // No auth header is attached today — the super-admin JWT scope doesn't
 // exist yet and /api/admin/overview is intentionally open at the scaffold
 // level (see the SECURITY comment on the backend route). When auth lands,
 // inject an `Authorization: Bearer …` header in the fetch options below.
 const API_BASE_URL =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
-  "http://178.62.123.228:8000";
+  (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
 
 export type AdminOverview = {
   total_customers: number;

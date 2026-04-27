@@ -7,9 +7,10 @@ node_modules/
 *.tsbuildinfo
 MEMORY.md
 
-# Allow front-end production builds for the static-host deploy,
-# but keep app-level dist (Python/admin) ignored.
+# Allow front-end production builds for the static-host deploy.
+# main-website/dist/ + waitlist-page/dist/ + admin-dashboard/dist/ +
+# b2b-dashboard/dist/ are committed so the droplet's git-reset deploy
+# ships compiled assets without needing Node on the server. Only the
+# python service dir and the native consumer app build are ignored.
 app/dist/
-admin-dashboard/dist/
-b2b-dashboard/dist/
 consumer-app/dist/

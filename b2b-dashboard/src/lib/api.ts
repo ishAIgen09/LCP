@@ -1,9 +1,14 @@
 import type { Session, Brand, Cafe, FoodHygieneRating, SchemeType } from "@/lib/mock"
 
-// Production droplet (DigitalOcean, plain HTTP on :8000 until TLS lands).
-// Override locally with VITE_API_BASE_URL=http://localhost:8000 in
-// .env.local when running the backend on the dev machine.
-const DEFAULT_BASE_URL = "http://178.62.123.228:8000"
+// Empty default → production builds emit same-origin paths (e.g.
+// `/api/auth/admin/login`) so Nginx on dashboard.localcoffeeperks.com
+// can reverse-proxy /api/* to FastAPI on :8000 with no mixed-content
+// issues over HTTPS.
+//
+// Local dev still talks to the droplet via .env.local with
+// VITE_API_BASE_URL=http://178.62.123.228:8000. Use ?? not || so an
+// explicit empty env value is honoured (it's the production setting).
+const DEFAULT_BASE_URL = ""
 
 const envBase =
   typeof import.meta !== "undefined" &&
@@ -12,7 +17,7 @@ const envBase =
         .VITE_API_BASE_URL
     : undefined
 
-export const API_BASE_URL = (envBase || DEFAULT_BASE_URL).replace(/\/+$/, "")
+export const API_BASE_URL = (envBase ?? DEFAULT_BASE_URL).replace(/\/+$/, "")
 
 export class ApiError extends Error {
   readonly status: number

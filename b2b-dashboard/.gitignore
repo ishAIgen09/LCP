@@ -8,7 +8,10 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
-dist
+# dist/ is intentionally committed — the droplet has no Node and
+# serves the dashboard via Nginx straight from this directory after a
+# `git reset --hard origin/main`. See the root .gitignore for the
+# matching policy comment.
 dist-ssr
 *.local
 
