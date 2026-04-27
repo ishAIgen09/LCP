@@ -1,11 +1,16 @@
 import { Flame, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useWaitlistCounts } from "@/hooks/useWaitlistCounts";
+import { useCountUp } from "@/hooks/useCountUp";
 import { cn } from "@/lib/utils";
 
 export const UrgencyStrip = () => {
-  const { counts, flash } = useWaitlistCounts();
-  const total = counts.owner + counts.consumer;
+  const { total, flash } = useWaitlistCounts();
+  // Smoothly tween the displayed total when the live count lands (or
+  // when a fresh signup bumps the optimistic counter). The hook seeds
+  // at the initial target so first paint shows the mock baseline
+  // immediately — only updates after that animate.
+  const animatedTotal = useCountUp(total);
 
   const scrollToForm = () =>
     document.getElementById("waitlist")?.scrollIntoView({ behavior: "smooth" });
@@ -26,11 +31,11 @@ export const UrgencyStrip = () => {
               Only waitlist members get the email first —{" "}
               <span
                 className={cn(
-                  "font-semibold tabular-nums text-white",
+                  "font-semibold tabular-nums text-white transition-colors",
                   (flash === "owner" || flash === "consumer") && "animate-scale-flash",
                 )}
               >
-                {total}
+                {animatedTotal.toLocaleString()}
               </span>{" "}
               already on the list.
             </span>
