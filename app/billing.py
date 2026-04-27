@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_admin_session
 from app.database import get_session, settings
-from app.models import Brand, Cafe, SubscriptionStatus
+from app.models import Brand, Cafe, SchemeType, SubscriptionStatus
 from app.schemas import AdminSession, CheckoutResponse
 
 logger = logging.getLogger(__name__)
@@ -565,8 +565,36 @@ async def stripe_webhook(
         stripe_subscription_id = obj.get("subscription")
         if stripe_subscription_id and not brand.stripe_subscription_id:
             brand.stripe_subscription_id = stripe_subscription_id
+
+        # Persist the chosen tier — Checkout passes ?tier=private|global on
+        # the create_checkout call, which we forwarded into session
+        # metadata. Map → brand.scheme_type so the Plans grid + Discover
+        # reflect the new tier on the next page load. Unknown / missing
+        # tier values are left alone (we treat them as "no preference",
+        # not as a directive to flip).
+        tier = (obj.get("metadata") or {}).get("tier")
+        if tier == "global":
+            brand.scheme_type = SchemeType.GLOBAL
+        elif tier == "private":
+            brand.scheme_type = SchemeType.PRIVATE
+
+        # Cascade billing_status → ACTIVE for every cafe under this brand.
+        # New brands typically have one cafe (the one that triggered the
+        # checkout); existing brands re-subscribing might have several.
+        # One UPDATE wins over N session.merge() round-trips.
+        await session.execute(
+            update(Cafe)
+            .where(Cafe.brand_id == brand_id)
+            .values(billing_status=SubscriptionStatus.ACTIVE)
+        )
+
         await session.commit()
-        return {"received": True, "brand_id": str(brand_id), "status": "active"}
+        return {
+            "received": True,
+            "brand_id": str(brand_id),
+            "status": "active",
+            "tier": tier,
+        }
 
     # Subscription fully cancelled (either via Portal or because the
     # cancel-at-period-end grace window elapsed). Flip the brand to
