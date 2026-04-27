@@ -8,7 +8,16 @@ export const Footer = () => (
       <a href="mailto:hello@localcoffeeperks.com" className="hover:text-mint transition-colors">
         hello@localcoffeeperks.com
       </a>
-      <p className="text-xs text-white/40">© {new Date().getFullYear()} Local Coffee Perks.</p>
+      <div className="flex items-center gap-3 text-xs text-white/40">
+        <a
+          href="/privacy"
+          className="underline-offset-4 transition-colors hover:text-mint hover:underline"
+        >
+          Privacy
+        </a>
+        <span aria-hidden className="text-white/25">·</span>
+        <span>© {new Date().getFullYear()} Local Coffee Perks.</span>
+      </div>
     </div>
     {/* Build credit — kept on its own row, dimmer than the brand line so
         it reads as a quiet attribution instead of competing for the eye. */}

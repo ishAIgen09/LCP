@@ -110,5 +110,11 @@ export default {
       },
     },
   },
-  plugins: [require("tailwindcss-animate")],
+  plugins: [
+    require("tailwindcss-animate"),
+    // Typography unlocks the `prose prose-invert` utilities used by
+    // /privacy (and any future long-form legal page). Already in
+    // package.json; just wasn't registered.
+    require("@tailwindcss/typography"),
+  ],
 } satisfies Config;
