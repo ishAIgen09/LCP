@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 300">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,600;1,400&amp;display=swap');
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&amp;display=swap');
+      .brand { font-family: 'Fraunces', serif; font-size: 24px; font-weight: 600; fill: #00E576; }
+      .brand-sub { font-family: 'Fraunces', serif; font-size: 12px; font-style: italic; fill: #FFFFFF; }
+      .heading { font-family: 'Inter', sans-serif; font-size: 16px; font-weight: 700; fill: #FFFFFF; }
+      .subtext { font-family: 'Inter', sans-serif; font-size: 14px; font-weight: 400; fill: #FFFFFF; }
+      .highlight { font-family: 'Inter', sans-serif; font-size: 15px; font-weight: 700; fill: #00E576; }
+      .footer { font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 400; fill: #FFFFFF; }
+      .footer-mint { font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 700; fill: #00E576; }
+    </style>
+  </defs>
+  <rect width="490" height="290" x="5" y="5" fill="#1A1412" stroke="#00E576" stroke-width="4" rx="20"/>
+
+  <text x="35" y="55" class="brand">Local Coffee Perks</text>
+  <text x="35" y="75" class="brand-sub">For the regulars.</text>
+
+  <text x="35" y="125" class="heading">ONE APP. YOUR LOCAL CAFE.</text>
+  <text x="35" y="155" class="subtext">Discover hidden gems.</text>
+  <text x="35" y="175" class="subtext">Track your rewards in one place.</text>
+
+  <text x="35" y="215" class="highlight">Never lose a coffee card again.</text>
+
+  <text x="35" y="255" class="footer">Launching May 2026. Be the first to know.</text>
+  <text x="35" y="275" class="footer-mint">www.localcoffeeperks.com</text>
+
+  <image href="qr.png" x="290" y="60" width="180" height="180" />
+</svg>

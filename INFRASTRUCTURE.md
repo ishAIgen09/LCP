@@ -47,9 +47,29 @@
 
 * **Role:** Official business communication and (future) OTP delivery.
 * **Address:** `hello@localcoffeeperks.com`
-* **Configuration:** Authenticated via a 16-letter App-Specific Password (bypassing 2FA for system/device logins).
-* **Incoming:** `imappro.zoho.eu`
-* **Outgoing:** `smtppro.zoho.eu`
+
+### Working configuration (Apple Mail on iOS / macOS)
+Apple Mail's auto-detect routinely fails for custom-domain Zoho EU accounts. Configure manually with these exact values:
+
+* **Incoming Mail Server (IMAP):**
+    * Host name: `imappro.zoho.eu`
+    * Port: `993`
+    * Use SSL: ON
+* **Outgoing Mail Server (SMTP):**
+    * Host name: `smtppro.zoho.eu`
+    * Port: `465`
+    * Use SSL: ON
+* **Authentication (both servers):**
+    * Username: `hello@localcoffeeperks.com`
+    * Password: a 16-character App-Specific Password generated from the **Zoho Security Dashboard**. **Do NOT** use the standard Zoho account password, and **do NOT** include the spaces Zoho displays between groups.
+
+### Operational gotchas
+* **"Cannot Get Mail" / missing Inbox / Junk / Trash folders.** Symptom: outgoing mail works, incoming sync silently fails. Cause: the iOS mail profile is corrupted. Fix:
+    1. Delete the account from `Settings → Mail → Accounts`.
+    2. Revoke the existing App Password in the Zoho Security Dashboard.
+    3. Generate a fresh App Password.
+    4. Re-add the account from scratch using the manual config above (do NOT trust Apple's auto-fill).
+* **Multi-device rule.** Every device that signs in needs **its own unique App Password** (e.g. founder's iPhone + co-founder's iPhone = two separate passwords). Sharing one password across devices triggers Zoho's anti-replay heuristics and one device will quietly stop syncing.
 
 ## 5. App Store & Google Play (Pending)
 *Last updated: **2026-04-27***
@@ -57,11 +77,32 @@
 * **Entity Name:** A Digital Product Studio Limited.
 * **Status:** Awaiting Company Registration Number from Companies House to trigger the D-U-N-S number application for Apple Organization enrollment.
 
+## 6. Vehicle Marketing Assets (SVG decals)
+*Last updated: **2026-04-27***
+
+* **Role:** Source-of-truth artwork for the Local Coffee Perks car decal set used for street-level brand awareness and waitlist QR scans.
+* **Location in repo:** `/marketing/stickers/`
+* **Files:**
+    * `hood.svg` — 500×500 circle, bonnet centre decal
+    * `driver-door.svg` — 500×300 rectangle, driver-side door
+    * `passenger-door.svg` — 500×300 rectangle, passenger-side door
+    * `bumper.svg` — 300×300 circle, rear bumper
+    * `README.md` — print-prep + brand palette notes
+* **Required sibling asset:** every SVG references `qr.png` via a relative `<image href="qr.png">` tag. Drop the production QR (linking to `https://localcoffeeperks.com/waitlist`) into `marketing/stickers/qr.png` before opening any SVG locally — otherwise the QR slot renders as a broken image.
+* **Brand palette (must match exactly across all 4 files):**
+    * Background: `#1A1412` (espresso)
+    * Mint highlights: `#00E576`
+    * Body text: `#FFFFFF`
+* **Typography:** Fraunces (display) + Inter (body), both `@import`-ed from Google Fonts inside each SVG's `<style>` block.
+* **Print-prep rule:** before sending any SVG to a vinyl printer, open in Illustrator (or Inkscape) and **convert text to outlines / paths**. The Google Fonts `@import` works in browsers but is unreliable in print RIPs — without outlining, the printer may substitute a system font and break the brand look.
+
 ---
 
 ## Change log
 *Append a single line per change, newest at the top, in the form `YYYY-MM-DD — section — what changed`.*
 
+* **2026-04-27** — Section 6 (Vehicle Marketing Assets) — added. Four production-ready SVG decals saved to `/marketing/stickers/` (hood, driver-door, passenger-door, bumper) plus a README. Each SVG references a sibling `qr.png` via relative `<image>` tag; brand palette `#1A1412` / `#00E576` / `#FFFFFF` documented as the source of truth.
+* **2026-04-27** — Section 4 (Zoho Mail) — fleshed out: full Apple Mail manual config (IMAP `imappro.zoho.eu:993` / SMTP `smtppro.zoho.eu:465`, both SSL on, App-Specific Password), iOS-profile-corruption nuke-and-rebuild fix, multi-device per-device App Password rule.
 * **2026-04-27** — Section 3 (DigitalOcean) — documented persistent `/root/.env-lcp-production` env-injection pattern, GHA `push:main` deploy trigger, the 20s-wait-then-clear lock guard in deploy.yml, the three Nginx subdomains, and the UFW ruleset.
 * **2026-04-27** — Section 1 (Google Apps Script) — added "no mock fallback" frontend consumption rule: the social-proof count is hidden if the GAS fetch is in flight or fails, never substituted with a baseline number.
 * **2026-04-27** — Ledger initialised with sections 1–5 (Google Apps Script, Stripe, DigitalOcean, Zoho Mail, App Store / Google Play pending).

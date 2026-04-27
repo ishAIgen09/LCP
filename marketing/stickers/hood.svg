@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,600;1,400&amp;display=swap');
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&amp;display=swap');
+      .brand { font-family: 'Fraunces', serif; font-size: 34px; font-weight: 600; fill: #00E576; text-anchor: middle; }
+      .brand-sub { font-family: 'Fraunces', serif; font-size: 16px; font-style: italic; fill: #FFFFFF; text-anchor: middle; }
+      .subtext { font-family: 'Inter', sans-serif; font-size: 16px; font-weight: 400; fill: #FFFFFF; text-anchor: middle; }
+      .highlight { font-family: 'Inter', sans-serif; font-size: 16px; font-weight: 700; fill: #FFFFFF; text-anchor: middle; }
+      .footer { font-family: 'Inter', sans-serif; font-size: 14px; font-weight: 700; fill: #00E576; text-anchor: middle; }
+    </style>
+  </defs>
+  <circle cx="250" cy="250" r="240" fill="#1A1412" stroke="#00E576" stroke-width="6"/>
+
+  <text x="250" y="105" class="brand">Local Coffee Perks</text>
+  <text x="250" y="130" class="brand-sub">For the regulars.</text>
+
+  <text x="250" y="170" class="subtext">Your favourite independent cafes,</text>
+  <text x="250" y="195" class="subtext">all on one digital pass.</text>
+
+  <text x="250" y="235" class="highlight">Launching May 2026. Be the first to know.</text>
+
+  <image href="qr.png" x="160" y="250" width="180" height="180" />
+
+  <text x="250" y="460" class="footer">www.localcoffeeperks.com</text>
+</svg>

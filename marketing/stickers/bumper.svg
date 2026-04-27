@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,600;1,400&amp;display=swap');
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&amp;display=swap');
+      .brand { font-family: 'Fraunces', serif; font-size: 18px; font-weight: 600; fill: #00E576; text-anchor: middle; }
+      .brand-sub { font-family: 'Fraunces', serif; font-size: 11px; font-style: italic; fill: #FFFFFF; text-anchor: middle; }
+      .subtext { font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 400; fill: #FFFFFF; text-anchor: middle; }
+      .highlight { font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 700; fill: #FFFFFF; text-anchor: middle; }
+      .footer { font-family: 'Inter', sans-serif; font-size: 10px; font-weight: 700; fill: #00E576; text-anchor: middle; }
+    </style>
+  </defs>
+  <circle cx="150" cy="150" r="142" fill="#1A1412" stroke="#00E576" stroke-width="4"/>
+
+  <text x="150" y="60" class="brand">Local Coffee Perks</text>
+  <text x="150" y="78" class="brand-sub">For the regulars.</text>
+
+  <text x="150" y="108" class="subtext">One digital loyalty pass</text>
+  <text x="150" y="126" class="subtext">Earn free drinks locally</text>
+
+  <text x="150" y="152" class="highlight">LAUNCHING MAY 2026</text>
+
+  <image href="qr.png" x="105" y="160" width="90" height="90" />
+
+  <text x="150" y="270" class="footer">www.localcoffeeperks.com</text>
+</svg>
