@@ -542,7 +542,8 @@ async def stripe_webhook(
                 detail="Invalid signature",
             )
 
-    if event["type"] == "checkout.session.completed":
+    event_type = event.get("type")
+    if event_type == "checkout.session.completed":
         obj = event["data"]["object"]
         brand_id_str = (obj.get("metadata") or {}).get("brand_id") or obj.get(
             "client_reference_id"
@@ -601,7 +602,7 @@ async def stripe_webhook(
     # CANCELED, and flip every cafe that was still being billed
     # (ACTIVE / PENDING_CANCELLATION) to CANCELED in one pass so the
     # super-admin Billing tab drops them from MRR immediately.
-    if event["type"] == "customer.subscription.deleted":
+    if event_type == "customer.subscription.deleted":
         obj = event["data"]["object"]
         stripe_customer_id = obj.get("customer")
         stripe_subscription_id = obj.get("id")
