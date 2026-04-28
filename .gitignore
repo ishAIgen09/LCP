@@ -1,4 +1,6 @@
 .env
+.env.*
+!.env.example
 __pycache__/
 *.pyc
 
@@ -6,6 +8,18 @@ __pycache__/
 node_modules/
 *.tsbuildinfo
 MEMORY.md
+
+# Local-only state, scratch files, secrets
+.claude/
+.logs/
+*.timestamp-*.mjs
+
+# SSH deploy keys — NEVER commit. The droplet has its own copy in /root/.
+deploy_key
+deploy_key.pub
+*.pem
+id_rsa
+id_rsa.pub
 
 # Allow front-end production builds for the static-host deploy.
 # main-website/dist/ + waitlist-page/dist/ + admin-dashboard/dist/ +

@@ -269,6 +269,30 @@ export async function adminLogin(
   }
 }
 
+// Onboarding wizard — finalize a brand-invite into an admin session.
+// Mirrors adminLogin's return shape so the wizard's onAuthenticated
+// callback drops straight into the existing App.tsx admin flow.
+export async function adminSetup(
+  token: string,
+  password: string,
+): Promise<{ session: Extract<Session, { role: "admin" }>; brand: Brand }> {
+  const data = await request<AdminLoginResponse>("POST", "/api/auth/admin/setup", {
+    token,
+    password,
+  })
+  return {
+    session: {
+      role: "admin",
+      token: data.token,
+      email: data.admin.email,
+      brandId: data.brand.id,
+      brandName: data.brand.name,
+      schemeType: data.brand.scheme_type,
+    },
+    brand: brandFromApi(data.brand),
+  }
+}
+
 export async function storeLogin(
   storeNumber: string,
   pin: string

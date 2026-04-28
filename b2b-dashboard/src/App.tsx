@@ -4,6 +4,7 @@ import { Topbar } from "@/components/Topbar"
 import { AddLocationDialog } from "@/components/AddLocationDialog"
 import { BaristaCredentialsModal } from "@/components/BaristaCredentialsModal"
 import { ResetPasswordView } from "@/views/ResetPasswordView"
+import { SetupView } from "@/views/SetupView"
 import { LoginView } from "@/views/LoginView"
 import { BaristaPOSView } from "@/views/BaristaPOSView"
 import { BillingCancelView } from "@/views/BillingCancelView"
@@ -78,6 +79,14 @@ function App() {
     if (window.location.pathname !== "/reset-password") return { token: null }
     const params = new URLSearchParams(window.location.search)
     return { token: params.get("token") }
+  })
+
+  // Onboarding wizard landing (/setup?token=…). Same pre-auth-gate
+  // treatment as /reset-password — an invited admin needs to land on
+  // the wizard from a cold open without first being logged in.
+  const [isSetupRoute] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false
+    return window.location.pathname === "/setup"
   })
 
   useEffect(() => {
@@ -256,6 +265,15 @@ function App() {
     setBillingRoute({ route: null, sessionId: null })
     setNav(goTo)
   }, [])
+
+  // Onboarding wizard. Same pre-auth handling as /reset-password — the
+  // wizard itself reads ?token= from the URL and shepherds the invited
+  // admin through password → first cafe → Stripe checkout. We pass the
+  // existing onAuthenticated callback so Step 1 can save the freshly
+  // minted session into App state + localStorage before Step 2 fires.
+  if (isSetupRoute) {
+    return <SetupView onAuthenticated={handleAuthenticated} />
+  }
 
   // Handle the password-reset landing page first — works whether the
   // user is signed in or not. After completing, the view itself

@@ -15,7 +15,9 @@ from __future__ import annotations
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -34,6 +36,7 @@ from app.schemas import (
     AdminLoginRequest,
     AdminLoginResponse,
     AdminProfile,
+    AdminSetupRequest,
     BrandProfile,
     CafeProfile,
     StoreLoginRequest,
@@ -97,6 +100,72 @@ async def admin_login(
     )
     return AdminLoginResponse(
         token=token,
+        admin=AdminProfile(email=normalized_email),
+        brand=BrandProfile.model_validate(brand),
+    )
+
+
+@router.post("/admin/setup", response_model=AdminLoginResponse)
+async def admin_setup(
+    payload: AdminSetupRequest,
+    session: AsyncSession = Depends(get_session),
+) -> AdminLoginResponse:
+    """Onboarding wizard — finalize a brand-invite into a usable admin login.
+
+    The Super Admin "Invite admin" flow mints a brand-invite JWT (audience
+    `brand-invite`) carrying `{brand_id, email}`. The recipient lands on
+    `/setup?token=…`, picks a password, and POSTs here. We verify the
+    invite, set `brand.password_hash`, and immediately mint a fresh admin
+    session token so the wizard advances the user into the dashboard
+    without a second round-trip through /admin/login.
+    """
+
+    try:
+        claims = tokens.decode(payload.token, audience="brand-invite")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This setup link has expired. Ask your admin to reissue it.",
+        )
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This setup link is invalid. Ask your admin to reissue it.",
+        )
+
+    raw_brand_id = claims.get("brand_id")
+    if not raw_brand_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Setup link is missing a brand reference.",
+        )
+    try:
+        brand_id = UUID(str(raw_brand_id))
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Setup link carries an unrecognised brand reference.",
+        )
+
+    brand = await session.get(Brand, brand_id)
+    if brand is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Brand not found for this setup link.",
+        )
+
+    brand.password_hash = hash_password(payload.password)
+    await session.commit()
+    await session.refresh(brand)
+
+    normalized_email = (brand.contact_email or "").strip().lower()
+    admin_token = tokens.encode_admin(
+        brand_id=str(brand.id),
+        email=normalized_email,
+        brand_name=brand.name,
+    )
+    return AdminLoginResponse(
+        token=admin_token,
         admin=AdminProfile(email=normalized_email),
         brand=BrandProfile.model_validate(brand),
     )

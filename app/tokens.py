@@ -92,6 +92,36 @@ def encode_consumer(
     )
 
 
+def encode_brand_invite(
+    email: str,
+    brand_id: str,
+    ttl_hours: int = 48,
+) -> tuple[str, int]:
+    """One-time-ish setup token for inviting a brand admin.
+
+    Used by the Super Admin "Invite admin" flow: we sign an audience-
+    scoped JWT carrying {email, brand_id} so the recipient can land on
+    /setup?token=... and finalize their password without us having to
+    persist a server-side single-use token table for the MVP.
+
+    Returns (token, exp_unix_seconds) so the caller can echo the
+    expiry to the dashboard.
+    """
+    now = int(time.time())
+    exp = now + ttl_hours * 3600
+    payload: dict[str, Any] = {
+        "sub": f"invite:{brand_id}",
+        "aud": "brand-invite",
+        "brand_id": brand_id,
+        "email": email,
+        "iat": now,
+        "exp": exp,
+        "iss": "indie-coffee-loop",
+    }
+    token = jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
+    return token, exp
+
+
 def decode(token: str, audience: str) -> dict[str, Any]:
     return jwt.decode(
         token,

@@ -191,6 +191,15 @@ class AdminLoginRequest(BaseModel):
     password: str = Field(min_length=1)
 
 
+class AdminSetupRequest(BaseModel):
+    # Onboarding wizard payload — `token` is the brand-invite JWT minted by
+    # the Super Admin "Invite admin" flow (audience="brand-invite"); `password`
+    # is the chosen account password. Min length matches the wizard's UX
+    # threshold; the audience claim is what actually gates write access here.
+    token: str = Field(min_length=8)
+    password: str = Field(min_length=6)
+
+
 class StoreLoginRequest(BaseModel):
     store_number: str = Field(min_length=3, max_length=10, pattern=r"^[A-Za-z0-9]+$")
     pin: str = Field(min_length=4, max_length=8, pattern=r"^\d+$")
