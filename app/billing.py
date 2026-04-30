@@ -115,19 +115,32 @@ async def sync_subscription_quantity(
         )
 
 
-def _first_of_next_month_utc(now: datetime | None = None) -> int:
+# Stripe's documented minimum gap between `now` and `subscription_data.
+# trial_end` is 48 hours. Anything closer raises a 400 like
+# "trial_end must be at least 48 hours in the future". The last 1-2 days
+# of any calendar month would otherwise trip this when we anchor to the
+# 1st. We deal with it by simply NOT setting trial_end on those days,
+# falling back to Stripe's default (full month upfront, billing cycle
+# anchored to the day of checkout). That's a slight UX regression on
+# 1-2 days per month, but the safest deterministic behavior.
+_STRIPE_TRIAL_END_MIN_GAP = timedelta(hours=48)
+
+
+def _trial_end_first_of_next_month(now: datetime | None = None) -> int | None:
     """Unix timestamp at 00:00 UTC on the 1st of the next calendar month.
 
-    Used as the Stripe billing cycle anchor on initial signup so that the
-    first full-rate invoice lands cleanly on the 1st (everyone's invoices
-    align), and the partial first month is handled via `trial_end` to
-    avoid charging the customer a full month for partial usage.
+    Returns None when the 1st of next month is closer than Stripe's
+    48-hour minimum (i.e. checkout is happening on the 30th/31st late in
+    the day). Caller treats None as "skip trial_end on this checkout."
     """
     now = now or datetime.now(timezone.utc)
     if now.month == 12:
         first_next = datetime(now.year + 1, 1, 1, tzinfo=timezone.utc)
     else:
         first_next = datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc)
+
+    if first_next - now < _STRIPE_TRIAL_END_MIN_GAP:
+        return None
     return int(first_next.timestamp())
 
 
@@ -232,11 +245,17 @@ async def create_checkout(
     # cycles renew on the 1st as well, which means every brand's billing
     # cycle naturally aligns to month-start.
     #
-    # Edge case: if today IS the 1st (anchor == 24h from now), Stripe still
-    # honours trial_end — the customer gets ~24h trial then full billing.
-    # Acceptable UX cost for the simpler code path.
-    now_utc = datetime.now(timezone.utc)
-    trial_end = _first_of_next_month_utc(now_utc)
+    # Stripe rejects trial_end < 48h from now with a 400 — see the helper
+    # for the guard. On the last day of the month we drop trial_end and
+    # let Stripe default (full month upfront, day-of-checkout anchor) take
+    # over. Better than a hard 500.
+    trial_end = _trial_end_first_of_next_month()
+
+    subscription_data: dict = {
+        "metadata": {"brand_id": str(brand.id), "tier": tier},
+    }
+    if trial_end is not None:
+        subscription_data["trial_end"] = trial_end
 
     kwargs: dict = {
         "mode": "subscription",
@@ -246,15 +265,7 @@ async def create_checkout(
         # Pass the tier through to the webhook so we can persist
         # brand.plan_tier when the subscription lands.
         "metadata": {"brand_id": str(brand.id), "tier": tier},
-        "subscription_data": {
-            # No upfront charge for the partial first month — see comment
-            # block above. Mid-cycle subscription updates (quantity changes
-            # via sync_subscription_quantity, plan changes via /plan-change)
-            # use proration_behavior="create_prorations" instead, which IS
-            # accepted by the Subscription API directly (unlike Checkout).
-            "trial_end": trial_end,
-            "metadata": {"brand_id": str(brand.id), "tier": tier},
-        },
+        "subscription_data": subscription_data,
         "success_url": _success_url(),
         "cancel_url": _cancel_url(),
     }
@@ -265,7 +276,23 @@ async def create_checkout(
     else:
         kwargs["customer_email"] = brand.contact_email
 
-    checkout_session = stripe.checkout.Session.create(**kwargs)
+    try:
+        checkout_session = stripe.checkout.Session.create(**kwargs)
+    except stripe.StripeError as exc:
+        # Surface the actual Stripe message in logs so we can debug
+        # without bouncing a vague 500 to the dashboard. Common culprits:
+        # invalid trial_end (< 48h), missing payment_method_types,
+        # mismatched currency between price + customer.
+        logger.error(
+            "Stripe Checkout create failed: brand=%s tier=%s err=%s",
+            brand.id,
+            tier,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Stripe could not create the checkout session: {exc.user_message or str(exc)}",
+        )
 
     return CheckoutResponse(checkout_url=checkout_session.url)
 
