@@ -274,40 +274,124 @@ def send_brand_invite_email(
     to_email: str,
     brand_name: str,
     setup_url: str,
+    cafe_owner_name: str | None = None,
 ) -> bool:
     """Welcome + setup CTA for a brand owner the super-admin just invited.
 
     The link is a 48h JWT (`tokens.encode_brand_invite`) and lands on the
     b2b-dashboard's /setup wizard — password → first cafe → Stripe.
+
+    Templating: plain Python f-string interpolation (not Jinja). Two
+    variables land in the body: `cafe_owner_name` (the greeting) and
+    `setup_url` (the CTA + plain-text fallback). `brand_name` is left
+    unused in the rendered copy today (the spec greets the owner, not
+    the brand) but is kept on the signature for future variants and
+    audit-log hygiene.
     """
-    subject = f"Welcome to Local Coffee Perks — finish setting up {brand_name}"
+
+    # Greeting fallback when no name is on the brand row yet (older
+    # imports, super-admin skipped the optional admin-name field, etc.).
+    # We keep the warm "family" framing either way.
+    greeting = (
+        f"Welcome to the family, {cafe_owner_name}!"
+        if cafe_owner_name and cafe_owner_name.strip()
+        else "Welcome to the family!"
+    )
+
+    subject = "Welcome to Local Coffee Perks! Let's get you set up."
+
     body_html = f"""\
-<h1 style="font-size:22px;font-weight:600;line-height:1.3;margin:0 0 12px 0;color:{TEXT_LIGHT};letter-spacing:-0.01em;">
-  Welcome — let's get {brand_name} live.
+<h1 style="font-size:24px;font-weight:600;line-height:1.25;margin:0 0 14px 0;color:{TEXT_LIGHT};letter-spacing:-0.012em;">
+  {greeting}
 </h1>
-<p style="font-size:14px;line-height:1.6;margin:0 0 18px 0;color:{TEXT_LIGHT};opacity:0.9;">
-  We've reserved your dashboard. Click the button below to set your password,
-  add your first café, and start collecting stamps for your regulars. The link
-  is valid for 48 hours.
+<p style="font-size:14.5px;line-height:1.65;margin:0 0 14px 0;color:{TEXT_LIGHT};opacity:0.92;">
+  Congratulations on choosing a digital, eco-friendly way to reward
+  your regulars and grow your independent brand. You're joining a
+  network built around the cafés that pour the soul of every high
+  street — no chains, no paper waste, just the people who matter.
 </p>
-<table role="presentation" cellpadding="0" cellspacing="0" style="margin:8px 0 22px 0;">
+<p style="font-size:14px;line-height:1.65;margin:0 0 26px 0;color:{TEXT_LIGHT};opacity:0.85;">
+  Here's how to get going in three quick steps.
+</p>
+
+<!-- Three-step guide. Each step uses a 2-cell table so the mint-circle
+     number aligns with the step copy across every mail client. -->
+<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 24px 0;">
+  <tr>
+    <td style="padding:0 0 14px 0;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+        <tr>
+          <td valign="top" width="40" style="padding-right:14px;">
+            <div style="width:30px;height:30px;border-radius:15px;background:{MINT};color:{ESPRESSO};font-weight:700;font-size:13.5px;line-height:30px;text-align:center;">1</div>
+          </td>
+          <td valign="top">
+            <div style="font-size:13.5px;font-weight:600;color:{TEXT_LIGHT};margin:5px 0 4px 0;">Secure your account</div>
+            <div style="font-size:13px;line-height:1.55;color:{TEXT_LIGHT};opacity:0.78;">Click the button below to set your password and unlock the dashboard.</div>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+  <tr>
+    <td style="padding:0 0 14px 0;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+        <tr>
+          <td valign="top" width="40" style="padding-right:14px;">
+            <div style="width:30px;height:30px;border-radius:15px;background:{MINT};color:{ESPRESSO};font-weight:700;font-size:13.5px;line-height:30px;text-align:center;">2</div>
+          </td>
+          <td valign="top">
+            <div style="font-size:13.5px;font-weight:600;color:{TEXT_LIGHT};margin:5px 0 4px 0;">Make it yours</div>
+            <div style="font-size:13px;line-height:1.55;color:{TEXT_LIGHT};opacity:0.78;">Upload your café's logo and brand colours so your regulars feel right at home.</div>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+        <tr>
+          <td valign="top" width="40" style="padding-right:14px;">
+            <div style="width:30px;height:30px;border-radius:15px;background:{MINT};color:{ESPRESSO};font-weight:700;font-size:13.5px;line-height:30px;text-align:center;">3</div>
+          </td>
+          <td valign="top">
+            <div style="font-size:13.5px;font-weight:600;color:{TEXT_LIGHT};margin:5px 0 4px 0;">Print your QR table talkers</div>
+            <div style="font-size:13px;line-height:1.55;color:{TEXT_LIGHT};opacity:0.78;">We've already generated your unique QR codes — print them straight from the dashboard and put them on the counter.</div>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+
+<!-- CTA -->
+<table role="presentation" cellpadding="0" cellspacing="0" style="margin:6px 0 26px 0;">
   <tr>
     <td style="border-radius:10px;background:{MINT};">
-      <a href="{setup_url}" style="display:inline-block;padding:13px 24px;font-size:14px;font-weight:600;color:{ESPRESSO};text-decoration:none;letter-spacing:-0.005em;">
-        Set up your account →
+      <a href="{setup_url}" style="display:inline-block;padding:14px 26px;font-size:14.5px;font-weight:600;color:{ESPRESSO};text-decoration:none;letter-spacing:-0.005em;">
+        Finish Setting Up My Cafe →
       </a>
     </td>
   </tr>
 </table>
-<p style="font-size:12.5px;line-height:1.6;margin:0 0 6px 0;color:{MUTED};">
-  Or paste this link into your browser:
+
+<p style="font-size:12px;line-height:1.55;margin:0 0 6px 0;color:{MUTED};">
+  Button not working? Paste this link into your browser (valid for 48 hours):
 </p>
-<p style="font-size:12px;line-height:1.5;margin:0 0 18px 0;color:{TEXT_LIGHT};word-break:break-all;">
+<p style="font-size:11.5px;line-height:1.5;margin:0 0 22px 0;color:{TEXT_LIGHT};word-break:break-all;">
   <a href="{setup_url}" style="color:{MINT};text-decoration:none;">{setup_url}</a>
 </p>
-<p style="font-size:12.5px;line-height:1.6;margin:18px 0 0 0;color:{MUTED};">
-  Questions? Reply to this email and we'll get back to you within a working day.
-</p>
+
+<!-- Independents-focused sign-off -->
+<div style="margin-top:8px;padding-top:18px;border-top:1px solid #2c211c;">
+  <p style="font-size:13px;line-height:1.6;margin:0 0 6px 0;color:{TEXT_LIGHT};">
+    We're here for every step — reply to this email and a real person
+    will get back to you within a working day.
+  </p>
+  <p style="font-size:12px;line-height:1.55;margin:10px 0 0 0;color:{MUTED};font-style:italic;">
+    Made for independents, by independents.
+  </p>
+</div>
 """
     return send_email(to_email, subject, _wrap(subject, body_html))
 

@@ -1728,10 +1728,26 @@ async def platform_invite_brand_admin(
     # Best-effort delivery — failures fall back to stdout stub inside
     # send_email and the response still returns 200 with the setup_url
     # so the super-admin can hand-deliver if SMTP is misconfigured.
+    #
+    # Greeting name: prefer owner_first_name (sounds warmer), then a
+    # combined first+last as a fallback. Both are nullable on Brand;
+    # send_brand_invite_email handles the empty case gracefully.
+    owner_first = (brand.owner_first_name or "").strip()
+    owner_last = (brand.owner_last_name or "").strip()
+    if owner_first and owner_last:
+        cafe_owner_name: str | None = f"{owner_first} {owner_last}"
+    elif owner_first:
+        cafe_owner_name = owner_first
+    elif owner_last:
+        cafe_owner_name = owner_last
+    else:
+        cafe_owner_name = None
+
     send_brand_invite_email(
         to_email=email,
         brand_name=brand.name,
         setup_url=setup_url,
+        cafe_owner_name=cafe_owner_name,
     )
 
     return BrandInviteResponse(
