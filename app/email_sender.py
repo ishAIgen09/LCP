@@ -1,24 +1,32 @@
-"""Outbound email — Google Workspace SMTP via stdlib smtplib.
+"""Outbound email — Resend (HTTPS) primary, SMTP fallback.
 
 Three call sites today:
   · Brand invite           → send_brand_invite_email(...)
   · Consumer OTP           → send_otp_email(...)
   · Brand password reset   → send_password_reset_email(...)
 
-Transport is configured via the SMTP_* env vars on `Settings`
-(see app/database.py). Defaults target Google Workspace
-(smtp.gmail.com, 465 SSL) so production only needs to drop a Google
-App Password into `SMTP_PASSWORD`.
+Transport selection (highest priority first):
 
-Failure mode: if the SMTP send raises (network blip, bad creds,
-temporary 4xx) we log a warning and fall through to a stdout stub
-so the surrounding flow (e.g. the brand-invite handler) still
-succeeds and the operator can copy the link / OTP from the API
-container's logs. This matches the pre-2026-04-30 behavior so
-nothing regresses if SMTP is misconfigured at runtime.
+  1. Resend  — when `RESEND_API_KEY` is set. HTTPS to api.resend.com:443.
+               This is the prod path on the DigitalOcean droplet because
+               DO blocks outbound SMTP on ports 465 + 587; HTTPS isn't
+               affected. Get a key at resend.com → Settings → API Keys.
 
-When `SMTP_PASSWORD` is unset (typical local dev), every send is
-short-circuited to the stub immediately — no socket is opened.
+  2. SMTP    — when `SMTP_PASSWORD` is set and Resend isn't. Useful for
+               local dev when you have a Google Workspace App Password
+               and want to round-trip real email without signing up for
+               Resend. Will fail with [Errno 101] on cloud hosts that
+               block outbound SMTP — that's expected.
+
+  3. Stub    — when neither is set. Logs the body to stdout so the
+               operator can hand-deliver the link / OTP. Same behavior
+               as the original SMTP-less stub from Phase 4.
+
+Failure mode: any transport exception is logged and falls through to the
+stub so the surrounding business logic (invite handler, OTP request,
+password-reset) keeps returning 200. The setup_url is still in the
+response body and the operator can paste it manually if SMTP/HTTPS both
+break at runtime.
 """
 
 from __future__ import annotations
@@ -34,13 +42,16 @@ from app.database import settings
 logger = logging.getLogger(__name__)
 
 
+def _resend_configured() -> bool:
+    return bool(settings.resend_api_key)
+
+
 def _smtp_configured() -> bool:
     return bool(settings.smtp_password)
 
 
 def _stub(to_email: str, subject: str, text_body: str) -> None:
-    # Single, grep-friendly format used by both the OTP and invite paths
-    # before SMTP wiring. Read these out of the API container with:
+    # Single, grep-friendly format. Read out of the API container with:
     #   docker compose logs api | grep "EMAIL STUB"
     logger.info(
         "EMAIL STUB to=%s subject=%s\n--- BODY ---\n%s\n------------",
@@ -58,30 +69,71 @@ def _stub(to_email: str, subject: str, text_body: str) -> None:
     )
 
 
-def send_email(
+def _send_via_resend(
     to_email: str,
     subject: str,
     html_body: str,
-    text_body: str | None = None,
+    text_body: str,
 ) -> bool:
-    """Send a multipart email. Returns True on success, False on any error
-    (including the stub fallback). Errors are logged, never raised, so the
-    caller's surrounding business logic stays unblocked by transport
-    issues — invitations are still resolvable via the audit log + the
-    operator can hand-deliver the link if needed.
-    """
-
-    text = text_body or _strip_html(html_body)
-
-    if not _smtp_configured():
-        _stub(to_email, subject, text)
+    """Resend REST API via the official Python SDK. Imported lazily so the
+    SDK only loads when the env actually configures it — keeps the
+    container's import-time surface clean for local dev."""
+    try:
+        import resend  # noqa: PLC0415 — local import is intentional
+    except ImportError:
+        logger.error(
+            "EMAIL FAILED via Resend — `resend` SDK not installed. "
+            "Add `resend` to requirements.txt and rebuild the api image."
+        )
+        _stub(to_email, subject, text_body)
         return False
+
+    resend.api_key = settings.resend_api_key
+
+    params: dict = {
+        "from": settings.smtp_from,  # reuse the friendly From header
+        "to": [to_email],
+        "subject": subject,
+        "html": html_body,
+        "text": text_body,
+    }
+
+    try:
+        result = resend.Emails.send(params)
+        message_id = result.get("id") if isinstance(result, dict) else None
+        logger.info(
+            "EMAIL SENT via Resend to=%s subject=%s id=%s",
+            to_email,
+            subject,
+            message_id or "(unknown)",
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 — transport-layer catch-all is intended
+        logger.warning(
+            "EMAIL FAILED via Resend to=%s subject=%s err=%s — falling back to stdout stub",
+            to_email,
+            subject,
+            exc,
+        )
+        _stub(to_email, subject, text_body)
+        return False
+
+
+def _send_via_smtp(
+    to_email: str,
+    subject: str,
+    html_body: str,
+    text_body: str,
+) -> bool:
+    """Stdlib smtplib path — used in local dev or whenever Resend isn't
+    configured. Will hit [Errno 101] Network is unreachable on cloud
+    hosts that block outbound SMTP (e.g. DigitalOcean default policy)."""
 
     msg = EmailMessage()
     msg["From"] = settings.smtp_from
     msg["To"] = to_email
     msg["Subject"] = subject
-    msg.set_content(text)
+    msg.set_content(text_body)
     msg.add_alternative(html_body, subtype="html")
 
     try:
@@ -99,17 +151,44 @@ def send_email(
                 server.starttls(context=ssl.create_default_context())
                 server.login(settings.smtp_username, settings.smtp_password or "")
                 server.send_message(msg)
-        logger.info("EMAIL SENT to=%s subject=%s", to_email, subject)
+        logger.info("EMAIL SENT via SMTP to=%s subject=%s", to_email, subject)
         return True
     except Exception as exc:  # noqa: BLE001 — transport-layer catch-all is intended
         logger.warning(
-            "EMAIL FAILED to=%s subject=%s err=%s — falling back to stdout stub",
+            "EMAIL FAILED via SMTP to=%s subject=%s err=%s — falling back to stdout stub",
             to_email,
             subject,
             exc,
         )
-        _stub(to_email, subject, text)
+        _stub(to_email, subject, text_body)
         return False
+
+
+def send_email(
+    to_email: str,
+    subject: str,
+    html_body: str,
+    text_body: str | None = None,
+) -> bool:
+    """Send a multipart email. Returns True on success, False on any error
+    (including stub fallback). Errors are logged, never raised, so the
+    caller's surrounding business logic stays unblocked by transport
+    issues — invitations are still resolvable via the API response's
+    `setup_url` and the operator can hand-deliver if needed.
+
+    Picks the first configured transport: Resend → SMTP → stub.
+    """
+
+    text = text_body or _strip_html(html_body)
+
+    if _resend_configured():
+        return _send_via_resend(to_email, subject, html_body, text)
+
+    if _smtp_configured():
+        return _send_via_smtp(to_email, subject, html_body, text)
+
+    _stub(to_email, subject, text)
+    return False
 
 
 def _strip_html(html: str) -> str:

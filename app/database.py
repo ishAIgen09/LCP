@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     smtp_from: str = "Local Coffee Perks <hello@localcoffeeperks.com>"
 
+    # Resend (HTTPS-based transactional email) — preferred prod transport
+    # since DigitalOcean blocks outbound SMTP (ports 465 + 587) on this
+    # droplet. When set, app.email_sender uses Resend's REST API and
+    # ignores the SMTP_* settings entirely. Get a key at resend.com →
+    # Settings → API Keys. Format: `re_...`.
+    resend_api_key: str | None = None
+
     # Super-admin AI assistant. Optional: if unset the /ai-agent endpoint
     # returns a friendly "add your key" message instead of a 500, so the
     # widget stays usable during early dev without a paid key on hand.

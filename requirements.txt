@@ -10,3 +10,4 @@ stripe
 pyjwt
 bcrypt
 openai
+resend

@@ -50,15 +50,30 @@
 * **Subdomains served by the droplet's Nginx:** `localcoffeeperks.com` (apex marketing site), `dashboard.localcoffeeperks.com` (b2b dashboard SPA + `/api/*` proxy to FastAPI), `hq.localcoffeeperks.com` (super-admin SPA + `/api/*` proxy). All three on Let's Encrypt HTTPS, auto-renewed by certbot.
 * **UFW firewall:** active, default-deny incoming, allowed: 22 (SSH), 80, 443, 8000.
 
-## 4. Email & SMTP (Google Workspace)
+## 4. Email & Transactional Delivery (Resend primary, Google Workspace fallback)
 *Last updated: **2026-04-30***
 
 * **Role:** Official business communication AND outbound transactional email — brand-invite welcome, consumer OTP, brand password-reset.
 * **Address:** `hello@localcoffeeperks.com`
-* **Vendor history:** Started on Zoho Mail; migrated to **Google Workspace** on 2026-04-30. The Zoho config below is preserved at the bottom of the section for reference (in case we ever roll back) but is **NOT** the active path.
+* **Vendor history:** Zoho Mail (initial) → Google Workspace SMTP (2026-04-30 morning) → **Resend** (2026-04-30 evening). The Google Workspace SMTP transport remained dead-on-arrival on the production droplet because **DigitalOcean blocks all outbound SMTP** (ports 25, 465, 587) on this droplet — confirmed via `[Errno 101] Network is unreachable` from inside the api container against `smtp.gmail.com`. Resend bypasses this entirely because its API runs over HTTPS port 443.
 
-### Active SMTP configuration (Google Workspace / Gmail)
-The FastAPI backend sends transactional email via `app/email_sender.py`, which talks to Google's SMTP using stdlib `smtplib` + `email.mime`. No third-party email vendor (Resend / SendGrid / Postmark) — Google Workspace itself is the transport.
+### Active configuration (Resend HTTPS API)
+The FastAPI backend sends transactional email via `app/email_sender.py::_send_via_resend`, which calls Resend's REST API through the official `resend` Python SDK. No SMTP, no port 25/465/587. Just HTTPS to `api.resend.com:443`.
+
+* **Vendor:** [Resend](https://resend.com)
+* **Sending domain:** `localcoffeeperks.com` (must be verified in Resend's dashboard before non-test sends work — adds 3 DNS records: 1 TXT for SPF, 2 CNAMEs for DKIM)
+* **From header:** `Local Coffee Perks <hello@localcoffeeperks.com>` (reuses the `SMTP_FROM` env var)
+* **API key format:** `re_…` — generated at `resend.com → Settings → API Keys`
+* **Free tier:** 3,000 emails/month, 100/day. Comfortably above Founding 100 invite + OTP traffic.
+
+### Transport selection (highest priority first)
+`email_sender.py` picks the first configured transport at runtime:
+1. **Resend** — when `RESEND_API_KEY` is set. The prod path.
+2. **SMTP** — when `SMTP_PASSWORD` is set and `RESEND_API_KEY` isn't. Useful for local dev with Google App Password. Will fail with `[Errno 101]` on cloud hosts that block outbound SMTP.
+3. **Stdout stub** — when neither is set. Logs the body to api stdout so the operator can hand-deliver the link / OTP.
+
+### Legacy SMTP configuration (Google Workspace / Gmail) — local dev fallback only
+The SMTP code path in `email_sender.py::_send_via_smtp` is preserved for local dev:
 
 * **Host:** `smtp.gmail.com`
 * **Port:** `465` (SSL) — matches the `SMTP_USE_SSL=true` default. Port `587` (STARTTLS) is supported by setting `SMTP_USE_SSL=false`.
@@ -68,20 +83,25 @@ The FastAPI backend sends transactional email via `app/email_sender.py`, which t
 
 ### Backend env vars (read by `Settings` in `app/database.py`)
 
-| Var | Default | Override required? |
+| Var | Default | Required? |
 |---|---|---|
-| `SMTP_HOST` | `smtp.gmail.com` | No — defaults are correct for Google Workspace |
-| `SMTP_PORT` | `465` | No |
-| `SMTP_USE_SSL` | `true` | Set to `false` only if switching to STARTTLS / port 587 |
-| `SMTP_USERNAME` | `hello@localcoffeeperks.com` | No |
-| `SMTP_PASSWORD` | unset | **YES — must be set on droplet** |
-| `SMTP_FROM` | `Local Coffee Perks <hello@localcoffeeperks.com>` | No |
+| `RESEND_API_KEY` | unset | **YES on droplet** — primary prod transport |
+| `SMTP_FROM` | `Local Coffee Perks <hello@localcoffeeperks.com>` | No — used by both Resend and SMTP paths |
+| `SMTP_HOST` | `smtp.gmail.com` | No — only consulted on the SMTP fallback path |
+| `SMTP_PORT` | `465` | No — SMTP fallback only |
+| `SMTP_USE_SSL` | `true` | No — SMTP fallback only |
+| `SMTP_USERNAME` | `hello@localcoffeeperks.com` | No — SMTP fallback only |
+| `SMTP_PASSWORD` | unset | No on droplet (DO blocks SMTP); set in local `.env` if you want to round-trip real email locally |
 
-When `SMTP_PASSWORD` is unset (typical local dev) or any send fails, `app/email_sender.py` falls back to a stdout stub identical to the pre-2026-04-30 behavior — the calling endpoint still returns 200 and the operator can read the link / OTP from `docker compose logs api | grep "EMAIL STUB"`.
+When neither transport is configured (or any send fails), `email_sender.py` falls back to a stdout stub: the calling endpoint still returns 200 and the operator can read the link / OTP from `docker compose logs api | grep "EMAIL STUB"`.
 
-### Where the App Password lands
-* **Local dev:** add `SMTP_PASSWORD=...` to the project `.env`. Don't commit it (`.env` is gitignored).
-* **Droplet:** edit `/root/.env-lcp-production` (the persistent env file the deploy script copies to `.env` before `docker compose up`; see Section 3). Restart the api container once it's added: `cd /var/www/lcp && docker compose up -d --build api`.
+### Where the API key lands
+* **Local dev:** add `RESEND_API_KEY=re_...` to the project `.env`. Don't commit it (`.env` is gitignored).
+* **Droplet:** append to `/root/.env-lcp-production` (the persistent env file the deploy script copies to `.env` before `docker compose up`; see Section 3). Then sync + restart:
+  ```bash
+  cp /root/.env-lcp-production /var/www/lcp/.env
+  cd /var/www/lcp && docker compose up -d api  # no --build needed; just restart with new env
+  ```
 
 ### Templates
 Three transactional templates ship in `app/email_sender.py`, all sharing the Espresso `#1A1412` + Mint `#00E576` chrome:
@@ -91,9 +111,11 @@ Three transactional templates ship in `app/email_sender.py`, all sharing the Esp
 3. **Password reset** — `send_password_reset_email(to_email, brand_name, reset_url)` — 60-minute single-use reset link. Fired by `POST /api/auth/forgot-password`.
 
 ### Operational gotchas
-* **App Password requires 2-Step Verification.** Google won't expose the App Password setting until 2-Step is enabled on `hello@localcoffeeperks.com`. Enable it via `myaccount.google.com → Security → 2-Step Verification` first.
-* **Per-recipient rate limit.** Gmail enforces ~500 outbound emails per workspace user per 24h (and lower for new accounts). For a launch above that volume, switch to a transactional-email vendor (Resend / Postmark) — `app/email_sender.py` is the single seam.
-* **Reply-to.** Replies to transactional emails currently land in the same `hello@localcoffeeperks.com` inbox the founder reads daily. If we ever split inbound vs outbound, set `Reply-To` on the EmailMessage in `_wrap()`.
+* **Sending domain must be verified before non-test sends work.** Until DNS propagates and Resend marks the domain as verified, `From: hello@localcoffeeperks.com` will be rejected with a 403. Workaround during DNS propagation: temporarily set `SMTP_FROM='onboarding@resend.dev'` so sends go through Resend's test sender.
+* **The 3 DNS records.** Resend's domain panel lists exactly 3 records to add at the registrar: one `TXT` (SPF: `v=spf1 include:_spf.resend.com ~all`) and two `CNAME` (DKIM, looks like `resend._domainkey.localcoffeeperks.com → resend._domainkey.resend.com`). Propagation is usually 5-30 min.
+* **Free tier limit.** 3,000 emails/month, 100/day. Comfortably above Founding 100 invite + OTP volume. Above that, paid tier starts at $20/mo for 50k.
+* **App Password requires 2-Step Verification (SMTP fallback only).** Only relevant if you're using the Gmail SMTP fallback for local dev. Enable 2-Step at `myaccount.google.com → Security → 2-Step Verification` before generating an App Password.
+* **Reply-to.** Replies to transactional emails currently land in the `hello@localcoffeeperks.com` inbox the founder reads daily. If we ever split inbound vs outbound, set Resend's `reply_to` field in `_send_via_resend`.
 
 ### Apple Mail / iOS reading config (founder's inbox)
 * **Incoming (IMAP):** `imap.gmail.com` · port `993` · SSL on.
@@ -231,6 +253,7 @@ Three transactional templates ship in `app/email_sender.py`, all sharing the Esp
 ## Change log
 *Append a single line per change, newest at the top, in the form `YYYY-MM-DD — section — what changed`.*
 
+* **2026-04-30 (eve)** — Section 4 (Email & Transactional Delivery) — vendor migration Google Workspace SMTP → **Resend**. DigitalOcean blocks all outbound SMTP (ports 25/465/587) on the droplet, confirmed via `[Errno 101] Network is unreachable` from inside the api container — making Gmail SMTP unworkable on prod. Resend's HTTPS API at `api.resend.com:443` bypasses the block. New env var `RESEND_API_KEY` (must be set on `/root/.env-lcp-production`); SMTP fallback preserved for local dev. Sending domain `localcoffeeperks.com` requires 3 DNS records (1 TXT + 2 CNAMEs) before non-test sends work.
 * **2026-04-30** — Section 9 (Super-Admin Auth & Onboarding Pipeline) — added. Marketing Site Share Previews bumped to Section 10. Documents the new `super_admins` table (migration 0017), `POST /api/auth/super/login` JWT (`aud="super-admin"`), `Depends(get_super_admin_session)` guard wired onto `invite-brand-admin`, the canonical `/api/auth/brand/setup` route (deprecated alias `/admin/setup`), and the end-to-end super-admin → brand-owner pipeline. Local dev seed `admin@localcoffeeperks.com` / `password123` lives in `scripts/seed_local_dev.py`.
 * **2026-04-30** — Section 4 (Email & SMTP) — vendor migration Zoho → Google Workspace. Backend now sends transactional email via `app/email_sender.py` (stdlib `smtplib` + `email.mime`) against `smtp.gmail.com:465 SSL`. New env vars: `SMTP_HOST/PORT/USE_SSL/USERNAME/PASSWORD/FROM`. **`SMTP_PASSWORD` (Google App Password) MUST be added to `/root/.env-lcp-production` before live transactional email works** — falls back to stdout stub otherwise. Three templates shipped: brand invite, consumer OTP, brand password reset, all on Espresso/Mint chrome. Legacy Zoho config preserved at the bottom of Section 4 for rollback.
 * **2026-04-29** — Section 9 (Marketing Site Share Previews) — added. Documents the four HTML entry points (main-website + waitlist-page, source + dist), the Lovable-OG bug that leaked into WhatsApp previews until commit `90a4c50` synced the dist files, the canonical OG / Twitter block, the `scripts/build_og_image.py` 1200×630 generator, scraper cache-bust workarounds, and the lockstep rule (source + dist must change together).
