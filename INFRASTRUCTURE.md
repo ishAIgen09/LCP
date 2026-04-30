@@ -25,18 +25,26 @@
 * **Frontend consumption rule (added 2026-04-27):** the waitlist marketing page hides the social-proof count entirely while the GAS fetch is in flight or has failed. There is **no mock baseline** — the displayed number is always the real `waitlist_count`, even single digits or zero, or nothing at all. Don't reintroduce a fallback floor.
 
 ## 2. Stripe Billing (Test Mode)
-*Last updated: **2026-04-28***
+*Last updated: **2026-04-30***
 
 * **Role:** Handles the per-cafe subscription billing. Tier pricing is governed by the **Founding 100** policy — see Section 7 for the full pricing tier rules.
 * **Environment:** Currently running in Test Mode (using `pk_test_...` and `sk_test_...` keys).
 * **Webhook Setup:**
     * Endpoint: `https://dashboard.localcoffeeperks.com/api/stripe/webhook`
-    * Listening exclusively for: `checkout.session.completed`
+    * Listening exclusively for: `checkout.session.completed` and `customer.subscription.deleted`
     * Secured via Webhook Signing Secret (`whsec_...`) stored in `.env`.
 * **Products (Founding 100 tier — currently active):**
     * Private Plan (£5.00/mo) - ID: `price_1TQmMjLjDXRzQll0GUGlguhU`
     * LCP+ Global Pass (£7.99/mo) - ID: `price_1TQmN6LjDXRzQll0SvQedP4d`
 * **Post-Founding-100 prices (NOT yet created in Stripe):** Once the combined 100 founding signups are sold, two new Stripe Price IDs need to be created — Private at **£9.99/mo** and LCP+ Global at **£12.99/mo** — and the droplet env vars `STRIPE_PRIVATE_PRICE_ID` / `STRIPE_GLOBAL_PRICE_ID` swapped to the new IDs. Existing founding-tier subscriptions stay on their original price (Stripe pegs each subscription to the price ID it was created with), so the swap only affects new signups. Add a Change-log line when the cutover happens.
+
+### Pro-rata billing (added 2026-04-30)
+All subscription mutations are pay-in-advance: every invoice charges at the start of the period for that period. The implementation differs slightly between *initial signup* (Stripe Checkout) and *mid-cycle changes* (direct Subscription API), because Checkout doesn't accept `proration_behavior` directly:
+
+* **Initial signup via `POST /api/billing/checkout`** — `app/billing.py::create_checkout` sets `subscription_data.trial_end = first-of-next-month UTC`. Customer pays £0 upfront for the partial first month, gets billed the full monthly rate on the 1st of next month, every cycle thereafter aligns to month-start. **48-hour guard:** Stripe rejects `trial_end` values closer than 48h from now, so on the last 1-2 days of any month the helper drops `trial_end` and falls back to default Stripe behavior — full month upfront, billing cycle anchored to today. Affects ~2 days/month; deterministic + no outage. The Stripe call is wrapped in `try/except StripeError` so future failures surface the actual Stripe message in api logs and return 502 (with Stripe's reason) instead of an opaque 500.
+* **Adding cafes mid-cycle (quantity sync)** — `app/billing.py::sync_subscription_quantity` calls `stripe.SubscriptionItem.modify(item_id, quantity=N, proration_behavior="create_prorations")`. Stripe creates positive proration line items for the new cafe(s) for the remainder of the current billing cycle; customer is charged the *prorated difference* on the next regular invoice (NOT the full new monthly rate × full cycle).
+* **Plan upgrades / downgrades (`POST /api/billing/plan-change`)** — currently a structured-log mock. Audit lines `PLAN-CHANGE-STRIPE-MOCK action=...` capture what the live Stripe call would do (with `proration_behavior="create_prorations"` set explicitly). When wiring this for real, replace the log block with `stripe.SubscriptionItem.modify(price=NEW_PRICE_ID, proration_behavior="create_prorations")` + an `Invoice.create` + `Invoice.pay` for upgrades. Downgrades naturally land as a credit on the next monthly invoice.
+* **Why all this matters:** the spec at the top of the file (lines 267-313 in `app/billing.py`) is the authoritative pro-rata contract. If pricing logic ever drifts from "pay-in-advance, prorate mid-cycle, anchor to the 1st," update that comment block AND this section in lockstep.
 
 ## 3. Server & Deployment (DigitalOcean)
 *Last updated: **2026-04-27***
@@ -50,12 +58,12 @@
 * **Subdomains served by the droplet's Nginx:** `localcoffeeperks.com` (apex marketing site), `dashboard.localcoffeeperks.com` (b2b dashboard SPA + `/api/*` proxy to FastAPI), `hq.localcoffeeperks.com` (super-admin SPA + `/api/*` proxy). All three on Let's Encrypt HTTPS, auto-renewed by certbot.
 * **UFW firewall:** active, default-deny incoming, allowed: 22 (SSH), 80, 443, 8000.
 
-## 4. Email & Transactional Delivery (Resend primary, Google Workspace fallback)
-*Last updated: **2026-04-30***
+## 4. Email & Transactional Delivery (Resend ✅ confirmed live in prod)
+*Last updated: **2026-04-30 (eve)***
 
 * **Role:** Official business communication AND outbound transactional email — brand-invite welcome, consumer OTP, brand password-reset.
 * **Address:** `hello@localcoffeeperks.com`
-* **Vendor history:** Zoho Mail (initial) → Google Workspace SMTP (2026-04-30 morning) → **Resend** (2026-04-30 evening). The Google Workspace SMTP transport remained dead-on-arrival on the production droplet because **DigitalOcean blocks all outbound SMTP** (ports 25, 465, 587) on this droplet — confirmed via `[Errno 101] Network is unreachable` from inside the api container against `smtp.gmail.com`. Resend bypasses this entirely because its API runs over HTTPS port 443.
+* **Vendor history:** Zoho Mail (initial) → Google Workspace SMTP (2026-04-30 morning) → **Resend** (2026-04-30 evening, ✅ confirmed live with `EMAIL SENT via Resend id=re_...` log lines after first successful invite). The Google Workspace SMTP transport remained dead-on-arrival on the production droplet because **DigitalOcean blocks all outbound SMTP** (ports 25, 465, 587) on this droplet — confirmed via `[Errno 101] Network is unreachable` from inside the api container against `smtp.gmail.com`. Resend bypasses this entirely because its API runs over HTTPS port 443.
 
 ### Active configuration (Resend HTTPS API)
 The FastAPI backend sends transactional email via `app/email_sender.py::_send_via_resend`, which calls Resend's REST API through the official `resend` Python SDK. No SMTP, no port 25/465/587. Just HTTPS to `api.resend.com:443`.
@@ -104,11 +112,13 @@ When neither transport is configured (or any send fails), `email_sender.py` fall
   ```
 
 ### Templates
-Three transactional templates ship in `app/email_sender.py`, all sharing the Espresso `#1A1412` + Mint `#00E576` chrome:
+Three transactional templates ship in `app/email_sender.py`, all sharing the Espresso `#1A1412` + Mint `#00E576` chrome (table-based layout for Outlook + every other client):
 
-1. **Brand invite** — `send_brand_invite_email(to_email, brand_name, setup_url)` — welcome + 48h `Set up your account →` button. Fired by `POST /api/admin/platform/invite-brand-admin`.
+1. **Brand invite** — `send_brand_invite_email(to_email, brand_name, setup_url, cafe_owner_name=None)` — fired by `POST /api/admin/platform/invite-brand-admin`. Subject: *"Welcome to Local Coffee Perks! Let's get you set up."* Greeting *"Welcome to the family, {cafe_owner_name}!"* (falls back to *"Welcome to the family!"* when no owner name was captured at brand-create time). Body: eco-friendly + independent-brand framing → 3-step guide with mint-numbered circles (1. Secure your account, 2. Upload logo + brand colours, 3. Print QR table-talkers) → "Finish Setting Up My Cafe →" CTA → plain-text fallback link with 48h expiry note → *"Made for independents, by independents."* sign-off. The handler in `main.py` derives `cafe_owner_name` from `brand.owner_first_name` + `brand.owner_last_name` (populated by the consolidated Add Brand modal — see Section 9).
 2. **Consumer OTP** — `send_otp_email(to_email, code)` — 10-minute 4-digit code in a monospace pill. Fired by `POST /api/consumer/auth/request-otp`.
 3. **Password reset** — `send_password_reset_email(to_email, brand_name, reset_url)` — 60-minute single-use reset link. Fired by `POST /api/auth/forgot-password`.
+
+Templating is plain Python f-string interpolation — no Jinja or other templating dependency. The `{{setup_link}}` / `{{cafe_owner_name}}` notation in conversation specs maps to f-string `{setup_url}` / `{cafe_owner_name}` interpolation in the actual code.
 
 ### Operational gotchas
 * **Sending domain must be verified before non-test sends work.** Until DNS propagates and Resend marks the domain as verified, `From: hello@localcoffeeperks.com` will be rejected with a 403. Workaround during DNS propagation: temporarily set `SMTP_FROM='onboarding@resend.dev'` so sends go through Resend's test sender.
@@ -198,20 +208,28 @@ Three transactional templates ship in `app/email_sender.py`, all sharing the Esp
 * **When this document changes:** if pricing tiers, target audience, taglines, or competitor positioning shift, update the manifesto PDF AND the `reference_brand_manifesto.md` memory file in the same session. Add a Change-log line here.
 
 ## 9. Super-Admin Auth & Onboarding Pipeline
-*Last updated: **2026-04-30***
+*Last updated: **2026-04-30 (eve)***
 
 * **Role:** Locks down the platform-staff surface (the `hq.localcoffeeperks.com` admin-dashboard + every `/api/admin/platform/*` route guarded with `Depends(get_super_admin_session)`) and drives the end-to-end "super-admin invites a brand owner" onboarding pipeline.
 * **Super-admin table:** `super_admins(id UUID, email TEXT UNIQUE, password_hash TEXT, created_at)` — see migration `0017_add_super_admins.sql`. Distinct from `brands.password_hash` (brand-owner login) and `cafes.pin_hash` (store-PIN login).
 * **Login route:** `POST /api/auth/super/login` — bcrypt-verifies against `super_admins.password_hash`, mints a JWT with `aud="super-admin"` (see `app/tokens.py::encode_super_admin`). Uniform-401 + decoy-hash so the endpoint can't be used to probe staff-account existence.
 * **Guard:** `Depends(get_super_admin_session)` in `app/auth.py`. Currently wired onto **`POST /api/admin/platform/invite-brand-admin`** only; the rest of `/api/admin/platform/*` remains unauth'd at scaffold level for now (see SECURITY comments on those routes). When tightening, add the dependency to: brand-create, cafe-create, customer-suspend, adjust-stamps, billing-status, set-billing-status, network-lock-reset, AI-agent.
-* **Seed account (local dev):** `admin@localcoffeeperks.com` / `password123`. Lives in `scripts/seed_local_dev.py`; idempotent (skipped if already present). For the droplet, INSERT manually against the production DB or extend the seed script with a flag.
+* **Seed account (local dev):** `admin@localcoffeeperks.com` / `password123`. Lives in `scripts/seed_local_dev.py`; idempotent (skipped if already present). **Prod was bootstrapped on 2026-04-30 via the temporary `GET /api/admin/platform/seed-super` endpoint** (unauth'd, idempotent — creates table + seeds default account). ⚠️ This endpoint is still live in `app/main.py` and should be deleted in a follow-up commit now that prod is seeded and the password rotated.
+* **Team management (added 2026-04-30):**
+    * `POST /api/auth/super/change-password` — guarded; verifies `current_password` against the bcrypt hash before applying the new one (so a stolen JWT alone can't lock the legitimate operator out).
+    * `POST /api/auth/super/create` — guarded; lets a signed-in super-admin add a co-founder by email + temporary password.
+    * Wired into the `Settings` tab in admin-dashboard (`SettingsPage.tsx`) with two cards (Change Password + Add Super Admin), in-house Toaster for success/error.
 * **Onboarding flow (end-to-end):**
     1. Super admin signs in at `hq.localcoffeeperks.com` → JWT in `localStorage.lcp_super_admin_session_v1`.
-    2. Super admin creates a brand (`POST /api/admin/platform/brands`).
-    3. Super admin invites the brand owner (`POST /api/admin/platform/invite-brand-admin`) → backend signs a 48h `aud="brand-invite"` JWT, calls `send_brand_invite_email(...)`, returns `setup_url` for the operator's record.
-    4. Recipient lands at `dashboard.localcoffeeperks.com/setup?token=…` → b2b-dashboard's `SetupView.tsx` 3-step wizard (password → first cafe → Stripe Checkout).
+    2. **Single click "Add New Brand"** in the Cafes tab — modal collects Brand Name + Admin Name + Admin Email + Subscription Plan. (Replaced the pre-2026-04-30 two-step "Add Brand" + "Invite Brand Admin" UX, where the invite modal asked the operator to pick from a brand dropdown that was necessarily empty for new onboarding.) On submit the modal:
+        - calls `POST /api/admin/platform/brands` to create the brand row (admin name split client-side on last space, persisted into `brand.owner_first_name` + `owner_last_name`),
+        - then immediately calls `POST /api/admin/platform/invite-brand-admin` with the new `brand_id`,
+        - shows the resulting `setup_url` + Copy button + "Welcome email sent to ..." confirmation inline in the same modal.
+       The standalone `InviteAdminModal` code is preserved in `CafesPage.tsx` (unrouted) for a future per-row "Resend invite" action.
+    3. Backend signs a 48h `aud="brand-invite"` JWT and calls `send_brand_invite_email(...)` (Resend transport — see Section 4). The email greets the owner by name (the `cafe_owner_name` is derived from the brand's KYC fields the modal just populated).
+    4. Recipient clicks the email's "Finish Setting Up My Cafe →" CTA → lands at `dashboard.localcoffeeperks.com/setup?token=…` → b2b-dashboard's `SetupView.tsx` 3-step wizard (password → first cafe → Stripe Checkout).
     5. Step 1 POSTs `/api/auth/brand/setup` (canonical; `/api/auth/admin/setup` is kept as a deprecated alias). Backend decodes the brand-invite JWT, sets `brands.password_hash`, mints a fresh `aud="admin"` session JWT.
-    6. Step 2 + Step 3 use the session JWT to create the first cafe and start a Stripe Checkout — same endpoints as the existing dashboard.
+    6. Step 2 + Step 3 use the session JWT to create the first cafe and start a Stripe Checkout (now with `subscription_data.trial_end` for pay-in-advance pro-rata — see Section 2).
 * **localStorage keys:**
     * `lcp_super_admin_session_v1` (admin-dashboard) — `{token, email}`.
     * `icl_session_v1` (b2b-dashboard) — admin or store session, separate scope.
@@ -253,7 +271,10 @@ Three transactional templates ship in `app/email_sender.py`, all sharing the Esp
 ## Change log
 *Append a single line per change, newest at the top, in the form `YYYY-MM-DD — section — what changed`.*
 
-* **2026-04-30 (eve)** — Section 4 (Email & Transactional Delivery) — vendor migration Google Workspace SMTP → **Resend**. DigitalOcean blocks all outbound SMTP (ports 25/465/587) on the droplet, confirmed via `[Errno 101] Network is unreachable` from inside the api container — making Gmail SMTP unworkable on prod. Resend's HTTPS API at `api.resend.com:443` bypasses the block. New env var `RESEND_API_KEY` (must be set on `/root/.env-lcp-production`); SMTP fallback preserved for local dev. Sending domain `localcoffeeperks.com` requires 3 DNS records (1 TXT + 2 CNAMEs) before non-test sends work.
+* **2026-04-30 (late)** — Section 4 (Email) — brand-invite template rewritten per the founder's spec. New subject *"Welcome to Local Coffee Perks! Let's get you set up."*; greeting *"Welcome to the family, {cafe_owner_name}!"* (with no-name fallback); 3-step guide with mint-numbered circles (Secure your account / Upload logo / Print QR table-talkers); "Finish Setting Up My Cafe →" CTA; *"Made for independents, by independents."* sign-off. `send_brand_invite_email()` signature gained optional `cafe_owner_name`; the handler in `main.py` derives it from `brand.owner_first_name` + `brand.owner_last_name`.
+* **2026-04-30 (late)** — Section 9 (Super-Admin Auth) — consolidated "Add New Brand" modal replaces the 2-step Add Brand + Invite Brand Admin flow; `AdminCreateBrandRequest` schema now accepts optional `owner_first_name` / `owner_last_name`; admin name is split client-side on last space and persisted to `brand.owner_first_name`/`_last_name`. Standalone `InviteAdminModal` kept unrouted for a future per-row resend action. New `/api/auth/super/change-password` + `/api/auth/super/create` routes wired into a new admin-dashboard `Settings` tab (`SettingsPage.tsx`).
+* **2026-04-30 (late)** — Section 2 (Stripe Billing) — pro-rata behavior documented + wired. Initial signup via `create_checkout` now sets `subscription_data.trial_end = first-of-next-month UTC` (with 48h-floor guard for the last 1-2 days of any month). Mid-cycle quantity changes already had `proration_behavior="create_prorations"`; comment block reinforces why. `/plan-change` remains a structured-log mock with explicit Stripe-call template in the docstring. The Stripe call is now wrapped in `try/except StripeError` so failures surface the real reason in api logs and return 502 instead of 500.
+* **2026-04-30 (eve)** — Section 4 (Email & Transactional Delivery) — vendor migration Google Workspace SMTP → **Resend** (✅ confirmed live with first successful `EMAIL SENT via Resend id=re_...` log line). DigitalOcean blocks all outbound SMTP (ports 25/465/587) on the droplet, confirmed via `[Errno 101] Network is unreachable` from inside the api container — making Gmail SMTP unworkable on prod. Resend's HTTPS API at `api.resend.com:443` bypasses the block. New env var `RESEND_API_KEY` (must be set on `/root/.env-lcp-production`); SMTP fallback preserved for local dev. Sending domain `localcoffeeperks.com` requires 3 DNS records (1 TXT + 2 CNAMEs) before non-test sends work.
 * **2026-04-30** — Section 9 (Super-Admin Auth & Onboarding Pipeline) — added. Marketing Site Share Previews bumped to Section 10. Documents the new `super_admins` table (migration 0017), `POST /api/auth/super/login` JWT (`aud="super-admin"`), `Depends(get_super_admin_session)` guard wired onto `invite-brand-admin`, the canonical `/api/auth/brand/setup` route (deprecated alias `/admin/setup`), and the end-to-end super-admin → brand-owner pipeline. Local dev seed `admin@localcoffeeperks.com` / `password123` lives in `scripts/seed_local_dev.py`.
 * **2026-04-30** — Section 4 (Email & SMTP) — vendor migration Zoho → Google Workspace. Backend now sends transactional email via `app/email_sender.py` (stdlib `smtplib` + `email.mime`) against `smtp.gmail.com:465 SSL`. New env vars: `SMTP_HOST/PORT/USE_SSL/USERNAME/PASSWORD/FROM`. **`SMTP_PASSWORD` (Google App Password) MUST be added to `/root/.env-lcp-production` before live transactional email works** — falls back to stdout stub otherwise. Three templates shipped: brand invite, consumer OTP, brand password reset, all on Espresso/Mint chrome. Legacy Zoho config preserved at the bottom of Section 4 for rollback.
 * **2026-04-29** — Section 9 (Marketing Site Share Previews) — added. Documents the four HTML entry points (main-website + waitlist-page, source + dist), the Lovable-OG bug that leaked into WhatsApp previews until commit `90a4c50` synced the dist files, the canonical OG / Twitter block, the `scripts/build_og_image.py` 1200×630 generator, scraper cache-bust workarounds, and the lockstep rule (source + dist must change together).
