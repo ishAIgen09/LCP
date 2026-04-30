@@ -92,6 +92,17 @@ def encode_consumer(
     )
 
 
+def encode_super_admin(super_admin_id: str, email: str) -> str:
+    return _encode(
+        {
+            "sub": f"super-admin:{super_admin_id}",
+            "aud": "super-admin",
+            "super_admin_id": super_admin_id,
+            "email": email,
+        }
+    )
+
+
 def encode_brand_invite(
     email: str,
     brand_id: str,

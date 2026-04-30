@@ -243,6 +243,36 @@ class NetworkLockEvent(Base):
     )
 
 
+class SuperAdmin(Base):
+    """Platform-level staff account — distinct from `brands` (brand-owner
+    login) and `cafes` (store-PIN login). A super admin can act across
+    every tenant via the /api/admin/platform/* surface and the
+    admin-dashboard. Auth is a JWT with aud="super-admin"; see
+    app/tokens.py::encode_super_admin and the guard in app/auth.py.
+
+    Seeded by scripts/seed_local_dev.py with admin@localcoffeeperks.com /
+    password123 for local dev. See migration 0017."""
+
+    __tablename__ = "super_admins"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    email: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+    )
+
+    __table_args__ = (
+        Index("idx_super_admins_email_lower", text("lower(email)")),
+    )
+
+
 class PasswordResetToken(Base):
     """Single-use bcrypt-hashed reset token for the brand-admin
     "Forgot password" flow. TTL is enforced at the endpoint layer; the

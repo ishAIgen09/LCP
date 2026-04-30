@@ -24,13 +24,16 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import tokens
+from app.auth import get_super_admin_session
 from app.database import get_session
+from app.email_sender import send_password_reset_email
 from app.models import (
     Brand,
     Cafe,
     NetworkLockEvent,
     PasswordResetToken,
     SubscriptionStatus,
+    SuperAdmin,
 )
 from app.schemas import (
     AdminLoginRequest,
@@ -41,6 +44,11 @@ from app.schemas import (
     CafeProfile,
     StoreLoginRequest,
     StoreLoginResponse,
+    SuperAdminChangePasswordRequest,
+    SuperAdminCreateRequest,
+    SuperAdminLoginRequest,
+    SuperAdminLoginResponse,
+    SuperAdminProfile,
 )
 from app.security import hash_password, verify_password
 
@@ -105,10 +113,9 @@ async def admin_login(
     )
 
 
-@router.post("/admin/setup", response_model=AdminLoginResponse)
-async def admin_setup(
+async def _brand_setup_impl(
     payload: AdminSetupRequest,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession,
 ) -> AdminLoginResponse:
     """Onboarding wizard — finalize a brand-invite into a usable admin login.
 
@@ -118,6 +125,10 @@ async def admin_setup(
     invite, set `brand.password_hash`, and immediately mint a fresh admin
     session token so the wizard advances the user into the dashboard
     without a second round-trip through /admin/login.
+
+    Shared between POST /api/auth/brand/setup (canonical) and
+    POST /api/auth/admin/setup (deprecated alias kept so older clients
+    don't 404 if they're cached against the previous path).
     """
 
     try:
@@ -168,6 +179,132 @@ async def admin_setup(
         token=admin_token,
         admin=AdminProfile(email=normalized_email),
         brand=BrandProfile.model_validate(brand),
+    )
+
+
+@router.post("/brand/setup", response_model=AdminLoginResponse)
+async def brand_setup(
+    payload: AdminSetupRequest,
+    session: AsyncSession = Depends(get_session),
+) -> AdminLoginResponse:
+    return await _brand_setup_impl(payload, session)
+
+
+@router.post("/admin/setup", response_model=AdminLoginResponse, deprecated=True)
+async def admin_setup(
+    payload: AdminSetupRequest,
+    session: AsyncSession = Depends(get_session),
+) -> AdminLoginResponse:
+    """Deprecated alias of /brand/setup. Kept so any cached frontend bundle
+    still pointing at the old path keeps working."""
+    return await _brand_setup_impl(payload, session)
+
+
+@router.post("/super/change-password")
+async def super_change_password(
+    payload: SuperAdminChangePasswordRequest,
+    super_admin = Depends(get_super_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, bool]:
+    """Rotate the signed-in super admin's password. Verifies the current
+    password before applying the new hash so a stolen JWT can't be used
+    to silently lock out the legitimate operator.
+    """
+    super_admin_row = await session.get(SuperAdmin, super_admin.super_admin_id)
+    if super_admin_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Super-admin account not found.",
+        )
+
+    if not verify_password(payload.current_password, super_admin_row.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect.",
+        )
+
+    super_admin_row.password_hash = hash_password(payload.new_password)
+    await session.commit()
+    return {"ok": True}
+
+
+@router.post("/super/create", response_model=SuperAdminProfile)
+async def super_create(
+    payload: SuperAdminCreateRequest,
+    _super_admin = Depends(get_super_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> SuperAdminProfile:
+    """Add a co-founder / additional staff super admin. Requires an
+    existing super-admin session — there's no bootstrap path here; the
+    very first super admin lands via seed (see the temporary
+    `seed-super` bootstrap endpoint or `scripts/seed_local_dev.py`).
+    """
+    normalized_email = payload.email.strip().lower()
+    if "@" not in normalized_email or "." not in normalized_email:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="email must be a valid email address.",
+        )
+
+    existing = (
+        await session.execute(
+            select(SuperAdmin).where(func.lower(SuperAdmin.email) == normalized_email)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A super admin with that email already exists.",
+        )
+
+    new_super_admin = SuperAdmin(
+        email=normalized_email,
+        password_hash=hash_password(payload.password),
+    )
+    session.add(new_super_admin)
+    await session.commit()
+    return SuperAdminProfile(email=normalized_email)
+
+
+@router.post("/super/login", response_model=SuperAdminLoginResponse)
+async def super_login(
+    payload: SuperAdminLoginRequest,
+    session: AsyncSession = Depends(get_session),
+) -> SuperAdminLoginResponse:
+    """Platform-staff login. Issues a JWT with aud="super-admin" used by the
+    admin-dashboard to access /api/admin/platform/* routes guarded by
+    `Depends(get_super_admin_session)`. Same uniform-401 + decoy-hash
+    pattern as admin_login so the endpoint can't be used to probe whether
+    a given email belongs to a staff account.
+    """
+
+    normalized_email = payload.email.strip().lower()
+
+    result = await session.execute(
+        select(SuperAdmin).where(func.lower(SuperAdmin.email) == normalized_email)
+    )
+    super_admin = result.scalar_one_or_none()
+
+    target_hash = (
+        super_admin.password_hash
+        if super_admin and super_admin.password_hash
+        else _DECOY_HASH
+    )
+    password_ok = verify_password(payload.password, target_hash)
+
+    if super_admin is None or not password_ok:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password.",
+        )
+
+    token = tokens.encode_super_admin(
+        super_admin_id=str(super_admin.id),
+        email=normalized_email,
+    )
+    return SuperAdminLoginResponse(
+        token=token,
+        admin=SuperAdminProfile(email=normalized_email),
     )
 
 
@@ -332,12 +469,15 @@ async def forgot_password(
         await session.commit()
 
         reset_url = f"{_FRONTEND_BASE_URL}/reset-password?token={raw_token}"
-        # SMTP-less stub identical to the consumer OTP delivery path.
-        # Read these out of the API container's stdout via:
-        #   docker compose logs api | grep "Password reset"
-        print(
-            f"[auth] Password reset for {normalized_email} ({brand.name}): {reset_url}",
-            flush=True,
+        # Real SMTP via app.email_sender. Failure falls back to stdout
+        # stub inside send_email so the operator can hand-deliver if
+        # transport is broken; the API still responds 200 either way
+        # (response shape is intentionally identical regardless of
+        # delivery success — see ForgotPasswordResponse).
+        send_password_reset_email(
+            to_email=normalized_email,
+            brand_name=brand.name,
+            reset_url=reset_url,
         )
 
     # Same shape regardless of brand presence — see ForgotPasswordResponse.

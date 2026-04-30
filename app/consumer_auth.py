@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import tokens
 from app.auth import ConsumerSession, get_consumer_session
 from app.database import get_session
+from app.email_sender import send_otp_email as _smtp_send_otp_email
 from app.models import (
     Brand,
     Cafe,
@@ -96,9 +97,10 @@ async def _unique_till_code(session: AsyncSession, max_attempts: int = 16) -> st
 
 
 def _send_otp_email(email: str, code: str) -> None:
-    # Dev stub: prints to stdout. Replace with SES / Postmark / etc. later.
-    # The surrounding dashes make the code easy to grep for in uvicorn logs.
-    print(f"\n--- CONSUMER OTP ---\n  to:   {email}\n  code: {code}\n--------------------\n", flush=True)
+    # Real SMTP via app.email_sender (Google Workspace by default). When
+    # SMTP_PASSWORD isn't set we fall back to the stdout stub inside
+    # send_email, so local dev keeps working without creds.
+    _smtp_send_otp_email(email, code)
 
 
 @router.post("/request-otp", response_model=ConsumerRequestOTPResponse)

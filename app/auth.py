@@ -18,6 +18,12 @@ class ConsumerSession:
     email: str
 
 
+@dataclass
+class SuperAdminSession:
+    super_admin_id: UUID
+    email: str
+
+
 async def get_active_cafe(
     session: AsyncSession = Depends(get_session),
     venue_api_key: str | None = Header(default=None, alias="Venue-API-Key"),
@@ -91,6 +97,36 @@ async def get_admin_session(
     email = claims.get("email") or ""
     brand_name = claims.get("brand_name") or ""
     return AdminSession(brand_id=brand_id, email=email, brand_name=brand_name)
+
+
+async def get_super_admin_session(
+    authorization: str | None = Header(default=None),
+) -> SuperAdminSession:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid Authorization header.",
+        )
+
+    token = authorization[len("Bearer ") :].strip()
+    try:
+        claims = tokens.decode(token, audience="super-admin")
+    except jwt.PyJWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired super-admin token.",
+        )
+
+    try:
+        super_admin_id = UUID(str(claims.get("super_admin_id") or ""))
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Super-admin token is missing a valid id claim.",
+        )
+
+    email = str(claims.get("email") or "")
+    return SuperAdminSession(super_admin_id=super_admin_id, email=email)
 
 
 async def get_consumer_session(

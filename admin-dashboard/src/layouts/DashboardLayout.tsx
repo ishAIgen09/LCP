@@ -2,6 +2,7 @@ import { Outlet } from "react-router-dom";
 
 import { ChatWidget } from "@/components/ChatWidget";
 import { Sidebar } from "@/components/Sidebar";
+import { Toaster } from "@/components/Toaster";
 
 export function DashboardLayout() {
   return (
@@ -34,6 +35,10 @@ export function DashboardLayout() {
       {/* Floating LCP Data Assistant — positioned fixed inside its own
           component, persists across every tab. */}
       <ChatWidget />
+      {/* Mount point for the in-house toast pubsub. Lives inside the
+          dashboard shell so toasts only appear once a super admin is
+          signed in. The login screen has its own inline error UX. */}
+      <Toaster />
     </div>
   );
 }

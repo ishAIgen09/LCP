@@ -5,6 +5,7 @@ import {
   LayoutDashboard,
   LogOut,
   Receipt,
+  Settings,
   ShieldCheck,
   Users,
 } from "lucide-react";
@@ -23,6 +24,7 @@ const NAV: NavItem[] = [
   { to: "/customers", label: "Customers", Icon: Users },
   { to: "/transactions", label: "Transactions", Icon: Receipt },
   { to: "/billing", label: "Billing", Icon: CreditCard },
+  { to: "/settings", label: "Settings", Icon: Settings },
 ];
 
 export function Sidebar() {

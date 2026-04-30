@@ -32,11 +32,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import AsyncSessionLocal
-from app.models import Brand, Cafe, SchemeType, SubscriptionStatus
+from app.models import Brand, Cafe, SchemeType, SubscriptionStatus, SuperAdmin
 from app.security import hash_password
 
 
 SEED_PASSWORD = "password123"
+
+# Super-admin platform staff seed. Powers admin@localcoffeeperks.com /
+# password123 for the admin-dashboard login screen. Distinct from the
+# brand-owner seed below (which lives in `brands.password_hash`).
+SEED_SUPER_ADMIN_EMAIL = "admin@localcoffeeperks.com"
 
 
 SEED_BRANDS = [
@@ -98,11 +103,32 @@ async def _exists(session: AsyncSession, email: str) -> bool:
     return res.scalar_one_or_none() is not None
 
 
+async def _super_admin_exists(session: AsyncSession, email: str) -> bool:
+    res = await session.execute(
+        select(SuperAdmin.id).where(SuperAdmin.email == email)
+    )
+    return res.scalar_one_or_none() is not None
+
+
 async def main() -> int:
     pw_hash = hash_password(SEED_PASSWORD)
     inserted_brands = 0
     inserted_cafes = 0
+    inserted_super_admins = 0
     async with AsyncSessionLocal() as session:
+        # Super-admin platform staff seed first — it's the smallest unit and
+        # the admin-dashboard login screen depends on it.
+        if not await _super_admin_exists(session, SEED_SUPER_ADMIN_EMAIL):
+            session.add(
+                SuperAdmin(
+                    email=SEED_SUPER_ADMIN_EMAIL,
+                    password_hash=pw_hash,
+                )
+            )
+            inserted_super_admins += 1
+        else:
+            print(f"[seed] skip super-admin {SEED_SUPER_ADMIN_EMAIL} — already present")
+
         for spec in SEED_BRANDS:
             if await _exists(session, spec["contact_email"]):
                 print(f"[seed] skip {spec['name']} — already present")
@@ -142,8 +168,9 @@ async def main() -> int:
 
         await session.commit()
     print(
-        f"[seed] done — inserted {inserted_brands} brand(s), "
-        f"{inserted_cafes} cafe(s). Login password: {SEED_PASSWORD}"
+        f"[seed] done — inserted {inserted_super_admins} super-admin(s), "
+        f"{inserted_brands} brand(s), {inserted_cafes} cafe(s). "
+        f"Login password: {SEED_PASSWORD}"
     )
     return 0
 

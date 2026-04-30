@@ -95,6 +95,23 @@ CREATE TABLE users (
 );
 
 -- -----------------------------------------------------------------------------
+-- super_admins — platform-staff accounts. Distinct tenant scope from
+-- `brands` (brand-owner login) and `cafes` (store-PIN login). A super
+-- admin owns the admin-dashboard at hq.localcoffeeperks.com and can act
+-- across every brand via /api/admin/platform/*. Login is bcrypt-verified
+-- against `password_hash`; the issued JWT carries aud="super-admin".
+-- See migration 0017 + scripts/seed_local_dev.py for the seed account.
+-- -----------------------------------------------------------------------------
+CREATE TABLE super_admins (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email           TEXT        NOT NULL UNIQUE,
+    password_hash   TEXT        NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_super_admins_email_lower ON super_admins (lower(email));
+
+-- -----------------------------------------------------------------------------
 -- consumer_otps — short-lived email OTPs for the native Consumer App's
 -- passwordless login (Email + 4-digit code). We store the bcrypt hash of
 -- the code, not the code itself; used_at is set on successful verification

@@ -8,6 +8,7 @@ import { CafesPage } from "@/pages/CafesPage";
 import { CustomersPage } from "@/pages/CustomersPage";
 import { TransactionsPage } from "@/pages/TransactionsPage";
 import { BillingPage } from "@/pages/BillingPage";
+import { SettingsPage } from "@/pages/SettingsPage";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   // Reads localStorage each render. Re-evaluated on every route change,
@@ -36,6 +37,7 @@ export default function App() {
         <Route path="customers" element={<CustomersPage />} />
         <Route path="transactions" element={<TransactionsPage />} />
         <Route path="billing" element={<BillingPage />} />
+        <Route path="settings" element={<SettingsPage />} />
       </Route>
       {/* Anything else (typo'd URL, stale bookmark) → send to login. The
           guard there will forward authenticated users to /overview. */}

@@ -6,10 +6,14 @@
 // Local dev still talks to the droplet via .env.local with
 // VITE_API_BASE_URL=http://178.62.123.228:8000.
 //
-// No auth header is attached today — the super-admin JWT scope doesn't
-// exist yet and /api/admin/overview is intentionally open at the scaffold
-// level (see the SECURITY comment on the backend route). When auth lands,
-// inject an `Authorization: Bearer …` header in the fetch options below.
+// As of 2026-04-30 every request rides with `Authorization: Bearer
+// <super-admin JWT>`. The token comes from lib/auth.ts; if it's missing
+// we still send the request bare (so the unauth'd /api/admin/overview
+// scaffold endpoints keep working), but anything guarded by
+// Depends(get_super_admin_session) will 401 — at which point the
+// caller's catch surfaces the error to the UI.
+import { getToken } from "./auth";
+
 const API_BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
 
@@ -136,6 +140,7 @@ async function sendJSON<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
+  const token = getToken();
   let res: Response;
   try {
     res = await fetch(`${API_BASE_URL}${path}`, {
@@ -145,6 +150,7 @@ async function sendJSON<T>(
         ...(body !== undefined
           ? { "Content-Type": "application/json" }
           : null),
+        ...(token ? { Authorization: `Bearer ${token}` } : null),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
@@ -340,6 +346,24 @@ export function fetchCafeStats(
   );
 }
 
+// Super-admin team management — Settings tab on admin-dashboard.
+// Both routes are guarded server-side with Depends(get_super_admin_session);
+// the JWT goes up automatically via getToken() in sendJSON.
+
+export function changeSuperAdminPassword(body: {
+  current_password: string;
+  new_password: string;
+}): Promise<{ ok: boolean }> {
+  return sendJSON<{ ok: boolean }>("POST", "/api/auth/super/change-password", body);
+}
+
+export function createSuperAdmin(body: {
+  email: string;
+  password: string;
+}): Promise<{ email: string }> {
+  return sendJSON<{ email: string }>("POST", "/api/auth/super/create", body);
+}
+
 export type AiAgentReply = { reply: string };
 
 export function postAiAgent(message: string): Promise<AiAgentReply> {
@@ -356,9 +380,13 @@ export async function downloadCsv(
   path: string,
   fallbackName: string,
 ): Promise<void> {
+  const token = getToken();
   let res: Response;
   try {
-    res = await fetch(`${API_BASE_URL}${path}`, { method: "GET" });
+    res = await fetch(`${API_BASE_URL}${path}`, {
+      method: "GET",
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    });
   } catch {
     throw new Error("Couldn't reach the API — check your connection.");
   }

@@ -29,7 +29,7 @@ type Step = 1 | 2 | 3
 
 // Standalone /setup landing — three-step onboarding wizard for a brand-
 // invited admin. Lifecycle:
-//   Step 1 (Secure Account)  → POST /api/auth/admin/setup with the
+//   Step 1 (Secure Account)  → POST /api/auth/brand/setup with the
 //                              ?token= JWT + chosen password. On 200,
 //                              hand the session up via onAuthenticated
 //                              so App.tsx persists localStorage and the

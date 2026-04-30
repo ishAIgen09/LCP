@@ -200,6 +200,30 @@ class AdminSetupRequest(BaseModel):
     password: str = Field(min_length=6)
 
 
+class SuperAdminLoginRequest(BaseModel):
+    email: str = Field(min_length=3)
+    password: str = Field(min_length=1)
+
+
+class SuperAdminProfile(BaseModel):
+    email: str
+
+
+class SuperAdminLoginResponse(BaseModel):
+    token: str
+    admin: SuperAdminProfile
+
+
+class SuperAdminChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=8, max_length=200)
+
+
+class SuperAdminCreateRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=8, max_length=200)
+
+
 class StoreLoginRequest(BaseModel):
     store_number: str = Field(min_length=3, max_length=10, pattern=r"^[A-Za-z0-9]+$")
     pin: str = Field(min_length=4, max_length=8, pattern=r"^\d+$")

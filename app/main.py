@@ -27,7 +27,12 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_active_cafe, get_admin_session
+from app.auth import (
+    get_active_cafe,
+    get_admin_session,
+    get_super_admin_session,
+)
+from app.email_sender import send_brand_invite_email
 from app.auth_routes import router as auth_router
 from app.b2b_routes import router as b2b_router
 from app.billing import router as billing_router, sync_subscription_quantity
@@ -1588,6 +1593,88 @@ class BrandInviteResponse(BaseModel):
     email: str
 
 
+@app.get("/api/admin/platform/seed-super")
+async def platform_seed_super_admin(
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    """⚠️ TEMPORARY UNAUTH'D PRODUCTION BOOTSTRAP — DELETE AFTER FIRST USE.
+
+    Idempotently ensures `super_admins` table exists + a default
+    `admin@localcoffeeperks.com` / `password123` row is present so the
+    operator can sign into the admin-dashboard at hq.localcoffeeperks.com
+    without having to SSH the droplet to run the migration + seed.
+
+    Strategy:
+      1. CREATE TABLE IF NOT EXISTS super_admins(...)  — same shape as
+         migration 0017. Safe to re-run.
+      2. SELECT 1 FROM super_admins WHERE email = 'admin@...'.
+      3. If absent, bcrypt('password123') and INSERT.
+      4. Return JSON status either way.
+
+    Security posture: this endpoint is unauth'd by design (chicken-and-egg
+    with no super-admin yet). Once you've signed in once and rotated the
+    password (Settings → Change Password), DELETE THIS HANDLER + the
+    response model in a follow-up commit. Until then, the only thing an
+    attacker can do is re-trigger an idempotent seed of credentials YOU
+    already know — not a credential leak, but a footprint we shouldn't
+    leave live forever.
+    """
+
+    seed_email = "admin@localcoffeeperks.com"
+    seed_password = "password123"
+
+    # Step 1 — table presence. CREATE TABLE IF NOT EXISTS is the same SQL
+    # the canonical migration ships, so this is a no-op when the migration
+    # has already been applied.
+    await session.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS super_admins (
+                id              UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+                email           TEXT         NOT NULL UNIQUE,
+                password_hash   TEXT         NOT NULL,
+                created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
+            )
+            """
+        )
+    )
+    await session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_super_admins_email_lower "
+            "ON super_admins (lower(email))"
+        )
+    )
+    await session.commit()
+
+    # Step 2 — existence check via the SQLAlchemy model so we benefit from
+    # the same case-insensitive lookup pattern login uses.
+    from app.models import SuperAdmin  # noqa: PLC0415 — local to keep import order tidy
+
+    existing = (
+        await session.execute(
+            select(SuperAdmin).where(func.lower(SuperAdmin.email) == seed_email)
+        )
+    ).scalar_one_or_none()
+
+    if existing is not None:
+        logger.warning(
+            "SEED-SUPER hit but seed already present email=%s — no-op",
+            seed_email,
+        )
+        return {"status": "Super admin already seeded", "email": seed_email}
+
+    # Step 3 — insert.
+    session.add(
+        SuperAdmin(email=seed_email, password_hash=hash_password(seed_password))
+    )
+    await session.commit()
+    logger.warning(
+        "SEED-SUPER inserted email=%s — REMEMBER TO REMOVE THIS ENDPOINT",
+        seed_email,
+    )
+    return {"status": "Super admin seeded", "email": seed_email}
+
+
 @app.post(
     "/api/admin/platform/invite-brand-admin",
     response_model=BrandInviteResponse,
@@ -1596,6 +1683,7 @@ class BrandInviteResponse(BaseModel):
 async def platform_invite_brand_admin(
     payload: BrandInviteRequest,
     session: AsyncSession = Depends(get_session),
+    _super_admin = Depends(get_super_admin_session),
 ) -> BrandInviteResponse:
     email = payload.email.strip().lower()
     if "@" not in email or "." not in email:
@@ -1630,6 +1718,15 @@ async def platform_invite_brand_admin(
             "brand_id": str(brand.id),
             "expires_at": expires_at.isoformat(),
         },
+    )
+
+    # Best-effort delivery — failures fall back to stdout stub inside
+    # send_email and the response still returns 200 with the setup_url
+    # so the super-admin can hand-deliver if SMTP is misconfigured.
+    send_brand_invite_email(
+        to_email=email,
+        brand_name=brand.name,
+        setup_url=setup_url,
     )
 
     return BrandInviteResponse(

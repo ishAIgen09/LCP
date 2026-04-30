@@ -276,7 +276,7 @@ export async function adminSetup(
   token: string,
   password: string,
 ): Promise<{ session: Extract<Session, { role: "admin" }>; brand: Brand }> {
-  const data = await request<AdminLoginResponse>("POST", "/api/auth/admin/setup", {
+  const data = await request<AdminLoginResponse>("POST", "/api/auth/brand/setup", {
     token,
     password,
   })

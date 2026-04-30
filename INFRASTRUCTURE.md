@@ -50,34 +50,62 @@
 * **Subdomains served by the droplet's Nginx:** `localcoffeeperks.com` (apex marketing site), `dashboard.localcoffeeperks.com` (b2b dashboard SPA + `/api/*` proxy to FastAPI), `hq.localcoffeeperks.com` (super-admin SPA + `/api/*` proxy). All three on Let's Encrypt HTTPS, auto-renewed by certbot.
 * **UFW firewall:** active, default-deny incoming, allowed: 22 (SSH), 80, 443, 8000.
 
-## 4. Email & SMTP (Zoho Mail)
-*Last updated: **2026-04-27***
+## 4. Email & SMTP (Google Workspace)
+*Last updated: **2026-04-30***
 
-* **Role:** Official business communication and (future) OTP delivery.
+* **Role:** Official business communication AND outbound transactional email — brand-invite welcome, consumer OTP, brand password-reset.
 * **Address:** `hello@localcoffeeperks.com`
+* **Vendor history:** Started on Zoho Mail; migrated to **Google Workspace** on 2026-04-30. The Zoho config below is preserved at the bottom of the section for reference (in case we ever roll back) but is **NOT** the active path.
 
-### Working configuration (Apple Mail on iOS / macOS)
-Apple Mail's auto-detect routinely fails for custom-domain Zoho EU accounts. Configure manually with these exact values:
+### Active SMTP configuration (Google Workspace / Gmail)
+The FastAPI backend sends transactional email via `app/email_sender.py`, which talks to Google's SMTP using stdlib `smtplib` + `email.mime`. No third-party email vendor (Resend / SendGrid / Postmark) — Google Workspace itself is the transport.
 
-* **Incoming Mail Server (IMAP):**
-    * Host name: `imappro.zoho.eu`
-    * Port: `993`
-    * Use SSL: ON
-* **Outgoing Mail Server (SMTP):**
-    * Host name: `smtppro.zoho.eu`
-    * Port: `465`
-    * Use SSL: ON
-* **Authentication (both servers):**
-    * Username: `hello@localcoffeeperks.com`
-    * Password: a 16-character App-Specific Password generated from the **Zoho Security Dashboard**. **Do NOT** use the standard Zoho account password, and **do NOT** include the spaces Zoho displays between groups.
+* **Host:** `smtp.gmail.com`
+* **Port:** `465` (SSL) — matches the `SMTP_USE_SSL=true` default. Port `587` (STARTTLS) is supported by setting `SMTP_USE_SSL=false`.
+* **Username:** `hello@localcoffeeperks.com`
+* **Password:** a 16-character **Google App Password** generated at `myaccount.google.com → Security → 2-Step Verification → App passwords`. **NOT** the workspace login password — Gmail rejects raw passwords for SMTP, and Google's "less secure apps" path was removed in 2022. The App Password is treated as a secret; rotate by revoking + regenerating in the same dashboard.
+* **From header:** `Local Coffee Perks <hello@localcoffeeperks.com>`
+
+### Backend env vars (read by `Settings` in `app/database.py`)
+
+| Var | Default | Override required? |
+|---|---|---|
+| `SMTP_HOST` | `smtp.gmail.com` | No — defaults are correct for Google Workspace |
+| `SMTP_PORT` | `465` | No |
+| `SMTP_USE_SSL` | `true` | Set to `false` only if switching to STARTTLS / port 587 |
+| `SMTP_USERNAME` | `hello@localcoffeeperks.com` | No |
+| `SMTP_PASSWORD` | unset | **YES — must be set on droplet** |
+| `SMTP_FROM` | `Local Coffee Perks <hello@localcoffeeperks.com>` | No |
+
+When `SMTP_PASSWORD` is unset (typical local dev) or any send fails, `app/email_sender.py` falls back to a stdout stub identical to the pre-2026-04-30 behavior — the calling endpoint still returns 200 and the operator can read the link / OTP from `docker compose logs api | grep "EMAIL STUB"`.
+
+### Where the App Password lands
+* **Local dev:** add `SMTP_PASSWORD=...` to the project `.env`. Don't commit it (`.env` is gitignored).
+* **Droplet:** edit `/root/.env-lcp-production` (the persistent env file the deploy script copies to `.env` before `docker compose up`; see Section 3). Restart the api container once it's added: `cd /var/www/lcp && docker compose up -d --build api`.
+
+### Templates
+Three transactional templates ship in `app/email_sender.py`, all sharing the Espresso `#1A1412` + Mint `#00E576` chrome:
+
+1. **Brand invite** — `send_brand_invite_email(to_email, brand_name, setup_url)` — welcome + 48h `Set up your account →` button. Fired by `POST /api/admin/platform/invite-brand-admin`.
+2. **Consumer OTP** — `send_otp_email(to_email, code)` — 10-minute 4-digit code in a monospace pill. Fired by `POST /api/consumer/auth/request-otp`.
+3. **Password reset** — `send_password_reset_email(to_email, brand_name, reset_url)` — 60-minute single-use reset link. Fired by `POST /api/auth/forgot-password`.
 
 ### Operational gotchas
-* **"Cannot Get Mail" / missing Inbox / Junk / Trash folders.** Symptom: outgoing mail works, incoming sync silently fails. Cause: the iOS mail profile is corrupted. Fix:
-    1. Delete the account from `Settings → Mail → Accounts`.
-    2. Revoke the existing App Password in the Zoho Security Dashboard.
-    3. Generate a fresh App Password.
-    4. Re-add the account from scratch using the manual config above (do NOT trust Apple's auto-fill).
-* **Multi-device rule.** Every device that signs in needs **its own unique App Password** (e.g. founder's iPhone + co-founder's iPhone = two separate passwords). Sharing one password across devices triggers Zoho's anti-replay heuristics and one device will quietly stop syncing.
+* **App Password requires 2-Step Verification.** Google won't expose the App Password setting until 2-Step is enabled on `hello@localcoffeeperks.com`. Enable it via `myaccount.google.com → Security → 2-Step Verification` first.
+* **Per-recipient rate limit.** Gmail enforces ~500 outbound emails per workspace user per 24h (and lower for new accounts). For a launch above that volume, switch to a transactional-email vendor (Resend / Postmark) — `app/email_sender.py` is the single seam.
+* **Reply-to.** Replies to transactional emails currently land in the same `hello@localcoffeeperks.com` inbox the founder reads daily. If we ever split inbound vs outbound, set `Reply-To` on the EmailMessage in `_wrap()`.
+
+### Apple Mail / iOS reading config (founder's inbox)
+* **Incoming (IMAP):** `imap.gmail.com` · port `993` · SSL on.
+* **Outgoing (SMTP):** `smtp.gmail.com` · port `465` · SSL on.
+* **Auth (both):** App Password (same one as above, OR a separate per-device App Password — Google supports an unlimited number; rotate the dashboard one without affecting devices).
+* **Multi-device rule.** Generate a separate App Password per device. Sharing one password isn't strictly broken on Google like it was on Zoho, but per-device makes revocation painless.
+
+### Legacy Zoho config (deprecated 2026-04-30 — kept for rollback only)
+* IMAP: `imappro.zoho.eu:993` (SSL)
+* SMTP: `smtppro.zoho.eu:465` (SSL)
+* Auth: 16-char Zoho App-Specific Password (no spaces).
+* Multi-device gotcha: Zoho's anti-replay heuristics silently disabled a device when two shared the same App Password — every device needed its own.
 
 ## 5. App Store & Google Play (D-U-N-S in flight)
 *Last updated: **2026-04-28***
@@ -147,11 +175,65 @@ Apple Mail's auto-detect routinely fails for custom-domain Zoho EU accounts. Con
     * **Global ambition:** Launching UK-first, but the architecture is borderless (multi-currency-ready, timezone-aware). Cafes from UAE, AU, CA etc. are welcome — backend handles the onboarding without a rebuild.
 * **When this document changes:** if pricing tiers, target audience, taglines, or competitor positioning shift, update the manifesto PDF AND the `reference_brand_manifesto.md` memory file in the same session. Add a Change-log line here.
 
+## 9. Super-Admin Auth & Onboarding Pipeline
+*Last updated: **2026-04-30***
+
+* **Role:** Locks down the platform-staff surface (the `hq.localcoffeeperks.com` admin-dashboard + every `/api/admin/platform/*` route guarded with `Depends(get_super_admin_session)`) and drives the end-to-end "super-admin invites a brand owner" onboarding pipeline.
+* **Super-admin table:** `super_admins(id UUID, email TEXT UNIQUE, password_hash TEXT, created_at)` — see migration `0017_add_super_admins.sql`. Distinct from `brands.password_hash` (brand-owner login) and `cafes.pin_hash` (store-PIN login).
+* **Login route:** `POST /api/auth/super/login` — bcrypt-verifies against `super_admins.password_hash`, mints a JWT with `aud="super-admin"` (see `app/tokens.py::encode_super_admin`). Uniform-401 + decoy-hash so the endpoint can't be used to probe staff-account existence.
+* **Guard:** `Depends(get_super_admin_session)` in `app/auth.py`. Currently wired onto **`POST /api/admin/platform/invite-brand-admin`** only; the rest of `/api/admin/platform/*` remains unauth'd at scaffold level for now (see SECURITY comments on those routes). When tightening, add the dependency to: brand-create, cafe-create, customer-suspend, adjust-stamps, billing-status, set-billing-status, network-lock-reset, AI-agent.
+* **Seed account (local dev):** `admin@localcoffeeperks.com` / `password123`. Lives in `scripts/seed_local_dev.py`; idempotent (skipped if already present). For the droplet, INSERT manually against the production DB or extend the seed script with a flag.
+* **Onboarding flow (end-to-end):**
+    1. Super admin signs in at `hq.localcoffeeperks.com` → JWT in `localStorage.lcp_super_admin_session_v1`.
+    2. Super admin creates a brand (`POST /api/admin/platform/brands`).
+    3. Super admin invites the brand owner (`POST /api/admin/platform/invite-brand-admin`) → backend signs a 48h `aud="brand-invite"` JWT, calls `send_brand_invite_email(...)`, returns `setup_url` for the operator's record.
+    4. Recipient lands at `dashboard.localcoffeeperks.com/setup?token=…` → b2b-dashboard's `SetupView.tsx` 3-step wizard (password → first cafe → Stripe Checkout).
+    5. Step 1 POSTs `/api/auth/brand/setup` (canonical; `/api/auth/admin/setup` is kept as a deprecated alias). Backend decodes the brand-invite JWT, sets `brands.password_hash`, mints a fresh `aud="admin"` session JWT.
+    6. Step 2 + Step 3 use the session JWT to create the first cafe and start a Stripe Checkout — same endpoints as the existing dashboard.
+* **localStorage keys:**
+    * `lcp_super_admin_session_v1` (admin-dashboard) — `{token, email}`.
+    * `icl_session_v1` (b2b-dashboard) — admin or store session, separate scope.
+* **Why two separate setup-route names:** the original handler shipped at `/api/auth/admin/setup` (mismatched with the admin-dashboard's super-admin scope). On 2026-04-30 we added `/api/auth/brand/setup` as the canonical brand-owner finalize route — same impl, semantic name. Keeping both means deployed dist bundles don't 404 if they're cached against the old path.
+
+---
+
+## 10. Marketing Site Share Previews (Open Graph / Twitter Cards)
+*Last updated: **2026-04-29***
+
+* **Role:** Controls how `localcoffeeperks.com` and `localcoffeeperks.com/waitlist` render when shared on WhatsApp, Facebook, LinkedIn, Slack, X, iMessage, etc. Without correct OG/Twitter meta, scrapers fall back to whatever default the original scaffolder (Lovable) injected — which is exactly how Lovable's logo ended up in WhatsApp previews even after the brand sweep.
+* **Four HTML entry points (must stay in lockstep):**
+    1. `main-website/index.html` — Vite source
+    2. `main-website/dist/index.html` — committed prebuilt artifact, served by Nginx at apex
+    3. `waitlist-page/index.html` — Vite source
+    4. `waitlist-page/dist/index.html` — committed prebuilt artifact, served by Nginx under `/waitlist`
+* **Why dist matters:** the dist files are **committed to git on purpose** (see Section 3 — Nginx serves them as static files). If you only edit the source HTML, scrapers will keep seeing the stale dist. You must either (a) edit the dist file by hand in the same commit OR (b) run the Vite build and commit the regenerated `dist/`.
+* **The Lovable bug (resolved 2026-04-29):** Commit `1421a82` (2026-04-28) cleaned the source HTML and added brand-correct 1200×630 OG images. But the dist copies still pointed `og:image` at `lovable.dev/opengraph-image-p98pqg.png` and `twitter:site=@Lovable`. WhatsApp was scraping the live (dist-served) URL, so the preview stayed wrong. Commit `90a4c50` (2026-04-29) synced the dist files. No `Lovable` string remains in any `<head>` block — only in `package.json` / `vite.config.ts` / `README.md` / `bun.lock` / `.lovable/plan.md`, none of which reach the browser.
+* **Canonical OG / Twitter block** (currently shipped):
+    * `og:title` — "Local Coffee Perks — For the regulars."
+    * `og:description` — *"The loyalty app built for independent cafés. Replace paper stamp cards with a digital pass your customers actually keep. Claim your Founding price before all 100 spots are gone."* (intentionally the longer Founding-100 hook; the short tagline "For the regulars." is the title suffix + image alt)
+    * `og:type` — `website`
+    * `og:url` — `https://www.localcoffeeperks.com/` (apex) or `https://www.localcoffeeperks.com/waitlist` (waitlist)
+    * `og:image` — `https://www.localcoffeeperks.com/og-waitlist.png` (apex) or `https://www.localcoffeeperks.com/waitlist/og-waitlist.png` (waitlist)
+    * `og:image:width` / `og:image:height` — `1200` / `630`
+    * `og:image:alt` — "Local Coffee Perks — For the regulars. The loyalty app for independent cafés."
+    * `og:site_name` — "Local Coffee Perks"
+    * `twitter:card` — `summary_large_image`
+    * `twitter:title` / `twitter:description` / `twitter:image` — mirror the OG values
+* **OG image generator:** `scripts/build_og_image.py` produces the 1200×630 share card (espresso `#1A1412` bg, mint `#00E576` accent, Fraunces + Inter type) and copies it to both `main-website/public/og-waitlist.png` and `waitlist-page/public/og-waitlist.png`. Re-run when the brand image needs to change.
+* **Scraper-cache trap:** WhatsApp / Facebook / LinkedIn cache previews per-URL for ~7 days. After any OG change, the existing previews on phones will NOT refresh until that window expires. Workarounds:
+    * Append a cache-bust query (`?v=2`) when re-sharing.
+    * Use Facebook's Sharing Debugger / LinkedIn Post Inspector to force re-scrape.
+    * Just wait — new chats pick up the fresh tags immediately.
+* **Rule going forward:** any change to OG / Twitter meta MUST land in both the source HTML and the dist HTML in the same commit (or rebuild dist + commit). Bumping only the source guarantees a stale preview.
+
 ---
 
 ## Change log
 *Append a single line per change, newest at the top, in the form `YYYY-MM-DD — section — what changed`.*
 
+* **2026-04-30** — Section 9 (Super-Admin Auth & Onboarding Pipeline) — added. Marketing Site Share Previews bumped to Section 10. Documents the new `super_admins` table (migration 0017), `POST /api/auth/super/login` JWT (`aud="super-admin"`), `Depends(get_super_admin_session)` guard wired onto `invite-brand-admin`, the canonical `/api/auth/brand/setup` route (deprecated alias `/admin/setup`), and the end-to-end super-admin → brand-owner pipeline. Local dev seed `admin@localcoffeeperks.com` / `password123` lives in `scripts/seed_local_dev.py`.
+* **2026-04-30** — Section 4 (Email & SMTP) — vendor migration Zoho → Google Workspace. Backend now sends transactional email via `app/email_sender.py` (stdlib `smtplib` + `email.mime`) against `smtp.gmail.com:465 SSL`. New env vars: `SMTP_HOST/PORT/USE_SSL/USERNAME/PASSWORD/FROM`. **`SMTP_PASSWORD` (Google App Password) MUST be added to `/root/.env-lcp-production` before live transactional email works** — falls back to stdout stub otherwise. Three templates shipped: brand invite, consumer OTP, brand password reset, all on Espresso/Mint chrome. Legacy Zoho config preserved at the bottom of Section 4 for rollback.
+* **2026-04-29** — Section 9 (Marketing Site Share Previews) — added. Documents the four HTML entry points (main-website + waitlist-page, source + dist), the Lovable-OG bug that leaked into WhatsApp previews until commit `90a4c50` synced the dist files, the canonical OG / Twitter block, the `scripts/build_og_image.py` 1200×630 generator, scraper cache-bust workarounds, and the lockstep rule (source + dist must change together).
 * **2026-04-28** — Section 8 (Brand Manifesto / Master Context Document) — added. Canonical brand identity, target audience pivot to 30–50-year-olds, "Starbucks Gap" framing, RWRD/Joe competitor contrast, Espresso+Mint palette + Fraunces/Inter fonts, "Buy 10 get 11th free" mechanic, global-ambition note. Repo-side mirror = `reference_brand_manifesto.md` memory.
 * **2026-04-28** — Section 7 (B2B Pricing Policy & Founding 100) — added. Founding 100 = combined cap (Private £5 / LCP+ £7.99); post-100 = £9.99 / £12.99. Per-location, not per-brand. Loyalty mechanic locked at strict `> 10` ("Buy 10, get 11th free", NOT 9/10). No profit-sharing, no consumer charges.
 * **2026-04-28** — Section 5 (App Store & Google Play) — major update. CRN received from Companies House. D-U-N-S requested via Apple's lookup tool (5–14 day SLA). Founder's personal Apple ID used for the request — harmless because D-U-N-S binds to the company, not the Apple ID. Both stores blocked on D-U-N-S (Google now also requires it for Org accounts). Cost rundown (£79/yr Apple, $25 one-time Google) + post-arrival enrollment plan documented.
