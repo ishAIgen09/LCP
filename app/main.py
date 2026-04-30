@@ -1550,6 +1550,11 @@ async def platform_create_brand(
         slug=slug,
         contact_email=contact_email,
         scheme_type=payload.scheme_type,
+        # Owner name (optional) — pulled from the consolidated Add Brand
+        # modal. Empty strings are coerced to NULL so the existing "no KYC
+        # yet" presentation in the b2b Settings tab stays consistent.
+        owner_first_name=(payload.owner_first_name or "").strip() or None,
+        owner_last_name=(payload.owner_last_name or "").strip() or None,
     )
     session.add(brand)
     try:

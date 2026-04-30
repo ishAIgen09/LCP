@@ -501,6 +501,13 @@ class AdminCreateBrandRequest(BaseModel):
     name: str
     scheme_type: SchemeType
     contact_email: str
+    # Admin name optionally captured by the consolidated "Add New Brand"
+    # modal — split client-side into first/last words. Persisted to the
+    # brand's KYC fields so the owner sees their name pre-filled when they
+    # land in the dashboard. Both fields are optional; the UI may not
+    # capture a name at all (e.g. for existing CSV imports).
+    owner_first_name: str | None = None
+    owner_last_name: str | None = None
 
 
 # POST body for adding a cafe to an existing brand via the super-admin

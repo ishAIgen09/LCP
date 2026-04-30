@@ -250,6 +250,8 @@ export function createBrand(body: {
   name: string;
   scheme_type: SchemeType;
   contact_email: string;
+  owner_first_name?: string;
+  owner_last_name?: string;
 }): Promise<AdminBrand> {
   return sendJSON<AdminBrand>("POST", "/api/admin/platform/brands", body);
 }

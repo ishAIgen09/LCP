@@ -164,7 +164,6 @@ export function CafesPage() {
         onFilterChange={setFilter}
         onAddBrand={() => setAddOpen("brand")}
         onAddCafe={() => setAddOpen("cafe")}
-        onInviteAdmin={() => setAddOpen("invite")}
         onExport={handleExport}
         exporting={exporting}
       />
@@ -1015,7 +1014,6 @@ function CafesFilterBar({
   onFilterChange,
   onAddBrand,
   onAddCafe,
-  onInviteAdmin,
   onExport,
   exporting,
 }: {
@@ -1023,7 +1021,6 @@ function CafesFilterBar({
   onFilterChange: (next: CafeListFilter) => void;
   onAddBrand: () => void;
   onAddCafe: () => void;
-  onInviteAdmin: () => void;
   onExport: () => void;
   exporting: boolean;
 }) {
@@ -1095,7 +1092,6 @@ function CafesFilterBar({
           <AddNewButton
             onAddBrand={onAddBrand}
             onAddCafe={onAddCafe}
-            onInviteAdmin={onInviteAdmin}
           />
         </div>
       </div>
@@ -1138,11 +1134,9 @@ function FilterDropdown({
 function AddNewButton({
   onAddBrand,
   onAddCafe,
-  onInviteAdmin,
 }: {
   onAddBrand: () => void;
   onAddCafe: () => void;
-  onInviteAdmin: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -1197,14 +1191,11 @@ function AddNewButton({
               onAddCafe();
             }}
           />
-          <MenuItem
-            Icon={Mail}
-            label="Invite Brand Admin"
-            onClick={() => {
-              setOpen(false);
-              onInviteAdmin();
-            }}
-          />
+          {/* "Invite Brand Admin" menu item removed 2026-04-30 — the
+              consolidated "Add New Brand" modal now creates the brand
+              AND fires the invite in a single submit. The standalone
+              InviteAdminModal remains in this file unrouted, available
+              for a future per-row "Resend invite" action. */}
         </div>
       ) : null}
     </div>
@@ -1311,6 +1302,18 @@ function TextInput({
   );
 }
 
+// Consolidated "Add New Brand" modal — collects brand name, admin name,
+// admin email, and plan, then in a single submit:
+//   1. POST /api/admin/platform/brands  (creates the brand row)
+//   2. POST /api/admin/platform/invite-brand-admin  (mints 48h JWT, fires
+//      welcome email via Resend)
+// On success, shows the setup URL + copy button + "Email sent to ..."
+// confirmation. Replaces the old two-step flow where the operator had to
+// click "Add Brand" then separately click "Invite Brand Admin" and pick
+// the just-created brand from a dropdown — that UX was nonsensical for
+// brand-new onboarding (the dropdown is necessarily empty for new
+// brands). The standalone InviteAdminModal stays in this file unrouted
+// so it's available for a future per-row "Resend invite" action.
 function AddBrandModal({
   onDismiss,
   onCreated,
@@ -1318,32 +1321,154 @@ function AddBrandModal({
   onDismiss: () => void;
   onCreated: () => void;
 }) {
-  const [name, setName] = useState("");
+  const [brandName, setBrandName] = useState("");
+  const [adminName, setAdminName] = useState("");
   const [email, setEmail] = useState("");
   const [scheme, setScheme] = useState<SchemeType>("private");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<BrandInviteResponse | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const canSubmit =
-    name.trim().length > 0 && email.trim().length > 0 && email.includes("@");
+    brandName.trim().length > 0 &&
+    email.trim().length > 0 &&
+    email.includes("@");
 
   const handleSubmit = async () => {
     if (!canSubmit || busy) return;
     setBusy(true);
     setError(null);
+
+    // Split admin name on the last space — last word becomes last name,
+    // everything before becomes first name. Single-word names land in
+    // first only. Empty admin name is fine — owner_first/last get NULL.
+    const trimmedName = adminName.trim();
+    const lastSpace = trimmedName.lastIndexOf(" ");
+    const firstName =
+      lastSpace > 0 ? trimmedName.slice(0, lastSpace).trim() : trimmedName;
+    const lastName = lastSpace > 0 ? trimmedName.slice(lastSpace + 1) : "";
+
     try {
-      await createBrand({
-        name: name.trim(),
+      const brand = await createBrand({
+        name: brandName.trim(),
         scheme_type: scheme,
-        contact_email: email.trim(),
+        contact_email: email.trim().toLowerCase(),
+        owner_first_name: firstName || undefined,
+        owner_last_name: lastName || undefined,
       });
-      onCreated();
+
+      // Brand row exists — fire the invite. If THIS step fails (e.g.
+      // Resend transport hiccup), the brand stays in the DB and the
+      // operator can use a future per-row "Resend invite" action; we
+      // surface the partial-success state with a clear message rather
+      // than rolling back the brand.
+      try {
+        const invite = await inviteBrandAdmin({
+          email: email.trim().toLowerCase(),
+          brand_id: brand.id,
+        });
+        setResult(invite);
+      } catch (inviteErr) {
+        setError(
+          inviteErr instanceof Error
+            ? `Brand created, but invite send failed: ${inviteErr.message}`
+            : "Brand created, but invite send failed.",
+        );
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create brand.");
+    } finally {
       setBusy(false);
     }
   };
 
+  const copy = async () => {
+    if (!result) return;
+    try {
+      await navigator.clipboard.writeText(result.setup_url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2_000);
+    } catch {
+      // Older browsers / non-https origins. Fall through silently.
+    }
+  };
+
+  // ── Result state ──────────────────────────────────────────────────
+  if (result) {
+    return (
+      <ModalShell
+        title="Brand created · invite sent"
+        onDismiss={() => {
+          setResult(null);
+          onCreated();
+        }}
+      >
+        <div className="space-y-4 px-5 py-4">
+          <div className="rounded-md border border-emerald-900/60 bg-emerald-950/30 px-3 py-2.5 text-[12px] text-emerald-300">
+            <div className="flex items-start gap-2">
+              <CheckCircle2
+                className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400"
+                strokeWidth={2.4}
+              />
+              <div className="flex-1">
+                <div className="font-semibold text-emerald-200">
+                  Welcome email sent to {result.email}
+                </div>
+                <div className="mt-1 text-emerald-300/80">
+                  Setup link expires{" "}
+                  {new Date(result.expires_at).toLocaleString(undefined, {
+                    dateStyle: "medium",
+                    timeStyle: "short",
+                  })}
+                  .
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <FieldLabel>Setup URL (copy if needed)</FieldLabel>
+            <div className="flex items-stretch gap-2">
+              <input
+                type="text"
+                value={result.setup_url}
+                readOnly
+                className="min-w-0 flex-1 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-[11px] text-neutral-300 outline-none"
+                onFocus={(e) => e.currentTarget.select()}
+              />
+              <button
+                type="button"
+                onClick={copy}
+                className="shrink-0 rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-[11px] font-semibold text-neutral-200 transition-colors hover:bg-neutral-800"
+              >
+                {copied ? "Copied!" : "Copy"}
+              </button>
+            </div>
+            <p className="mt-1.5 text-[11px] text-neutral-500">
+              The new admin will use this link to set their password and add
+              their first café.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-neutral-800 px-5 py-3">
+          <button
+            type="button"
+            onClick={() => {
+              setResult(null);
+              onCreated();
+            }}
+            className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500/90 px-3 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-emerald-400"
+          >
+            Done
+          </button>
+        </div>
+      </ModalShell>
+    );
+  }
+
+  // ── Form state ────────────────────────────────────────────────────
   return (
     <ModalShell
       title="Add new brand"
@@ -1353,30 +1478,24 @@ function AddBrandModal({
         <div>
           <FieldLabel>Brand name</FieldLabel>
           <TextInput
-            value={name}
-            onChange={setName}
+            value={brandName}
+            onChange={setBrandName}
             placeholder="e.g. Flat White Collective"
           />
         </div>
         <div>
-          <FieldLabel>Scheme</FieldLabel>
-          <div className="grid grid-cols-2 gap-2">
-            <SchemeChoice
-              selected={scheme === "global"}
-              onSelect={() => setScheme("global")}
-              label="LCP+ (global)"
-              hint="Shared network"
-            />
-            <SchemeChoice
-              selected={scheme === "private"}
-              onSelect={() => setScheme("private")}
-              label="Private"
-              hint="Walled-garden"
-            />
-          </div>
+          <FieldLabel>Admin name</FieldLabel>
+          <TextInput
+            value={adminName}
+            onChange={setAdminName}
+            placeholder="e.g. Jane Doe"
+          />
+          <p className="mt-1.5 text-[11px] text-neutral-500">
+            Optional — pre-fills the owner's profile in their dashboard.
+          </p>
         </div>
         <div>
-          <FieldLabel>Contact email</FieldLabel>
+          <FieldLabel>Admin email</FieldLabel>
           <TextInput
             value={email}
             onChange={setEmail}
@@ -1384,9 +1503,25 @@ function AddBrandModal({
             type="email"
           />
           <p className="mt-1.5 text-[11px] text-neutral-500">
-            Brand lands without a password — the owner will need one set via
-            a separate path before they can log in.
+            We'll send a setup link to this address (valid for 48 hours).
           </p>
+        </div>
+        <div>
+          <FieldLabel>Subscription plan</FieldLabel>
+          <div className="grid grid-cols-2 gap-2">
+            <SchemeChoice
+              selected={scheme === "private"}
+              onSelect={() => setScheme("private")}
+              label="Private"
+              hint="£5/mo per location"
+            />
+            <SchemeChoice
+              selected={scheme === "global"}
+              onSelect={() => setScheme("global")}
+              label="LCP+ Global"
+              hint="£7.99/mo per location"
+            />
+          </div>
         </div>
       </div>
 
@@ -1414,7 +1549,7 @@ function AddBrandModal({
           {busy ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.2} />
           ) : null}
-          Create brand
+          Create brand & send invite
         </button>
       </div>
     </ModalShell>

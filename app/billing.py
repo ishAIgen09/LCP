@@ -1,7 +1,7 @@
 import calendar
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 from uuid import UUID
 
@@ -87,13 +87,19 @@ async def sync_subscription_quantity(
         current_qty = items[0].get("quantity", 0)
         if current_qty == cafe_count:
             return
+        # proration_behavior="create_prorations" is critical here: Stripe
+        # creates positive proration line items for the new cafe(s) for the
+        # remainder of the current billing cycle, so the customer is
+        # charged ONLY the prorated difference (not the full new monthly
+        # rate × full cycle). Without this flag Stripe's default would
+        # charge the full new amount immediately and skip proration math.
         stripe.SubscriptionItem.modify(
             item_id,
             quantity=cafe_count,
             proration_behavior="create_prorations",
         )
         logger.info(
-            "Stripe quantity synced: brand=%s %d → %d",
+            "Stripe quantity synced (prorated): brand=%s %d → %d",
             brand.id,
             current_qty,
             cafe_count,
@@ -107,6 +113,22 @@ async def sync_subscription_quantity(
             brand.stripe_subscription_id,
             exc,
         )
+
+
+def _first_of_next_month_utc(now: datetime | None = None) -> int:
+    """Unix timestamp at 00:00 UTC on the 1st of the next calendar month.
+
+    Used as the Stripe billing cycle anchor on initial signup so that the
+    first full-rate invoice lands cleanly on the 1st (everyone's invoices
+    align), and the partial first month is handled via `trial_end` to
+    avoid charging the customer a full month for partial usage.
+    """
+    now = now or datetime.now(timezone.utc)
+    if now.month == 12:
+        first_next = datetime(now.year + 1, 1, 1, tzinfo=timezone.utc)
+    else:
+        first_next = datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc)
+    return int(first_next.timestamp())
 
 
 def _success_url() -> str:
@@ -201,6 +223,21 @@ async def create_checkout(
             "quantity": cafe_count,
         }
 
+    # Pro-rata behavior on initial signup:
+    # Stripe Checkout doesn't accept `proration_behavior` directly, but
+    # `subscription_data.trial_end` set to "first of next month UTC" gives
+    # us the same UX outcome as proration: the customer is NOT charged a
+    # full month upfront for a partial period. Their first real invoice
+    # lands on the 1st of next month at the full monthly rate. Subsequent
+    # cycles renew on the 1st as well, which means every brand's billing
+    # cycle naturally aligns to month-start.
+    #
+    # Edge case: if today IS the 1st (anchor == 24h from now), Stripe still
+    # honours trial_end — the customer gets ~24h trial then full billing.
+    # Acceptable UX cost for the simpler code path.
+    now_utc = datetime.now(timezone.utc)
+    trial_end = _first_of_next_month_utc(now_utc)
+
     kwargs: dict = {
         "mode": "subscription",
         "payment_method_types": ["card"],
@@ -209,6 +246,15 @@ async def create_checkout(
         # Pass the tier through to the webhook so we can persist
         # brand.plan_tier when the subscription lands.
         "metadata": {"brand_id": str(brand.id), "tier": tier},
+        "subscription_data": {
+            # No upfront charge for the partial first month — see comment
+            # block above. Mid-cycle subscription updates (quantity changes
+            # via sync_subscription_quantity, plan changes via /plan-change)
+            # use proration_behavior="create_prorations" instead, which IS
+            # accepted by the Subscription API directly (unlike Checkout).
+            "trial_end": trial_end,
+            "metadata": {"brand_id": str(brand.id), "tier": tier},
+        },
         "success_url": _success_url(),
         "cancel_url": _cancel_url(),
     }
