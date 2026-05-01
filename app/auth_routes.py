@@ -237,7 +237,7 @@ async def super_create(
     """Add a co-founder / additional staff super admin. Requires an
     existing super-admin session — there's no bootstrap path here; the
     very first super admin lands via seed (see the temporary
-    `seed-super` bootstrap endpoint or `scripts/seed_local_dev.py`).
+    `scripts/seed_local_dev.py`).
     """
     normalized_email = payload.email.strip().lower()
     if "@" not in normalized_email or "." not in normalized_email:

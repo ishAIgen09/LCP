@@ -337,6 +337,35 @@ async def create_portal_session(
 PlanTier = Literal["starter", "pro", "premium"]
 
 
+def _resolve_plan_change_price_id(plan: PlanTier) -> str | None:
+    """Map a /plan-change tier id → Stripe price id from env.
+
+    The b2b-dashboard's PlanCard uses the names `starter`/`pro`/`premium`
+    while the Stripe price IDs are scheme-typed (`PRIVATE`/`GLOBAL`).
+    Mapping (must match `b2b-dashboard/src/views/BillingView.tsx`):
+        starter → STRIPE_PRIVATE_PRICE_ID  (£5/mo Founding)
+        pro     → STRIPE_GLOBAL_PRICE_ID   (£7.99/mo Founding)
+        premium → not yet provisioned in Stripe — return None and let
+                  the caller 422 with a clear message.
+    """
+    if plan == "starter":
+        return settings.stripe_private_price_id
+    if plan == "pro":
+        return settings.stripe_global_price_id
+    return None  # premium → no price configured yet
+
+
+def _scheme_type_for_plan(plan: PlanTier) -> SchemeType | None:
+    """Map a plan-change tier id → SchemeType for the brand row update.
+    Mirrors `_resolve_plan_change_price_id`'s mapping. Returns None for
+    plans we don't yet model (premium)."""
+    if plan == "starter":
+        return SchemeType.PRIVATE
+    if plan == "pro":
+        return SchemeType.GLOBAL
+    return None
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Pro-rata billing rules — the spec
 # ─────────────────────────────────────────────────────────────────────
@@ -449,11 +478,18 @@ async def request_plan_change(
     session: AsyncSession = Depends(get_session),
 ) -> PlanChangeResponse:
     """
-    Apply a brand's plan-change request with mid-month proration math.
-    Stripe is mocked for MVP — the would-be API calls are emitted as
-    structured log lines (`PLAN-CHANGE-STRIPE-MOCK`) so the swap is a
-    targeted diff later. Audit log line `PLAN-CHANGE` is unchanged so
-    Super Admin grep continues to work.
+    Apply a brand's plan-change request — modify the Stripe subscription
+    item with `proration_behavior="create_prorations"`, then for upgrades
+    force an immediate invoice + pay so the customer is charged the
+    prorated difference right now (rather than waiting for the next
+    cycle invoice). Downgrades skip the immediate-invoice step; the
+    proration credit naturally lands on the next monthly invoice.
+
+    Audit log line `PLAN-CHANGE` and the proration-math response shape
+    are unchanged from the pre-Stripe-wire-up version — the response
+    payload still tells the dashboard exactly what to display, even
+    though the math is now backed by a real Stripe call instead of a
+    mock log line.
     """
     brand = await session.get(Brand, admin.brand_id)
     if brand is None:
@@ -521,42 +557,158 @@ async def request_plan_change(
         },
     )
 
-    # ─── Stripe mock ──────────────────────────────────────────────────
-    # When wiring this for real, replace this block with:
-    #
-    #   stripe.SubscriptionItem.modify(
-    #       brand.stripe_subscription_item_id,
-    #       price=NEW_PRICE_ID,
-    #       proration_behavior="create_prorations",
-    #   )
-    #   if direction == "upgrade":
-    #       inv = stripe.Invoice.create(
-    #           customer=brand.stripe_customer_id,
-    #           subscription=brand.stripe_subscription_id,
-    #           auto_advance=True,
-    #           collection_method="charge_automatically",
-    #       )
-    #       stripe.Invoice.pay(inv.id)
-    #
-    # billing_cycle_anchor stays unchanged (anchored to the 1st on the
-    # original subscription create call). For initial signups elsewhere
-    # in this file, set
-    #   billing_cycle_anchor=int(first_of_next_month_utc.timestamp())
-    # at subscription create time.
-    if direction == "upgrade":
-        logger.warning(
-            "PLAN-CHANGE-STRIPE-MOCK action=immediate_invoice "
-            "request_id=%s amount_pence=%s reason='upgrade proration'",
-            request_id,
-            immediate_charge_pence,
+    # ─── Real Stripe wire-up (replaces the prior PLAN-CHANGE-STRIPE-MOCK) ─
+    # Skip Stripe entirely on noop (same-plan-to-same-plan). The audit log
+    # above already captured the request; nothing else to do.
+    if direction == "noop":
+        return PlanChangeResponse(
+            notified=True,
+            request_id=request_id,
+            received_at=received_at,
+            direction=direction,
+            days_remaining_in_month=days_remaining,
+            days_in_month=days_in_month,
+            proration_pence=proration_pence,
+            immediate_charge_pence=immediate_charge_pence,
+            next_invoice_credit_pence=next_invoice_credit_pence,
         )
-    elif direction == "downgrade":
-        logger.warning(
-            "PLAN-CHANGE-STRIPE-MOCK action=credit_next_invoice "
-            "request_id=%s amount_pence=%s reason='downgrade proration'",
-            request_id,
-            next_invoice_credit_pence,
+
+    _require_stripe_key()
+
+    # Pre-flight checks before we touch Stripe — fail fast with clear
+    # errors rather than letting Stripe return a cryptic 400.
+    if not brand.stripe_subscription_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "No Stripe subscription on file for this brand. Add your "
+                "first location to start a subscription before changing plan."
+            ),
         )
+    if not brand.stripe_customer_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No Stripe customer on file. Cannot apply a plan change.",
+        )
+    if brand.subscription_status != SubscriptionStatus.ACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"Subscription status is '{brand.subscription_status.value}'; "
+                "plan changes require an active subscription."
+            ),
+        )
+
+    new_price_id = _resolve_plan_change_price_id(body.to_plan)
+    if not new_price_id:
+        # `premium` doesn't have a Stripe price configured yet (and isn't
+        # surfaced in the dashboard). If a future build ever ships a
+        # Premium tier, add STRIPE_PREMIUM_PRICE_ID to Settings and
+        # extend `_resolve_plan_change_price_id`.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Plan '{body.to_plan}' is not provisioned in Stripe. "
+                "Configure STRIPE_*_PRICE_ID and update "
+                "_resolve_plan_change_price_id."
+            ),
+        )
+
+    try:
+        # Step 1 — locate the subscription item id. Same pattern as
+        # sync_subscription_quantity: retrieve the live subscription and
+        # take items.data[0].id. We don't store stripe_subscription_item_id
+        # on Brand because the existing subscription-create flow doesn't
+        # surface it; one Stripe round-trip is acceptable for a
+        # rare-cadence operation like a plan change.
+        subscription = stripe.Subscription.retrieve(brand.stripe_subscription_id)
+        items = subscription.get("items", {}).get("data", [])
+        if not items:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Stripe subscription has no items; cannot apply plan change.",
+            )
+        item_id = items[0]["id"]
+
+        # Step 2 — swap the price with create_prorations. This is the
+        # core call. Stripe writes proration line items for the unused
+        # portion of the old tier (negative) and the used portion of the
+        # new tier (positive) for the remainder of the current cycle.
+        # billing_cycle_anchor stays whatever the subscription was
+        # originally created with — we never re-anchor mid-life.
+        stripe.SubscriptionItem.modify(
+            item_id,
+            price=new_price_id,
+            proration_behavior="create_prorations",
+        )
+
+        # Step 3 — for upgrades, invoice + pay immediately so the cafe
+        # gets the new tier's benefits in real time and isn't surprised
+        # by a larger-than-expected next-cycle invoice. Stripe rolls the
+        # proration line items into this invoice.
+        if direction == "upgrade":
+            invoice = stripe.Invoice.create(
+                customer=brand.stripe_customer_id,
+                subscription=brand.stripe_subscription_id,
+                auto_advance=True,
+                collection_method="charge_automatically",
+            )
+            stripe.Invoice.pay(invoice["id"])
+            logger.info(
+                "PLAN-CHANGE-STRIPE upgraded brand=%s sub=%s item=%s "
+                "new_price=%s invoice=%s charge_pence=%s",
+                brand.id,
+                brand.stripe_subscription_id,
+                item_id,
+                new_price_id,
+                invoice["id"],
+                immediate_charge_pence,
+            )
+        else:  # downgrade
+            # No immediate invoice. Stripe will apply the proration
+            # credit (negative) on the next monthly invoice.
+            logger.info(
+                "PLAN-CHANGE-STRIPE downgraded brand=%s sub=%s item=%s "
+                "new_price=%s next_invoice_credit_pence=%s",
+                brand.id,
+                brand.stripe_subscription_id,
+                item_id,
+                new_price_id,
+                next_invoice_credit_pence,
+            )
+    except stripe.StripeError as exc:
+        logger.error(
+            "PLAN-CHANGE-STRIPE FAILED brand=%s direction=%s from=%s to=%s "
+            "err=%s",
+            brand.id,
+            direction,
+            body.from_plan,
+            body.to_plan,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Stripe could not apply the plan change: {exc.user_message or str(exc)}",
+        )
+
+    # Step 4 — sync brand.scheme_type so the b2b dashboard + Discover
+    # reflect the new tier on next page load. The Stripe call already
+    # succeeded above, so even if this DB update fails we'd rather
+    # tolerate a brief drift (next webhook or manual sync resolves it)
+    # than roll back a real Stripe charge.
+    new_scheme = _scheme_type_for_plan(body.to_plan)
+    if new_scheme is not None and brand.scheme_type != new_scheme:
+        try:
+            brand.scheme_type = new_scheme
+            await session.commit()
+        except Exception as exc:  # noqa: BLE001 — DB-layer best-effort
+            logger.warning(
+                "PLAN-CHANGE brand.scheme_type sync failed brand=%s new=%s err=%s",
+                brand.id,
+                new_scheme.value,
+                exc,
+            )
+            await session.rollback()
 
     return PlanChangeResponse(
         notified=True,
