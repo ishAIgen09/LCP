@@ -2148,6 +2148,8 @@ async def update_cafe(
         cafe.phone = trimmed_phone or None
     if payload.food_hygiene_rating is not None:
         cafe.food_hygiene_rating = payload.food_hygiene_rating
+    if payload.suspended_coffee_enabled is not None:
+        cafe.suspended_coffee_enabled = payload.suspended_coffee_enabled
     await session.commit()
     await session.refresh(cafe)
     return cafe
@@ -2299,15 +2301,34 @@ async def create_offer(
     # Empty-list → NULL so "Specific Locations with zero boxes ticked" can't
     # silently mint an offer that applies to nothing.
     target_ids = payload.target_cafe_ids or None
-    offer = Offer(
-        brand_id=admin.brand_id,
-        offer_type=payload.offer_type,
-        target=payload.target,
-        amount=payload.amount,
-        starts_at=payload.starts_at,
-        ends_at=payload.ends_at,
-        target_cafe_ids=target_ids,
-    )
+
+    # Custom-offer normalisation: when offer_type='custom', the bespoke
+    # copy in `custom_text` is the entire content of the offer — `target`
+    # and `amount` from the request are accepted (the frontend may send
+    # placeholder values) but NOT persisted. For all other types,
+    # `custom_text` is silently dropped per PRD §4.3.3.
+    if payload.offer_type == "custom":
+        offer = Offer(
+            brand_id=admin.brand_id,
+            offer_type="custom",
+            target=payload.target,  # keeps the NOT NULL column happy; ignored at render
+            amount=None,
+            starts_at=payload.starts_at,
+            ends_at=payload.ends_at,
+            target_cafe_ids=target_ids,
+            custom_text=(payload.custom_text or "").strip(),
+        )
+    else:
+        offer = Offer(
+            brand_id=admin.brand_id,
+            offer_type=payload.offer_type,
+            target=payload.target,
+            amount=payload.amount,
+            starts_at=payload.starts_at,
+            ends_at=payload.ends_at,
+            target_cafe_ids=target_ids,
+            custom_text=None,
+        )
     session.add(offer)
     await session.commit()
     await session.refresh(offer)
@@ -2329,10 +2350,19 @@ async def update_offer(
         )
     offer.offer_type = payload.offer_type
     offer.target = payload.target
-    offer.amount = payload.amount
     offer.starts_at = payload.starts_at
     offer.ends_at = payload.ends_at
     offer.target_cafe_ids = payload.target_cafe_ids or None
+    # Same custom-vs-structured normalisation as create_offer — keeps the
+    # row internally consistent across edits, including the case where a
+    # user flips offer_type from 'custom' back to 'percent' (or vice
+    # versa) on the same offer row.
+    if payload.offer_type == "custom":
+        offer.amount = None
+        offer.custom_text = (payload.custom_text or "").strip()
+    else:
+        offer.amount = payload.amount
+        offer.custom_text = None
     await session.commit()
     await session.refresh(offer)
     return offer

@@ -39,9 +39,11 @@ from app.models import (
     ConsumerOTP,
     GlobalLedger,
     GlobalLedgerAction,
+    LedgerEventType,
     Offer,
     SchemeType,
     StampLedger,
+    SuspendedCoffeeLedger,
     User,
 )
 from app.schemas import (
@@ -55,7 +57,9 @@ from app.schemas import (
     ConsumerRequestOTPResponse,
     ConsumerVerifyOTP,
     ConsumerWalletResponse,
+    DonateLoyaltyRequest,
     LatestEarnPayload,
+    SuspendedCoffeeMutationResponse,
     WalletBalanceBlock,
     WalletPrivateBrandBalance,
 )
@@ -599,3 +603,137 @@ async def consumer_cafes(
         payloads.sort(key=lambda p: p.distance_miles if p.distance_miles is not None else float("inf"))
 
     return payloads
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Pay It Forward / Suspended Coffee — consumer-side donation (Mode 1).
+# Spec: PRD §4.5.6.
+# ─────────────────────────────────────────────────────────────────────
+
+
+@consumer_router.post(
+    "/suspended-coffee/donate-loyalty",
+    response_model=SuspendedCoffeeMutationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def suspended_coffee_donate_loyalty(
+    payload: DonateLoyaltyRequest,
+    consumer: ConsumerSession = Depends(get_consumer_session),
+    session: AsyncSession = Depends(get_session),
+) -> SuspendedCoffeeMutationResponse:
+    """Consumer donates 1 banked reward (10 stamps) to a cafe's
+    Suspended Coffee pool.
+
+    Atomic single-transaction flow:
+      1. Lock the user row (`SELECT … FOR UPDATE` via the existing
+         `_lock_user_and_read_scoped_balance` helper) so concurrent
+         donate / scan / redeem can't race against each other.
+      2. Verify scoped stamp balance >= REWARD_THRESHOLD (10) for the
+         brand the destination cafe belongs to.
+      3. Insert a REDEEM row (-10) into stamp_ledger to consume the
+         reward. The (event_type='REDEEM' AND stamp_delta=-10) CHECK
+         constraint enforces the magnitude.
+      4. Insert a REDEEMED row (qty=1) into global_ledger so the
+         consumer's `/me/history` shows the donation as a single
+         logical event (mirrors the redeem-at-till audit shape).
+      5. Insert a donate_loyalty row (+1) into suspended_coffee_ledger
+         with `donor_user_id` set so the cafe operator (eventually) can
+         see who donated, but the consumer-app NEVER surfaces
+         donor identity per the privacy rule (PRD §4.5.3).
+
+    Failure modes (all 4xx, never 5xx):
+      - 404 if cafe_id doesn't exist
+      - 403 if cafe.suspended_coffee_enabled is False
+      - 400 if scoped balance < 10 stamps (with the actual count in the
+        message so the UI can surface "you have X / 10")
+    """
+    cafe = await session.get(Cafe, payload.cafe_id)
+    if cafe is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Cafe not found."
+        )
+    if not cafe.suspended_coffee_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "This cafe doesn't accept Pay It Forward donations right now. "
+                "Try a participating cafe instead."
+            ),
+        )
+
+    brand = await session.get(Brand, cafe.brand_id)
+    if brand is None:
+        # Orphan cafe (FK should make this impossible, but defensive).
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Brand not found."
+        )
+
+    # Deferred import to dodge the consumer_auth.py ↔ app.main circular
+    # (main.py imports the consumer_router from this module). Same pattern
+    # as the existing _scoped_balance_stmt usage in /me/balance.
+    from app.main import _lock_user_and_read_scoped_balance
+
+    user, balance = await _lock_user_and_read_scoped_balance(
+        session, consumer.user_id, None, brand
+    )
+
+    if balance < REWARD_THRESHOLD:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Not enough stamps to donate. You have {balance} of "
+                f"{REWARD_THRESHOLD} required for one donation."
+            ),
+        )
+
+    # 1. stamp_ledger REDEEM (-10) — consumes the banked reward.
+    session.add(
+        StampLedger(
+            customer_id=user.id,
+            cafe_id=cafe.id,
+            event_type=LedgerEventType.REDEEM,
+            stamp_delta=-10,
+            note="Pay It Forward donation",
+        )
+    )
+
+    # 2. global_ledger REDEEMED (qty=1) so /me/history lists it.
+    session.add(
+        GlobalLedger(
+            consumer_id=user.till_code,
+            venue_id=cafe.id,
+            action_type=GlobalLedgerAction.REDEEMED,
+            quantity=1,
+        )
+    )
+
+    # 3. suspended_coffee_ledger +1 donation event.
+    session.add(
+        SuspendedCoffeeLedger(
+            cafe_id=cafe.id,
+            event_type="donate_loyalty",
+            units_delta=1,
+            donor_user_id=user.id,
+            note="Loyalty-reward donation",
+        )
+    )
+
+    await session.commit()
+
+    # Read post-write pool balance so the consumer app can update its
+    # CafeDetailsModal counter without a follow-up GET. SUM is fine
+    # without a fresh lock because we just committed our +1 and no
+    # caller can decrement (serve) without first taking the cafe lock
+    # via the b2b serve handler.
+    new_balance = int(
+        (
+            await session.execute(
+                select(
+                    func.coalesce(func.sum(SuspendedCoffeeLedger.units_delta), 0)
+                ).where(SuspendedCoffeeLedger.cafe_id == cafe.id)
+            )
+        ).scalar_one()
+        or 0
+    )
+
+    return SuspendedCoffeeMutationResponse(new_pool_balance=new_balance)

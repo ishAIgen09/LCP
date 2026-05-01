@@ -21,20 +21,36 @@ The two ledgers serve different purposes: `stamp_ledger` is the event log
 the platform-wide activity feed that keeps one row per logical POS action.
 """
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_active_cafe
+from app.auth import get_active_cafe, get_admin_session
 from app.database import get_session
 from app.models import (
     Brand,
     Cafe,
+    CancellationFeedback,
     GlobalLedger,
     GlobalLedgerAction,
     LedgerEventType,
     StampLedger,
+    SuspendedCoffeeLedger,
 )
-from app.schemas import B2BScanRequest, B2BScanResponse
+from app.schemas import (
+    AdminSession,
+    B2BScanRequest,
+    B2BScanResponse,
+    CancellationFeedbackCreate,
+    CancellationFeedbackResponse,
+    CommunityPoolStatus,
+    DonateTillRequest,
+    SuspendedCoffeeMutationResponse,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/b2b", tags=["b2b"])
 
@@ -106,3 +122,231 @@ async def b2b_scan(
         earned_transaction_id=earned_transaction_id,
         redeemed_transaction_id=None,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# B2B Cancellation Feedback (PRD §4.2) — intercept survey before the
+# b2b dashboard hands off to the Stripe Customer Portal.
+# ─────────────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/cancellation-feedback",
+    response_model=CancellationFeedbackResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def cancellation_feedback(
+    payload: CancellationFeedbackCreate,
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> CancellationFeedback:
+    """Persist a brand owner's exit-survey response. The b2b dashboard's
+    BillingView calls this BEFORE redirecting to the Stripe portal — fail
+    here and the redirect is blocked. Brand id comes from the admin JWT;
+    the request body never carries one.
+
+    Validation is in `CancellationFeedbackCreate.__check__` (Pydantic
+    model_validator):
+      - reason='other' requires non-empty `details`
+      - `acknowledged` must be True (the cancel-at-period-end policy
+        disclosure)
+    Both raise 422 at the boundary if violated.
+    """
+    # Normalise blank-but-not-None details to actual NULL so the column
+    # carries a clean signal of "no extra info" vs "empty whitespace".
+    details_norm = (payload.details or "").strip() or None
+
+    row = CancellationFeedback(
+        brand_id=admin.brand_id,
+        reason=payload.reason,
+        details=details_norm,
+        acknowledged=payload.acknowledged,
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    logger.info(
+        "CANCELLATION-FEEDBACK brand_id=%s reason=%s has_details=%s",
+        row.brand_id,
+        row.reason,
+        bool(row.details),
+    )
+    return row
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Pay It Forward (Suspended Coffee) — POS-side endpoints.
+# Auth = Venue-API-Key header (cafe identity). The brand-admin opt-in
+# toggle on cafes.suspended_coffee_enabled lives behind the existing
+# PATCH /api/admin/cafes/{id} — not in this file.
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def _read_pool_balance(session: AsyncSession, cafe_id) -> int:
+    """SUM(units_delta) over suspended_coffee_ledger for one cafe.
+    Returns int; clamps a defensively-impossible negative result to 0
+    (the serve-floor guard should make this unreachable).
+    """
+    raw = (
+        await session.execute(
+            select(
+                func.coalesce(func.sum(SuspendedCoffeeLedger.units_delta), 0)
+            ).where(SuspendedCoffeeLedger.cafe_id == cafe_id)
+        )
+    ).scalar_one()
+    balance = int(raw or 0)
+    if balance < 0:
+        # Should never happen given the serve-floor check + the locked
+        # transaction. If it does, it's a data-integrity alert worth
+        # flagging — log loudly + clamp so we don't leak a negative
+        # number to the dashboard.
+        logger.error(
+            "POOL-INTEGRITY suspended_coffee_ledger sum is negative for "
+            "cafe_id=%s balance=%d — clamping to 0",
+            cafe_id,
+            balance,
+        )
+        return 0
+    return balance
+
+
+@router.get(
+    "/suspended-coffee/pool",
+    response_model=CommunityPoolStatus,
+)
+async def suspended_coffee_pool(
+    cafe: Cafe = Depends(get_active_cafe),
+    session: AsyncSession = Depends(get_session),
+) -> CommunityPoolStatus:
+    """Current community-pool balance + enabled flag for the calling
+    cafe. The Barista POS polls this on mount and after every donate/
+    serve action so the visible counter stays fresh. Always returns —
+    even cafes that have toggled the feature off can see their
+    historical pool balance (we don't truncate the ledger on disable).
+    """
+    balance = await _read_pool_balance(session, cafe.id)
+    return CommunityPoolStatus(
+        cafe_id=cafe.id,
+        enabled=cafe.suspended_coffee_enabled,
+        pool_balance=balance,
+    )
+
+
+@router.post(
+    "/suspended-coffee/donate-till",
+    response_model=SuspendedCoffeeMutationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def suspended_coffee_donate_till(
+    payload: DonateTillRequest,
+    cafe: Cafe = Depends(get_active_cafe),
+    session: AsyncSession = Depends(get_session),
+) -> SuspendedCoffeeMutationResponse:
+    """Mode 2 — barista records N till-paid donations from a single
+    scan. Inserts one ledger row per unit (cleaner audit trail than a
+    single units_delta=N row, per PRD §4.5.7).
+
+    Per-scan count is capped by the schema (`DonateTillRequest.count`,
+    1 ≤ N ≤ SUSPENDED_COFFEE_TILL_PER_SCAN_MAX).
+    """
+    if not cafe.suspended_coffee_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Suspended Coffee is disabled for this cafe. Toggle it on "
+                "from the b2b dashboard's Settings tab first."
+            ),
+        )
+
+    session.add_all(
+        [
+            SuspendedCoffeeLedger(
+                cafe_id=cafe.id,
+                event_type="donate_till",
+                units_delta=1,
+            )
+            for _ in range(payload.count)
+        ]
+    )
+    await session.commit()
+
+    new_balance = await _read_pool_balance(session, cafe.id)
+    logger.info(
+        "PIF-DONATE-TILL cafe_id=%s count=%d new_balance=%d",
+        cafe.id,
+        payload.count,
+        new_balance,
+    )
+    return SuspendedCoffeeMutationResponse(new_pool_balance=new_balance)
+
+
+@router.post(
+    "/suspended-coffee/serve",
+    response_model=SuspendedCoffeeMutationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def suspended_coffee_serve(
+    cafe: Cafe = Depends(get_active_cafe),
+    session: AsyncSession = Depends(get_session),
+) -> SuspendedCoffeeMutationResponse:
+    """Decrement the pool by 1 — barista just handed a coffee to
+    someone in need. CRITICAL guard: the pool MUST NOT go below zero.
+
+    Concurrency: two baristas at the same cafe could double-tap "Serve"
+    simultaneously and race for the last unit. We serialise via
+    `SELECT … FROM cafes WHERE id = $1 FOR UPDATE` — cheap lock that
+    holds for the few milliseconds it takes to read the SUM and INSERT
+    the -1 row. Without the lock, both serves would pass the
+    "balance >= 1" check before either commits, and the pool would land
+    at -1.
+    """
+    if not cafe.suspended_coffee_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Suspended Coffee is disabled for this cafe. Toggle it on "
+                "from the b2b dashboard's Settings tab first."
+            ),
+        )
+
+    # Take the cafe-row lock for the rest of the transaction. Mirrors
+    # the user-row lock pattern in app.main::_lock_user_and_read_scoped_balance.
+    locked_cafe = (
+        await session.execute(
+            select(Cafe).where(Cafe.id == cafe.id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if locked_cafe is None:
+        # Race: the cafe was deleted between the auth resolve and this
+        # lock attempt. ON DELETE CASCADE on suspended_coffee_ledger
+        # will have already wiped the rows; treat as 404.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Cafe not found."
+        )
+
+    balance = await _read_pool_balance(session, cafe.id)
+    if balance < 1:
+        # 409 Conflict per PRD §4.5.8 — distinct from a 400 because the
+        # request itself is well-formed; the failure is server-state.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Community pool is empty.",
+        )
+
+    session.add(
+        SuspendedCoffeeLedger(
+            cafe_id=cafe.id,
+            event_type="serve",
+            units_delta=-1,
+        )
+    )
+    await session.commit()
+
+    new_balance = balance - 1
+    logger.info(
+        "PIF-SERVE cafe_id=%s prev_balance=%d new_balance=%d",
+        cafe.id,
+        balance,
+        new_balance,
+    )
+    return SuspendedCoffeeMutationResponse(new_pool_balance=new_balance)

@@ -205,3 +205,103 @@ CREATE TRIGGER stamp_ledger_no_update
 CREATE TRIGGER stamp_ledger_no_delete
     BEFORE DELETE ON stamp_ledger
     FOR EACH ROW EXECUTE FUNCTION stamp_ledger_block_mutations();
+
+-- -----------------------------------------------------------------------------
+-- cancellation_feedback — survey response captured before the b2b dashboard
+-- redirects to Stripe Customer Portal. Append-only by convention (no
+-- UPDATE/DELETE expected from the application). See migration 0019 + the
+-- intercept flow in PRD §4.2.
+-- -----------------------------------------------------------------------------
+CREATE TABLE cancellation_feedback (
+    id              UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    brand_id        UUID         NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
+    reason          TEXT         NOT NULL CHECK (reason IN (
+                        'free_drink_cost',
+                        'barista_friction',
+                        'price_too_high',
+                        'low_volume',
+                        'feature_gap',
+                        'closing_business',
+                        'other'
+                    )),
+    details         TEXT,
+    acknowledged    BOOLEAN      NOT NULL DEFAULT FALSE,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_cancellation_feedback_brand_created
+    ON cancellation_feedback (brand_id, created_at DESC);
+
+-- -----------------------------------------------------------------------------
+-- suspended_coffee_ledger — Pay It Forward pool, scoped per cafe_id.
+--
+-- Pool balance for a cafe is computed at READ time as
+--     SUM(units_delta) WHERE cafe_id = $1
+-- Floor (no negative pool) is enforced at the API layer inside a
+-- transaction with `SELECT … FROM cafes WHERE id = $1 FOR UPDATE` —
+-- NOT a CHECK constraint, because the check needs to span rows.
+--
+-- Append-only is enforced via the trigger pattern below, mirroring
+-- stamp_ledger. Two columns nullable for the anonymous events:
+--   donor_user_id NULL → till-paid donation OR serve event
+--   donor_user_id SET  → loyalty donation (the consumer who burned
+--                        a banked reward to fund the pool)
+--
+-- The accompanying cafes.suspended_coffee_enabled flag (added in the
+-- same migration) is the per-cafe opt-in toggle. See migration 0020 +
+-- PRD §4.5 for the full Pay It Forward spec.
+-- -----------------------------------------------------------------------------
+ALTER TABLE cafes
+    ADD COLUMN suspended_coffee_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE INDEX idx_cafes_suspended_coffee_enabled
+    ON cafes (suspended_coffee_enabled)
+    WHERE suspended_coffee_enabled = TRUE;
+
+CREATE TABLE suspended_coffee_ledger (
+    id              UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    cafe_id         UUID         NOT NULL REFERENCES cafes(id) ON DELETE CASCADE,
+    event_type      TEXT         NOT NULL CHECK (event_type IN (
+                        'donate_loyalty',
+                        'donate_till',
+                        'serve'
+                    )),
+    units_delta     INTEGER      NOT NULL CHECK (units_delta <> 0),
+    donor_user_id   UUID         REFERENCES users(id) ON DELETE SET NULL,
+    barista_id      UUID         REFERENCES baristas(id) ON DELETE SET NULL,
+    note            TEXT,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_suspended_coffee_cafe_created
+    ON suspended_coffee_ledger (cafe_id, created_at DESC);
+
+CREATE INDEX idx_suspended_coffee_donor
+    ON suspended_coffee_ledger (donor_user_id)
+    WHERE donor_user_id IS NOT NULL;
+
+-- Append-only guard, mirroring the stamp_ledger trigger pattern.
+CREATE OR REPLACE FUNCTION suspended_coffee_block_mutations()
+RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'suspended_coffee_ledger is append-only (% not allowed)', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER suspended_coffee_no_update
+    BEFORE UPDATE ON suspended_coffee_ledger
+    FOR EACH ROW EXECUTE FUNCTION suspended_coffee_block_mutations();
+
+CREATE TRIGGER suspended_coffee_no_delete
+    BEFORE DELETE ON suspended_coffee_ledger
+    FOR EACH ROW EXECUTE FUNCTION suspended_coffee_block_mutations();
+
+-- -----------------------------------------------------------------------------
+-- offers.custom_text — bespoke promo copy for offer_type='custom'
+-- (added in migration 0018). The OFFER_TYPES allow-list lives at the
+-- application layer (see app/models.py + app/schemas.py); we don't widen
+-- the SQL CHECK constraint when 'custom' is added so the schema stays
+-- evolution-friendly.
+-- -----------------------------------------------------------------------------
+ALTER TABLE offers
+    ADD COLUMN custom_text TEXT;

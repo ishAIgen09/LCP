@@ -187,6 +187,17 @@ class Cafe(Base):
         nullable=False,
         server_default=text("'active'"),
     )
+    # Per-cafe opt-in for the Pay It Forward / Suspended Coffee system
+    # (PRD §4.5, migration 0020). When TRUE, the consumer-app's Explore
+    # tab shows the "Community Board" badge on this cafe + the donation
+    # CTA is enabled in CafeDetailsModal; the Barista POS shows the
+    # pool counter + Serve-from-pool button. Default FALSE so existing
+    # cafes don't auto-enroll.
+    suspended_coffee_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -492,7 +503,11 @@ class GlobalLedger(Base):
 # Valid offer_type / target values — kept in sync with the DB CHECK constraints
 # in migrations/0005 and with b2b-dashboard/src/lib/offers.ts. The API layer
 # (schemas.py) treats these as the authoritative allow-list.
-OFFER_TYPES = ("percent", "fixed", "bogo", "double_stamps")
+#
+# 'custom' (added 2026-05-01, migration 0018) is the bespoke free-text
+# variant: target/amount are ignored, custom_text on the Offer row carries
+# the operator-written copy (max 280 chars, enforced in schemas.py).
+OFFER_TYPES = ("percent", "fixed", "bogo", "double_stamps", "custom")
 OFFER_TARGETS = ("any_drink", "all_pastries", "food", "merchandise", "entire_order")
 
 
@@ -524,6 +539,9 @@ class Offer(Base):
         ARRAY(UUID(as_uuid=True)),
         nullable=True,
     )
+    # Free-text body for offer_type='custom'. Always NULL for the four
+    # structured types (percent/fixed/bogo/double_stamps). Migration 0018.
+    custom_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -533,4 +551,150 @@ class Offer(Base):
     __table_args__ = (
         Index("idx_offers_brand_window", "brand_id", "starts_at", "ends_at"),
         Index("idx_offers_live_window", "starts_at", "ends_at"),
+    )
+
+
+# Allow-list of cancellation reasons accepted by the B2B cancel-intercept
+# flow (PRD §4.2, migration 0019). Kept in sync with the DB CHECK
+# constraint AND the b2b-dashboard's CancellationFeedbackModal dropdown.
+CANCELLATION_REASONS = (
+    "free_drink_cost",
+    "barista_friction",
+    "price_too_high",
+    "low_volume",
+    "feature_gap",
+    "closing_business",
+    "other",
+)
+
+
+class CancellationFeedback(Base):
+    """Survey response captured before the b2b dashboard hands off to the
+    Stripe Customer Portal (PRD §4.2). Append-only by convention — we
+    never UPDATE/DELETE rows, corrections happen via a fresh row. See
+    migration 0019."""
+
+    __tablename__ = "cancellation_feedback"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    brand_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("brands.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # One of CANCELLATION_REASONS — DB CHECK enforces the allow-list.
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    # Required (non-empty) when reason='other', optional otherwise.
+    # The non-empty rule lives in schemas.py / the API boundary, not in
+    # SQL — keeps a future loosening of the rule from needing a migration.
+    details: Mapped[str | None] = mapped_column(Text)
+    # The "I understand cancellation preserves the grace period"
+    # checkbox value. Stored so we can prove the disclosure landed.
+    acknowledged: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "reason IN ("
+            "'free_drink_cost', 'barista_friction', 'price_too_high', "
+            "'low_volume', 'feature_gap', 'closing_business', 'other'"
+            ")",
+            name="cancellation_feedback_reason_allowed",
+        ),
+        Index(
+            "idx_cancellation_feedback_brand_created",
+            "brand_id",
+            text("created_at DESC"),
+        ),
+    )
+
+
+# Allow-list of suspended_coffee_ledger event types (PRD §4.5, migration
+# 0020). Kept in sync with the DB CHECK constraint.
+#   donate_loyalty — consumer burned 1 banked reward → +1 to pool
+#   donate_till    — barista recorded a till-paid donation → +1 to pool
+#   serve          — barista handed a coffee to someone in need → -1
+SUSPENDED_COFFEE_EVENT_TYPES = (
+    "donate_loyalty",
+    "donate_till",
+    "serve",
+)
+
+
+class SuspendedCoffeeLedger(Base):
+    """Append-only event log for the Pay It Forward / Suspended Coffee
+    pool (PRD §4.5). Pool balance for a cafe is computed at read time
+    as `SUM(units_delta) WHERE cafe_id = $1`. Floor (no negative pool)
+    is enforced inside a transaction at the API layer with a
+    `SELECT … FROM cafes WHERE id = $1 FOR UPDATE` lock — NOT a CHECK
+    constraint, because the check needs to span rows.
+
+    Pool scope is ALWAYS per-cafe (PRD §4.5.3 architectural rule).
+    See migration 0020 for the append-only triggers."""
+
+    __tablename__ = "suspended_coffee_ledger"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    cafe_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("cafes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # One of SUSPENDED_COFFEE_EVENT_TYPES — DB CHECK enforces the
+    # allow-list.
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    # +1 for donate_*, -1 for serve. CHECK <> 0 blocks the meaningless
+    # zero-delta case. Magnitude is otherwise unconstrained at the DB
+    # layer so future ops adjustments don't need a migration.
+    units_delta: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Loyalty donations originate from a known consumer; till-paid +
+    # serve are anonymous (NULL). ON DELETE SET NULL keeps the ledger
+    # row intact even if the consumer's user record is later removed.
+    donor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    barista_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("baristas.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('donate_loyalty', 'donate_till', 'serve')",
+            name="suspended_coffee_event_type_allowed",
+        ),
+        CheckConstraint("units_delta <> 0", name="suspended_coffee_units_nonzero"),
+        Index(
+            "idx_suspended_coffee_cafe_created",
+            "cafe_id",
+            text("created_at DESC"),
+        ),
+        Index(
+            "idx_suspended_coffee_donor",
+            "donor_user_id",
+            postgresql_where=text("donor_user_id IS NOT NULL"),
+        ),
     )

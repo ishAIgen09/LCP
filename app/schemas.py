@@ -81,6 +81,11 @@ class CafeUpdate(BaseModel):
     address: str | None = Field(default=None, min_length=1, max_length=255)
     phone: str | None = Field(default=None, max_length=40)
     food_hygiene_rating: FoodHygieneRating | None = None
+    # Per-cafe Pay It Forward / Suspended Coffee opt-in (PRD §4.5,
+    # migration 0020). Toggled from the b2b dashboard's Settings tab.
+    # None = "not in this patch" (existing flag preserved); True/False
+    # explicit values flip the cafe's enabled state.
+    suspended_coffee_enabled: bool | None = None
 
 
 class CafeAmenitiesUpdate(BaseModel):
@@ -697,10 +702,15 @@ class B2BScanResponse(BaseModel):
 # -----------------------------------------------------------------------------
 
 
-OfferTypeLiteral = Literal["percent", "fixed", "bogo", "double_stamps"]
+OfferTypeLiteral = Literal["percent", "fixed", "bogo", "double_stamps", "custom"]
 OfferTargetLiteral = Literal[
     "any_drink", "all_pastries", "food", "merchandise", "entire_order"
 ]
+
+# Caps the bespoke promo copy an owner can write for an offer_type='custom'
+# offer. 280 mirrors a tweet-length boundary that fits cleanly on a phone
+# offer card without truncation. See PRD §4.3 for the UX rationale.
+CUSTOM_OFFER_TEXT_MAX = 280
 
 
 def _validate_offer_payload(
@@ -709,12 +719,28 @@ def _validate_offer_payload(
     amount: Decimal | None,
     starts_at: datetime,
     ends_at: datetime,
+    custom_text: str | None = None,
 ) -> None:
     if offer_type not in OFFER_TYPES:
         raise ValueError(f"Unknown offer type '{offer_type}'.")
     if target not in OFFER_TARGETS:
         raise ValueError(f"Unknown offer target '{target}'.")
-    if offer_type in ("percent", "fixed"):
+
+    if offer_type == "custom":
+        # Free-text body is the entire content of a custom offer. The
+        # target/amount fields are accepted (the frontend may send
+        # placeholder values) but ignored at the persistence layer —
+        # the route handler clears them before INSERT.
+        text_norm = (custom_text or "").strip()
+        if not text_norm:
+            raise ValueError(
+                "Custom offers require non-empty custom_text."
+            )
+        if len(text_norm) > CUSTOM_OFFER_TEXT_MAX:
+            raise ValueError(
+                f"custom_text is limited to {CUSTOM_OFFER_TEXT_MAX} characters."
+            )
+    elif offer_type in ("percent", "fixed"):
         if amount is None or amount <= 0:
             raise ValueError("This offer type requires a positive amount.")
         if offer_type == "percent" and amount > 100:
@@ -723,6 +749,7 @@ def _validate_offer_payload(
         raise ValueError(
             "Bogo / double_stamps offers must not carry an amount."
         )
+
     if ends_at <= starts_at:
         raise ValueError("ends_at must be strictly after starts_at.")
 
@@ -738,11 +765,16 @@ class OfferCreate(BaseModel):
     # the route handler so "specific locations with none selected" can't
     # silently create an invisible offer.
     target_cafe_ids: list[UUID] | None = None
+    # For offer_type='custom', this is the bespoke promo copy (required,
+    # max 280 chars). For other offer types this field is ignored — the
+    # route handler clears it before INSERT.
+    custom_text: str | None = Field(default=None, max_length=CUSTOM_OFFER_TEXT_MAX)
 
     @model_validator(mode="after")
     def _check(self) -> "OfferCreate":
         _validate_offer_payload(
-            self.offer_type, self.target, self.amount, self.starts_at, self.ends_at
+            self.offer_type, self.target, self.amount, self.starts_at, self.ends_at,
+            custom_text=self.custom_text,
         )
         return self
 
@@ -754,11 +786,13 @@ class OfferUpdate(BaseModel):
     starts_at: datetime
     ends_at: datetime
     target_cafe_ids: list[UUID] | None = None
+    custom_text: str | None = Field(default=None, max_length=CUSTOM_OFFER_TEXT_MAX)
 
     @model_validator(mode="after")
     def _check(self) -> "OfferUpdate":
         _validate_offer_payload(
-            self.offer_type, self.target, self.amount, self.starts_at, self.ends_at
+            self.offer_type, self.target, self.amount, self.starts_at, self.ends_at,
+            custom_text=self.custom_text,
         )
         return self
 
@@ -774,6 +808,8 @@ class OfferResponse(BaseModel):
     starts_at: datetime
     ends_at: datetime
     target_cafe_ids: list[UUID] | None = None
+    # Populated for offer_type='custom', NULL for other types.
+    custom_text: str | None = None
     created_at: datetime
 
 
@@ -789,6 +825,10 @@ class ConsumerOfferPayload(BaseModel):
     amount: Decimal | None
     starts_at: datetime
     ends_at: datetime
+    # Populated when offer_type='custom' (the b2b owner's free-text copy).
+    # The consumer-app's DiscoverOfferRow renders this verbatim instead of
+    # the structured "X% off Y" template used for non-custom offers.
+    custom_text: str | None = None
 
 
 class ConsumerCafePayload(BaseModel):
@@ -808,3 +848,128 @@ class ConsumerCafePayload(BaseModel):
     latitude: float | None = None
     longitude: float | None = None
     distance_miles: float | None = None
+    # Pay It Forward / Suspended Coffee participation (PRD §4.5). Populated
+    # server-side from the cafe's row + a SUM over suspended_coffee_ledger.
+    # `suspended_coffee_enabled` drives the "Community Board" badge on the
+    # consumer-app's Explore card; `suspended_coffee_pool` is the current
+    # drink-unit count surfaced inside CafeDetailsModal.
+    suspended_coffee_enabled: bool = False
+    suspended_coffee_pool: int = 0
+
+
+# -----------------------------------------------------------------------------
+# B2B Cancellation Feedback (PRD §4.2, migration 0019)
+# -----------------------------------------------------------------------------
+
+
+CancellationReasonLiteral = Literal[
+    "free_drink_cost",
+    "barista_friction",
+    "price_too_high",
+    "low_volume",
+    "feature_gap",
+    "closing_business",
+    "other",
+]
+
+
+# Caps the free-text "tell us more" body. Modest ceiling so the survey
+# stays scannable and the row stays cheap to index. Mirrors the b2b
+# dashboard's CancellationFeedbackModal max-length.
+CANCELLATION_DETAILS_MAX = 500
+
+
+class CancellationFeedbackCreate(BaseModel):
+    """Body of POST /api/b2b/cancellation-feedback. Validates that:
+      - reason is one of the seven allowed values (Pydantic Literal)
+      - if reason='other', details is required (non-empty after strip)
+      - acknowledged is True (the user confirmed the grace-window policy)
+    Brand id comes from the admin JWT, not the request body."""
+
+    reason: CancellationReasonLiteral
+    details: str | None = Field(default=None, max_length=CANCELLATION_DETAILS_MAX)
+    acknowledged: bool
+
+    @model_validator(mode="after")
+    def _check(self) -> "CancellationFeedbackCreate":
+        if self.reason == "other":
+            details_norm = (self.details or "").strip()
+            if not details_norm:
+                raise ValueError(
+                    "When reason='other', details must be a non-empty description."
+                )
+        if not self.acknowledged:
+            raise ValueError(
+                "You must acknowledge the cancel-at-period-end grace policy "
+                "before continuing to the Stripe portal."
+            )
+        return self
+
+
+class CancellationFeedbackResponse(BaseModel):
+    """Returned by POST /api/b2b/cancellation-feedback so the b2b dashboard
+    can correlate the survey row with the subsequent Stripe portal hand-off
+    (the dashboard then redirects the user to the portal)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    brand_id: UUID
+    reason: str
+    details: str | None
+    acknowledged: bool
+    created_at: datetime
+
+
+# -----------------------------------------------------------------------------
+# Pay It Forward / Suspended Coffee (PRD §4.5, migration 0020)
+# -----------------------------------------------------------------------------
+
+
+# Per-scan cap on Mode 2 (paid-at-till) donation count. Keeps the workflow
+# tappable at the POS without letting an over-eager double-tap inflate the
+# pool by hundreds. PRD §4.5.7.
+SUSPENDED_COFFEE_TILL_PER_SCAN_MAX = 10
+
+
+class CommunityPoolStatus(BaseModel):
+    """Returned by GET /api/b2b/suspended-coffee/pool. The Barista POS polls
+    this on mount + after every donate/serve action so the visible counter
+    stays fresh.
+
+    `pool_balance` is computed at read time as
+        SUM(units_delta) WHERE cafe_id = $1
+    over the suspended_coffee_ledger. NEVER persisted as a column — the
+    ledger is the source of truth (PRD §4.5.3 floor rule).
+    """
+
+    cafe_id: UUID
+    enabled: bool
+    pool_balance: int = Field(ge=0)
+
+
+class DonateLoyaltyRequest(BaseModel):
+    """Body of POST /api/consumer/suspended-coffee/donate-loyalty. The
+    consumer must have at least 1 banked reward (floor(stamps / 10) >= 1)
+    for the SAME brand the cafe belongs to — the handler enforces this in
+    a transaction with SELECT … FOR UPDATE on the user row."""
+
+    cafe_id: UUID
+
+
+class DonateTillRequest(BaseModel):
+    """Body of POST /api/b2b/suspended-coffee/donate-till. The barista
+    can record up to 10 till-paid donations per scan (single Confirm).
+    Cafe id comes from the Venue-API-Key header, not the body."""
+
+    count: int = Field(ge=1, le=SUSPENDED_COFFEE_TILL_PER_SCAN_MAX)
+
+
+class SuspendedCoffeeMutationResponse(BaseModel):
+    """Shared response shape for the three pool-mutation endpoints
+    (donate-loyalty / donate-till / serve). Always returns the post-write
+    pool balance so the client can update its UI without a follow-up GET.
+    """
+
+    ok: bool = True
+    new_pool_balance: int = Field(ge=0)
