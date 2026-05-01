@@ -57,7 +57,7 @@ All subscription mutations are pay-in-advance: every invoice charges at the star
 * **Why all this matters:** the spec at the top of the file (lines 267-313 in `app/billing.py`) is the authoritative pro-rata contract. If pricing logic ever drifts from "pay-in-advance, prorate mid-cycle, anchor to the 1st," update that comment block AND this section in lockstep.
 
 ## 3. Server & Deployment (DigitalOcean)
-*Last updated: **2026-04-27***
+*Last updated: **2026-05-01***
 
 * **Role:** Live production hosting for the FastAPI backend.
 * **Specs:** 2GB Dedicated Droplet (IP `178.62.123.228`).
@@ -65,6 +65,11 @@ All subscription mutations are pay-in-advance: every invoice charges at the star
 * **Environment Variables:** Stripe keys, Webhook secrets, and Database URIs are stored in the persistent file `/root/.env-lcp-production` (root-owned, mode 600). The deploy script copies this file to `/var/www/lcp/.env` before each `docker compose up` so the API container sees the latest values. Add new env vars by `ssh`-editing the persistent file, NOT the working-tree `.env` (which gets clobbered every deploy).
 * **Deploy trigger:** GitHub Actions on every push to `main` (`.github/workflows/deploy.yml`) — SSHes the droplet, pulls latest, restores `.env` from the persistent copy, rebuilds the API container.
 * **Deploy script lock handling (added 2026-04-27):** the deploy.yml waits up to 20 seconds (10 × 2s) for any in-flight `.git/index.lock` to clear before its own `git fetch`, then force-removes a lingering lock so a one-off race (e.g. a manual SSH `git fetch` colliding with the scheduled deploy) can't permanently break a deploy.
+* **Database migrations are NOT auto-applied (added 2026-05-01).** The deploy script rebuilds the API container with the latest source — including any new files in `migrations/` — but does **not** run `apply_migration` against the database. After any push that ships a new migration, the operator must SSH the droplet and apply each one manually:
+  ```bash
+  ssh root@178.62.123.228 'cd /var/www/lcp && docker compose exec -T api python -m scripts.apply_migration migrations/00XX_*.sql'
+  ```
+  Window between deploy + migration application is the only failure mode — endpoints that reference the not-yet-created tables/columns will 500 until the migration runs. Existing endpoints are unaffected (additive migrations only). Pre-flight: list new migrations in the commit message + apply in numeric order.
 * **Subdomains served by the droplet's Nginx:** `localcoffeeperks.com` (apex marketing site), `dashboard.localcoffeeperks.com` (b2b dashboard SPA + `/api/*` proxy to FastAPI), `hq.localcoffeeperks.com` (super-admin SPA + `/api/*` proxy). All three on Let's Encrypt HTTPS, auto-renewed by certbot.
 * **UFW firewall:** active, default-deny incoming, allowed: 22 (SSH), 80, 443, 8000.
 
@@ -277,11 +282,69 @@ Templating is plain Python f-string interpolation — no Jinja or other templati
     * Just wait — new chats pick up the fresh tags immediately.
 * **Rule going forward:** any change to OG / Twitter meta MUST land in both the source HTML and the dist HTML in the same commit (or rebuild dist + commit). Bumping only the source guarantees a stale preview.
 
+## 11. Phase 2 — Custom Offers, Cancellation Feedback, Pay It Forward
+*Last updated: **2026-05-01***
+
+* **Role:** Documents the operator-facing surface of the Phase 2 backend (commit `4060c92`). Driven by [`PRD_Phase2_Enhancements.md`](PRD_Phase2_Enhancements.md) at the repo root. Pure backend / API changes — frontend wiring still pending.
+
+### Migrations 0018-0020 (must apply on droplet after deploy lands)
+Three additive migrations shipped in `4060c92`. **Apply in numeric order via the standard SSH + `docker compose exec` recipe in §3** — the GHA deploy does NOT auto-run these:
+
+```bash
+ssh root@178.62.123.228 'bash -s' <<'EOF'
+cd /var/www/lcp
+docker compose exec -T api python -m scripts.apply_migration migrations/0018_add_offer_custom_text.sql
+docker compose exec -T api python -m scripts.apply_migration migrations/0019_add_cancellation_feedback.sql
+docker compose exec -T api python -m scripts.apply_migration migrations/0020_add_suspended_coffee.sql
+EOF
+```
+
+| File | Adds |
+|---|---|
+| `0018_add_offer_custom_text.sql` | `offers.custom_text TEXT NULL` |
+| `0019_add_cancellation_feedback.sql` | `cancellation_feedback` table (id, brand_id FK→brands CASCADE, reason CHECK in 7 values, details, acknowledged BOOLEAN, created_at) + `idx_cancellation_feedback_brand_created` |
+| `0020_add_suspended_coffee.sql` | `cafes.suspended_coffee_enabled BOOLEAN DEFAULT FALSE` + partial index on `WHERE TRUE` + new `suspended_coffee_ledger` table (cafe_id FK→cafes CASCADE, event_type CHECK, units_delta CHECK <>0, donor_user_id FK→users SET NULL, barista_id FK→baristas SET NULL) + 2 append-only triggers |
+
+All three are verified live against the local dev DB (commit-time evidence). Re-running against an already-migrated DB is safe (`IF NOT EXISTS` / `CREATE OR REPLACE` / `DROP TRIGGER IF EXISTS` patterns throughout).
+
+### Custom Offers
+* New `offer_type` value `'custom'` joining the existing four (`percent`, `fixed`, `bogo`, `double_stamps`). For a custom offer, `custom_text` (max 280 chars) is the entire content; `target` and `amount` are accepted from the client but cleared at persist time. The b2b PromotionsView gets a fifth picker tile.
+* Allow-list lives at the application layer (`app/models.py::OFFER_TYPES` + `app/schemas.py::OfferTypeLiteral` + `b2b-dashboard/src/lib/offers.ts`). Drift across the three is the most likely future bug — keep them in lockstep.
+
+### Cancellation Feedback (intercept survey before Stripe portal)
+* New endpoint `POST /api/b2b/cancellation-feedback` (Brand Admin JWT). The b2b dashboard's `BillingView::openPortal` (and `AddLocationDialog`'s portal CTA) MUST gate behind a survey modal that submits this endpoint before the Stripe-portal redirect fires. brand_id comes from JWT, never the body.
+* Reasons are an enforced enum: `free_drink_cost / barista_friction / price_too_high / low_volume / feature_gap / closing_business / other`. `reason='other'` requires non-empty `details`. `acknowledged=true` is required (the cancel-at-period-end disclosure).
+* No webhook / Stripe interaction at this layer — purely a UX gate that captures churn intelligence. Cancellations themselves still happen via the existing Stripe Customer Portal.
+
+### Pay It Forward (Suspended Coffee)
+* **Per-cafe opt-in.** `cafes.suspended_coffee_enabled BOOLEAN` defaults to FALSE. Toggle via the existing `PATCH /api/admin/cafes/{cafe_id}` partial-update path — `CafeUpdate` schema gained `suspended_coffee_enabled: bool | None`. A multi-location brand has independent toggles per shop.
+* **Pool scope.** Drink-unit pool is scoped strictly to `cafe_id` (NEVER per-brand or platform-wide). PRD §4.5.3 architectural rule.
+* **Ledger.** Append-only `suspended_coffee_ledger` table mirrors `stamp_ledger` semantics. Pool balance for a cafe is computed at read time as `SUM(units_delta) WHERE cafe_id = $1`. Floor (no negative pool) is enforced at the API layer inside a `SELECT … FOR UPDATE` transaction on the cafe row — NOT a CHECK constraint. Append-only triggers reject UPDATE/DELETE.
+* **Endpoints (5 total).**
+
+| Path | Auth | Notes |
+|---|---|---|
+| `POST /api/b2b/cancellation-feedback` | Brand Admin JWT | Survey persistence (above) |
+| `GET /api/b2b/suspended-coffee/pool` | Venue API key | Returns `{cafe_id, enabled, pool_balance}` for the POS counter. Always responds; disabled cafes can still see historical balance. |
+| `POST /api/b2b/suspended-coffee/donate-till` | Venue API key | Mode 2 — barista records N till-paid donations from one scan (1 ≤ N ≤ 10). Inserts one ledger row per unit (per-unit audit trail). 403 if cafe not enabled. |
+| `POST /api/b2b/suspended-coffee/serve` | Venue API key | Decrements pool by 1. **Returns 409 `"Community pool is empty."` if balance < 1.** Cafe-row `FOR UPDATE` lock prevents concurrent serves draining last unit. 403 if cafe not enabled. |
+| `POST /api/consumer/suspended-coffee/donate-loyalty` | Consumer JWT | Mode 1 — atomic 3-row insert: REDEEM stamp_ledger (-10) + REDEEMED global_ledger (qty=1, for /me/history) + donate_loyalty suspended_coffee_ledger (+1). Brand-scoped via existing `_scoped_balance_stmt`. 400 if balance < 10. 403 if cafe not enabled. |
+
+### Operational gotchas
+* **Greppable log markers** for ops triage:
+    * `CANCELLATION-FEEDBACK brand_id=… reason=… has_details=…` per survey submission
+    * `PIF-DONATE-TILL cafe_id=… count=… new_balance=…` per Mode-2 donation
+    * `PIF-SERVE cafe_id=… prev_balance=… new_balance=…` per serve
+    * `POOL-INTEGRITY suspended_coffee_ledger sum is negative…` — should never fire; alert if it does.
+* **Three places that must stay in lockstep when the offer-type catalogue evolves.** `app/models.py::OFFER_TYPES`, `app/schemas.py::OfferTypeLiteral`, `b2b-dashboard/src/lib/offers.ts`. Same pattern applies to amenity catalogue + cancellation reasons.
+* **Migration application is manual** (per §3) — apply 0018, 0019, 0020 on the droplet AFTER the next GHA deploy lands. Until then, Phase 2 endpoints will 500; existing endpoints unaffected.
+
 ---
 
 ## Change log
 *Append a single line per change, newest at the top, in the form `YYYY-MM-DD — section — what changed`.*
 
+* **2026-05-01 (Phase 2)** — Section 11 added (Custom Offers, Cancellation Feedback, Pay It Forward) — operator-facing reference for commit `4060c92`. Documents the 5 new endpoints, the per-cafe `suspended_coffee_enabled` opt-in toggle, the cafe-scoped pool architectural rule, and the migration-application checklist. Section 3 (DigitalOcean) — added explicit "migrations are NOT auto-applied" note + the SSH + `apply_migration` recipe operators must run after any deploy that ships new migrations.
 * **2026-05-01 (later)** — Section 4 (Email) — added intentional-dev-shim note: `app/consumer_auth.py` `saeed@test.com → OTP 1234` hardcode is permanent dev-test path per founder, not a future-cleanup item.
 * **2026-05-01 (later)** — Sections 2 (Stripe Billing) + 9 (Super-Admin Auth) — three-task batch (commit `29b8c09`):
     1. Section 9: the temporary `GET /api/admin/platform/seed-super` bootstrap endpoint was DELETED from `app/main.py` (prod already bootstrapped + password rotated; residual unauth'd-endpoint footprint closed).
