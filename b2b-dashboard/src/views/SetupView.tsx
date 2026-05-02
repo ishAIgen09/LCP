@@ -3,28 +3,59 @@ import {
   AlertCircle,
   ArrowRight,
   Building2,
+  Check,
   CheckCircle2,
   Coffee,
   CreditCard,
   Eye,
   EyeOff,
+  HandHeart,
   Loader2,
   LockKeyhole,
   MapPin,
   Phone,
+  ShieldCheck,
   Sparkles,
   Store,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
   adminSetup,
   createCafe,
   createCheckout,
   humanizeError,
+  updateCafeAmenities,
 } from "@/lib/api"
+import { AMENITIES, type AmenityId } from "@/lib/amenities"
 import { cn } from "@/lib/utils"
-import type { Brand, Session } from "@/lib/mock"
+import type { Brand, FoodHygieneRating, Session } from "@/lib/mock"
+
+// Mirrors the dropdown order in AddLocationDialog (PRD: highest to
+// lowest, then the pre-audit pending state). Backend CHECK constraint
+// in migration 0007 enforces the same set.
+const HYGIENE_OPTIONS: FoodHygieneRating[] = [
+  "5",
+  "4",
+  "3",
+  "2",
+  "1",
+  "Awaiting Inspection",
+]
+const FSA_LABEL: Record<Exclude<FoodHygieneRating, "Awaiting Inspection">, string> = {
+  "5": "Very Good",
+  "4": "Good",
+  "3": "Generally Satisfactory",
+  "2": "Improvement Necessary",
+  "1": "Major Improvement Necessary",
+}
 
 type Step = 1 | 2 | 3
 
@@ -53,6 +84,13 @@ export function SetupView({
 
   const [step, setStep] = useState<Step>(1)
   const [sessionToken, setSessionToken] = useState<string | null>(null)
+  // Stash the brand as soon as Step 1 returns it. Step 2 needs it for
+  // the "Stored as {brandName} — {name}" hint inside the form, and
+  // Step 3 needs `schemeType` to pick the correct Stripe price id —
+  // the founder's symptom (a global brand getting charged £5 instead
+  // of £7.99) traced to Step 3 calling createCheckout() with no
+  // tier and falling back to the "private" default.
+  const [brand, setBrand] = useState<Brand | null>(null)
   const [createdCafeName, setCreatedCafeName] = useState<string | null>(null)
 
   if (!inviteToken) {
@@ -64,24 +102,26 @@ export function SetupView({
       {step === 1 && (
         <StepSecureAccount
           inviteToken={inviteToken}
-          onComplete={(token) => {
+          onComplete={(token, b) => {
             setSessionToken(token)
+            setBrand(b)
             setStep(2)
           }}
           onAuthenticated={onAuthenticated}
         />
       )}
-      {step === 2 && sessionToken && (
+      {step === 2 && sessionToken && brand && (
         <StepAddLocation
           token={sessionToken}
+          brand={brand}
           onComplete={(name) => {
             setCreatedCafeName(name)
             setStep(3)
           }}
         />
       )}
-      {step === 3 && sessionToken && (
-        <StepPayment token={sessionToken} cafeName={createdCafeName} />
+      {step === 3 && sessionToken && brand && (
+        <StepPayment token={sessionToken} brand={brand} cafeName={createdCafeName} />
       )}
     </Frame>
   )
@@ -190,7 +230,7 @@ function StepSecureAccount({
   onAuthenticated,
 }: {
   inviteToken: string
-  onComplete: (sessionToken: string) => void
+  onComplete: (sessionToken: string, brand: Brand) => void
   onAuthenticated: (s: Session, brand?: Brand) => void
 }) {
   const [password, setPassword] = useState("")
@@ -213,10 +253,10 @@ function StepSecureAccount({
       const { session, brand } = await adminSetup(inviteToken, password)
       // Hoist the session up FIRST so localStorage / global state is
       // populated before we leave this step. The wizard's later steps
-      // still consume the token locally via onComplete to avoid relying
-      // on an async setState round-trip.
+      // still consume the token + brand locally via onComplete to
+      // avoid relying on an async setState round-trip.
       onAuthenticated(session, brand)
-      onComplete(session.token)
+      onComplete(session.token, brand)
     } catch (e) {
       setError(humanizeError(e))
       setSubmitting(false)
@@ -321,18 +361,39 @@ function StepSecureAccount({
 
 function StepAddLocation({
   token,
+  brand,
   onComplete,
 }: {
   token: string
+  brand: Brand
   onComplete: (cafeName: string) => void
 }) {
+  // Schema mirrors AddLocationDialog (the main-dashboard form) so the
+  // founder's brand owners see the same fields on day one as they do
+  // every day after — amenities, FSA hygiene rating, and the per-cafe
+  // Pay It Forward (Community Pool) opt-in. The wizard previously
+  // shipped a stripped name/address/phone form, which left every
+  // brand silently misconfigured at launch.
   const [name, setName] = useState("")
   const [address, setAddress] = useState("")
   const [phone, setPhone] = useState("")
+  const [foodHygieneRating, setFoodHygieneRating] =
+    useState<FoodHygieneRating>("Awaiting Inspection")
+  const [amenities, setAmenities] = useState<Set<AmenityId>>(new Set())
+  const [suspendedCoffeeEnabled, setSuspendedCoffeeEnabled] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const valid = name.trim().length > 1 && address.trim().length > 3
+
+  const toggleAmenity = (id: AmenityId) => {
+    setAmenities((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -340,13 +401,26 @@ function StepAddLocation({
     setError(null)
     setSubmitting(true)
     try {
+      // 1. Cafe row create — same payload shape App.tsx::handleAddLocation
+      //    uses for the dashboard's Add Location dialog.
       const cafe = await createCafe(token, {
         name: name.trim(),
         address: address.trim(),
-        // Phone is optional during onboarding — if blank we send null so
-        // the backend's coerce-empty-to-NULL semantics apply uniformly.
         phone: phone.trim() ? phone.trim() : null,
+        food_hygiene_rating: foodHygieneRating,
+        suspended_coffee_enabled: suspendedCoffeeEnabled,
       })
+      // 2. Amenities live on a separate endpoint; failure here must NOT
+      //    block onboarding — the cafe is already persisted, the owner
+      //    can fix amenities from the dashboard's Edit dialog later.
+      if (amenities.size > 0) {
+        try {
+          await updateCafeAmenities(token, cafe.id, [...amenities])
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn("[setup] amenities follow-up failed:", err)
+        }
+      }
       onComplete(cafe.name)
     } catch (e) {
       setError(humanizeError(e))
@@ -366,25 +440,33 @@ function StepAddLocation({
         </h1>
         <p className="text-[13.5px] leading-relaxed text-muted-foreground">
           This is the café customers will see in the app. You can add more
-          locations and fine-tune amenities later from your dashboard.
+          locations and fine-tune any of these from the Locations tab later.
         </p>
       </header>
 
       <form onSubmit={submit} className="space-y-4" noValidate>
-        <Field label="Cafe name">
+        {/* Founder-locked label, same string the main dashboard uses
+            so onboarding and steady-state stay in lockstep. */}
+        <Field label="Location Name / Branch identifier (e.g. 'London Soho')">
           <div className="relative">
             <Building2
               className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
               strokeWidth={1.9}
             />
             <Input
-              placeholder="e.g. Halcyon Coffee — Shoreditch"
+              placeholder="London Soho"
               value={name}
               onChange={(e) => setName(e.target.value)}
               className="h-11 pl-9"
               autoFocus
               disabled={submitting}
             />
+            <p className="mt-1.5 text-[11px] text-muted-foreground">
+              Stored as{" "}
+              <span className="font-mono">
+                {brand.name} — {name.trim() || "…"}
+              </span>
+            </p>
           </div>
         </Field>
 
@@ -426,10 +508,164 @@ function StepAddLocation({
             />
           </div>
           <p className="mt-1.5 text-[11px] text-muted-foreground">
-            Surfaced on the consumer app's "Contact &amp; Location" sheet.
-            Add it now or fill it in later from the Locations tab.
+            Shown to regulars inside the consumer app so they can ring ahead.
           </p>
         </Field>
+
+        <Field label="Food Hygiene Rating">
+          <Select
+            value={foodHygieneRating}
+            onValueChange={(v) => setFoodHygieneRating(v as FoodHygieneRating)}
+            disabled={submitting}
+          >
+            <SelectTrigger className="h-11">
+              <div className="flex items-center gap-2">
+                <ShieldCheck
+                  className="h-3.5 w-3.5 text-muted-foreground"
+                  strokeWidth={2}
+                />
+                <SelectValue />
+              </div>
+            </SelectTrigger>
+            <SelectContent>
+              {HYGIENE_OPTIONS.map((opt) => (
+                <SelectItem key={opt} value={opt}>
+                  {opt === "Awaiting Inspection"
+                    ? opt
+                    : `${opt} — ${FSA_LABEL[opt]}`}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="mt-1.5 text-[11px] text-muted-foreground">
+            The FSA's Food Hygiene Rating Scheme score. Pick &quot;Awaiting
+            Inspection&quot; until you&apos;ve had your first audit.
+          </p>
+        </Field>
+
+        {/* Pay It Forward / Community Pool — per-cafe opt-in. */}
+        <label
+          className={cn(
+            "flex cursor-pointer items-start justify-between gap-3 rounded-md border px-3 py-3 transition-colors",
+            suspendedCoffeeEnabled
+              ? "border-emerald-300 bg-emerald-50/60"
+              : "border-border bg-muted/20 hover:bg-muted/40",
+          )}
+        >
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <HandHeart
+                className={cn(
+                  "h-4 w-4 shrink-0",
+                  suspendedCoffeeEnabled
+                    ? "text-emerald-700"
+                    : "text-muted-foreground",
+                )}
+                strokeWidth={2.25}
+              />
+              <span className="text-[12.5px] font-medium tracking-tight text-foreground">
+                Community Board (Pay It Forward)
+              </span>
+            </div>
+            <p className="mt-1 text-[11.5px] leading-snug text-muted-foreground">
+              Lets customers donate a banked free drink to this cafe&apos;s
+              pool — your barista can serve it to someone in need. You
+              can flip this off any time without losing pool history.
+            </p>
+          </div>
+          <span className="relative inline-flex shrink-0 items-center pt-0.5">
+            <input
+              type="checkbox"
+              checked={suspendedCoffeeEnabled}
+              onChange={(e) => setSuspendedCoffeeEnabled(e.target.checked)}
+              disabled={submitting}
+              className="peer sr-only"
+            />
+            <span
+              className={cn(
+                "inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors",
+                suspendedCoffeeEnabled ? "bg-emerald-500" : "bg-neutral-300",
+                submitting && "opacity-60",
+              )}
+            >
+              <span
+                className={cn(
+                  "inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform",
+                  suspendedCoffeeEnabled
+                    ? "translate-x-[18px]"
+                    : "translate-x-0.5",
+                )}
+              />
+            </span>
+          </span>
+        </label>
+
+        {/* Amenities */}
+        <div className="grid gap-2">
+          <div className="flex items-baseline justify-between">
+            <label className="text-[12px] font-medium text-foreground">
+              Amenities for this location
+            </label>
+            <span className="text-[11px] text-muted-foreground">
+              {amenities.size} of {AMENITIES.length} selected
+            </span>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Pick only what this branch actually offers — these populate
+            the consumer Discover filters.
+          </p>
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            {AMENITIES.map(({ id, label, Icon }) => {
+              const checked = amenities.has(id)
+              return (
+                <label
+                  key={id}
+                  htmlFor={`setup-amenity-${id}`}
+                  className={cn(
+                    "flex cursor-pointer items-center gap-2.5 rounded-md border px-2.5 py-2 transition-colors",
+                    checked
+                      ? "border-foreground/40 bg-muted/60"
+                      : "border-border bg-background hover:bg-muted/30",
+                    submitting && "pointer-events-none opacity-60",
+                  )}
+                >
+                  <input
+                    id={`setup-amenity-${id}`}
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleAmenity(id)}
+                    disabled={submitting}
+                    className="sr-only"
+                  />
+                  <span
+                    className={cn(
+                      "grid h-7 w-7 shrink-0 place-items-center rounded-md",
+                      checked
+                        ? "bg-foreground text-background"
+                        : "bg-muted text-muted-foreground",
+                    )}
+                  >
+                    <Icon className="h-3.5 w-3.5" strokeWidth={2} />
+                  </span>
+                  <span className="min-w-0 flex-1 text-[12.5px] font-medium leading-snug text-foreground">
+                    {label}
+                  </span>
+                  <span
+                    className={cn(
+                      "grid h-4 w-4 shrink-0 place-items-center rounded-full border",
+                      checked
+                        ? "border-foreground bg-foreground text-background"
+                        : "border-border bg-background text-transparent",
+                    )}
+                    aria-hidden
+                  >
+                    <Check className="h-2.5 w-2.5" strokeWidth={3} />
+                  </span>
+                </label>
+              )
+            })}
+          </div>
+        </div>
 
         {error && <ErrorBanner>{error}</ErrorBanner>}
 
@@ -462,9 +698,11 @@ function StepAddLocation({
 
 function StepPayment({
   token,
+  brand,
   cafeName,
 }: {
   token: string
+  brand: Brand
   cafeName: string | null
 }) {
   const [submitting, setSubmitting] = useState(false)
@@ -475,12 +713,25 @@ function StepPayment({
   // "Continue to checkout" CTA below as a fallback if the redirect fails.
   const [autoRedirected, setAutoRedirected] = useState(false)
 
+  // Translate brand.schemeType → the Stripe price-id selector the
+  // backend's create_checkout endpoint understands. THIS LINE IS THE
+  // FIX for the founder's "global brand charged £5 instead of £7.99"
+  // symptom — we previously called createCheckout(token) with no
+  // tier argument, defaulting to "private". The webhook persists
+  // whatever tier metadata Stripe returns, so the wrong tier
+  // cascaded all the way through.
+  const tier: "private" | "global" =
+    brand.schemeType === "global" ? "global" : "private"
+  const isGlobal = tier === "global"
+  const monthlyPrice = isGlobal ? "£7.99" : "£5"
+  const planLabel = isGlobal ? "LCP+ Global Pass" : "Private Plan"
+
   const goToStripe = async () => {
     if (submitting) return
     setError(null)
     setSubmitting(true)
     try {
-      const { checkout_url } = await createCheckout(token)
+      const { checkout_url } = await createCheckout(token, tier)
       window.location.href = checkout_url
       // We don't reset submitting here — the page is navigating away.
     } catch (e) {
@@ -510,12 +761,16 @@ function StepPayment({
           {cafeName ? (
             <>
               <span className="font-medium text-foreground">{cafeName}</span>{" "}
-              is saved. We'll bill £5/month per location. Card details are
-              handled by Stripe — we never see your number.
+              is saved. You're on the{" "}
+              <span className="font-medium text-foreground">{planLabel}</span> —{" "}
+              {monthlyPrice}/month per location. Card details are handled by
+              Stripe — we never see your number.
             </>
           ) : (
             <>
-              We'll bill £5/month per location. Card details are handled by
+              You're on the{" "}
+              <span className="font-medium text-foreground">{planLabel}</span> —{" "}
+              {monthlyPrice}/month per location. Card details are handled by
               Stripe — we never see your number.
             </>
           )}

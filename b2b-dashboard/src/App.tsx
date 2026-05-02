@@ -195,9 +195,14 @@ function App() {
       // 3a. Inactive brand — send them straight to Stripe Checkout. Don't
       //     refresh first: we're about to navigate away, and the webhook
       //     will flip the status to active on return.
+      //     Tier MUST be derived from the brand's chosen scheme — not
+      //     defaulted — or a global brand will get charged the £5
+      //     private price. Same bug class as SetupView Step 3.
       if (!wasActive) {
         try {
-          const { checkout_url } = await createCheckout(session.token)
+          const checkoutTier: "private" | "global" =
+            brand?.schemeType === "global" ? "global" : "private"
+          const { checkout_url } = await createCheckout(session.token, checkoutTier)
           window.location.href = checkout_url
           return cafe.id
         } catch (e) {

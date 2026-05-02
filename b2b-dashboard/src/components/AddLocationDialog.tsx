@@ -293,11 +293,15 @@ export function AddLocationDialog({
         </DialogHeader>
 
         <div className="grid gap-4 py-2">
-          {/* Branch name */}
+          {/* Location name / branch identifier — the founder-locked
+              label is the same wording used by the onboarding wizard
+              so a brand owner sees consistent copy from day one. */}
           <div className="grid gap-1.5">
-            <label className="text-[12px] font-medium text-foreground">Branch name</label>
+            <label className="text-[12px] font-medium text-foreground">
+              Location Name / Branch identifier (e.g. &apos;London Soho&apos;)
+            </label>
             <Input
-              placeholder="e.g. Shoreditch"
+              placeholder="London Soho"
               value={name}
               onChange={(e) => setName(e.target.value)}
               className="h-10"
