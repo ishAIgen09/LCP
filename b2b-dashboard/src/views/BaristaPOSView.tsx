@@ -21,9 +21,7 @@ import {
   Play,
   Plus,
   RotateCcw,
-  ScanLine,
   Sparkles,
-  Square,
   XCircle,
 } from "lucide-react"
 import { Html5Qrcode } from "html5-qrcode"
@@ -53,10 +51,25 @@ import type { Session } from "@/lib/mock"
 
 // Matches the DB CHECK constraint on users.till_code (^[A-Z0-9]{6}$).
 const TILL_CODE_PATTERN = /^[A-Z0-9]{6}$/
-// Window during which the camera ignores every decoded candidate after a
-// successful confirm — stops html5-qrcode's multi-frame fires (and a still
-// camera aimed at the same QR) from double-stamping.
-const SCAN_LOCKOUT_MS = 3500
+// Window during which both the camera and the USB / keyboard path
+// ignore every decoded candidate after a successful confirm — stops
+// html5-qrcode's multi-frame fires (and a still camera aimed at the
+// same QR) from double-stamping. Set to 4s precisely so the
+// "Add-on Order" workflow still works: if the customer comes back ~10s
+// later with "oh, add an Americano to that", the same QR rescans
+// cleanly. Anything < 3s started missing real double-stamp risk;
+// anything > 4s blocked the add-on flow.
+const SCAN_LOCKOUT_MS = 4000
+// How long the success state stays on screen before the overlay
+// auto-closes and the camera is "Ready to Scan" again. Shorter than
+// SCAN_LOCKOUT_MS so the lockout still covers stray frames in the
+// 1s window between modal close and the next deliberate scan.
+const SUCCESS_AUTO_RESET_MS = 3000
+// Heuristic for the global USB-scanner listener: keystrokes arriving
+// less than this far apart are treated as part of one scanner burst.
+// Hand-typed input is ~150–250ms between keys; HID barcode wedges
+// fire at <30ms.
+const USB_BURST_MAX_GAP_MS = 80
 const MIN_STAMPS = 0
 const MAX_STAMPS = 10
 const REWARD_THRESHOLD = 10
@@ -110,6 +123,12 @@ export function BaristaPOSView({
   const [pool, setPool] = useState<CommunityPoolStatus | null>(null)
   const [pifBusy, setPifBusy] = useState(false)
 
+  // Post-success state — overlay morphs into a "Done!" view for
+  // SUCCESS_AUTO_RESET_MS before auto-closing. Lets the next customer
+  // step up without the barista hitting "Cancel" or waiting for the
+  // toast to time out.
+  const [success, setSuccess] = useState<{ stamps: number; rewards: number } | null>(null)
+
   const scannerRef = useRef<Html5Qrcode | null>(null)
   const scannerPausedRef = useRef(false)
   const lockoutUntilRef = useRef(0)
@@ -118,6 +137,7 @@ export function BaristaPOSView({
   // initial render) can read current state without re-subscribing.
   const scannedRef = useRef<string | null>(null)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     scannedRef.current = scannedCode
@@ -337,9 +357,78 @@ export function BaristaPOSView({
     }
   }, [])
 
+  // Always-on camera: auto-start the moment the POS mounts (or the user
+  // flips back to camera mode), and tear down on the way out of camera
+  // mode. The barista never has to click "Start camera" — the founder
+  // wants a queue to be able to step through the till with zero
+  // touch-the-screen friction between customers.
   useEffect(() => {
-    if (mode !== "camera") void stopCamera()
-  }, [mode, stopCamera])
+    if (mode === "camera") {
+      void startCamera()
+    } else {
+      void stopCamera()
+    }
+  }, [mode, startCamera, stopCamera])
+
+  // Global USB-scanner listener. HID barcode wedges fire keystrokes at
+  // <30ms intervals followed by Enter, so a "fast burst ending in
+  // Enter" reliably distinguishes a scanner from a human. Attached at
+  // window level so the barista never has to focus a specific input
+  // — the till can be on the camera tab AND a USB scan still
+  // dispatches a customer lookup.
+  //
+  // We bypass the listener whenever the keystroke is targeted at a
+  // real input/textarea (so the manual Customer ID box and any
+  // dialog text fields keep working untouched), and we share the
+  // overlay-open + lockout gates with the camera path so back-to-back
+  // scans of the same QR can't double-stamp.
+  useEffect(() => {
+    let buffer = ""
+    let lastKeyAt = 0
+    const handler = (e: globalThis.KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return
+      }
+      // Ignore modifier keys + shortcut combinations entirely.
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+
+      const now = Date.now()
+      const gap = now - lastKeyAt
+      if (gap > USB_BURST_MAX_GAP_MS && e.key !== "Enter") {
+        // New burst — reset the buffer.
+        buffer = ""
+      }
+      lastKeyAt = now
+
+      if (e.key === "Enter") {
+        const candidate = buffer
+        buffer = ""
+        if (!TILL_CODE_PATTERN.test(candidate)) return
+        // Same blockers as handleDecoded — overlay open, in-flight,
+        // or lockout window means the keystroke burst is dropped.
+        if (scannedRef.current !== null) return
+        if (now < lockoutUntilRef.current) return
+        if (inFlightRef.current) return
+        e.preventDefault()
+        setScannedCode(candidate)
+        return
+      }
+
+      // Single printable character — append to the rolling buffer
+      // (clamped to 6 so trailing keystrokes overwrite, not concat).
+      if (e.key.length === 1 && /[A-Za-z0-9]/.test(e.key)) {
+        buffer = (buffer + e.key.toUpperCase()).slice(-6)
+      }
+    }
+    window.addEventListener("keydown", handler)
+    return () => window.removeEventListener("keydown", handler)
+  }, [])
 
   // ─── Pre-scan customer lookup ─────────────────────────────────────────
   // Every time `scannedCode` changes to a new non-null value, fetch the
@@ -434,8 +523,12 @@ export function BaristaPOSView({
           parts.push(
             `${rewards} reward${rewards === 1 ? "" : "s"} redeemed`,
           )
-        showToast(parts.join(" · "), "success", 3500)
-        closeOverlayImpl()
+        showToast(parts.join(" · "), "success", 3000)
+        // Morph the overlay into a "Done!" success state. The auto-reset
+        // effect below closes the overlay and resumes the camera after
+        // SUCCESS_AUTO_RESET_MS so the next customer can step up
+        // without the barista touching anything.
+        setSuccess({ stamps, rewards })
       } catch (e) {
         handleApiError(e, "Scan failed")
         // Leave overlay open; barista can adjust + retry or cancel.
@@ -493,6 +586,11 @@ export function BaristaPOSView({
   // Shared close-overlay helper — also resumes camera if applicable. Used
   // both by Cancel and by the post-confirm success path.
   const closeOverlayImpl = () => {
+    if (successTimerRef.current) {
+      clearTimeout(successTimerRef.current)
+      successTimerRef.current = null
+    }
+    setSuccess(null)
     setScannedCode(null)
     setCustomerStatus(null)
     setStatusError(null)
@@ -505,6 +603,29 @@ export function BaristaPOSView({
     if (submitting) return
     closeOverlayImpl()
   }
+
+  // Auto-reset: once a transaction succeeds, hold the success state for
+  // SUCCESS_AUTO_RESET_MS, then close the overlay + resume the camera
+  // so the next customer in the queue can scan without the barista
+  // touching the screen. The timer is cancelled if the barista
+  // manually closes the overlay or unmounts the component.
+  useEffect(() => {
+    if (success === null) return
+    successTimerRef.current = setTimeout(() => {
+      successTimerRef.current = null
+      closeOverlayImpl()
+    }, SUCCESS_AUTO_RESET_MS)
+    return () => {
+      if (successTimerRef.current) {
+        clearTimeout(successTimerRef.current)
+        successTimerRef.current = null
+      }
+    }
+    // closeOverlayImpl is stable enough — the only reactive bit is
+    // `mode` (read inside) and we want the timer to keep ticking even
+    // if the operator switches mode mid-success. eslint-disable-next-line
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [success])
 
   // ─── Derived render state ─────────────────────────────────────────────
   const statePill = useMemo(() => statePills[scannerState], [scannerState])
@@ -593,12 +714,7 @@ export function BaristaPOSView({
                 <div id={readerId} className="h-full w-full" />
                 {scannerState !== "running" && scannerState !== "paused" && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 text-center text-white">
-                    {scannerState === "starting" ? (
-                      <>
-                        <Loader2 className="h-6 w-6 animate-spin" strokeWidth={2} />
-                        <p className="text-[13px]">Starting camera…</p>
-                      </>
-                    ) : scannerState === "error" ? (
+                    {scannerState === "error" ? (
                       <>
                         <XCircle className="h-6 w-6 text-rose-400" strokeWidth={2} />
                         <p className="max-w-[80%] text-[12.5px] leading-snug">
@@ -611,12 +727,8 @@ export function BaristaPOSView({
                       </>
                     ) : (
                       <>
-                        <ScanLine className="h-7 w-7" strokeWidth={1.75} />
-                        <p className="text-[13px]">Camera is off.</p>
-                        <Button size="sm" onClick={startCamera} className="gap-1.5">
-                          <Play className="h-3.5 w-3.5" />
-                          Start camera
-                        </Button>
+                        <Loader2 className="h-6 w-6 animate-spin" strokeWidth={2} />
+                        <p className="text-[13px]">Starting camera…</p>
                       </>
                     )}
                   </div>
@@ -626,17 +738,8 @@ export function BaristaPOSView({
                 <div className="flex items-center justify-between rounded-md bg-emerald-50 px-3 py-2 text-[12px] text-emerald-800 ring-1 ring-emerald-200">
                   <span className="inline-flex items-center gap-1.5">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
-                    Scanning for QR codes…
+                    Ready to scan — point the camera at a customer's QR.
                   </span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => void stopCamera()}
-                    className="h-7 gap-1.5 text-emerald-800 hover:bg-emerald-100"
-                  >
-                    <Square className="h-3 w-3" />
-                    Stop
-                  </Button>
                 </div>
               )}
             </div>
@@ -694,6 +797,40 @@ export function BaristaPOSView({
       {scannedCode && (
         <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/40 p-4 sm:items-center">
           <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-xl">
+            {success ? (
+              // Post-confirm success state — overlay holds for
+              // SUCCESS_AUTO_RESET_MS then auto-closes via the effect
+              // above. Big visual ✓ so the next customer in the queue
+              // can see at a glance that the till is mid-reset.
+              <div className="flex flex-col items-center justify-center gap-3 py-6 text-center">
+                <div className="grid h-16 w-16 place-items-center rounded-full bg-emerald-100 text-emerald-700 ring-4 ring-emerald-50">
+                  <CheckCircle2 className="h-8 w-8" strokeWidth={2.5} />
+                </div>
+                <div className="text-[18px] font-semibold tracking-tight text-foreground">
+                  Done!
+                </div>
+                <div className="text-[13px] text-muted-foreground">
+                  {success.stamps > 0 && success.rewards > 0
+                    ? `+${success.stamps} stamp${success.stamps === 1 ? "" : "s"} · ${success.rewards} reward${success.rewards === 1 ? "" : "s"} redeemed`
+                    : success.stamps > 0
+                      ? `+${success.stamps} stamp${success.stamps === 1 ? "" : "s"} added`
+                      : `${success.rewards} reward${success.rewards === 1 ? "" : "s"} redeemed`}
+                </div>
+                <div className="mt-2 inline-flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2.25} />
+                  Ready for the next customer in 3 seconds…
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={closeOverlayImpl}
+                  className="mt-1 h-8 text-[12px] text-muted-foreground"
+                >
+                  Skip — scan now
+                </Button>
+              </div>
+            ) : (
+              <>
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2 py-0.5 text-[10.5px] font-medium uppercase tracking-wider text-emerald-800 ring-1 ring-emerald-200">
@@ -844,6 +981,8 @@ export function BaristaPOSView({
               <RotateCcw className="h-3.5 w-3.5" />
               Cancel / Rescan
             </Button>
+              </>
+            )}
           </div>
         </div>
       )}
