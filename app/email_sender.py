@@ -256,8 +256,8 @@ def _wrap(title: str, body_html: str) -> str:
             <tr>
               <td style="padding:18px 32px 28px 32px;border-top:1px solid #2c211c;">
                 <div style="font-size:11px;color:{MUTED};line-height:1.6;">
-                  You're receiving this because someone added your email to a Local Coffee Perks invite.
-                  If this wasn't you, simply ignore the message — no account is created until you click the link.
+                  This is an automated security message from Local Coffee Perks.
+                  Please do not reply to this email.
                 </div>
               </td>
             </tr>
@@ -413,7 +413,7 @@ def send_otp_email(to_email: str, code: str) -> bool:
   </div>
 </div>
 <p style="font-size:12.5px;line-height:1.6;margin:0;color:{MUTED};">
-  Didn't request this? You can ignore this email — no one can sign in without the code.
+  If you didn't request this code, you can safely ignore this email.
 </p>
 """
     return send_email(to_email, subject, _wrap(subject, body_html))
