@@ -302,9 +302,10 @@ async def create_portal_session(
 
 
 class CancelSubscriptionResponse(BaseModel):
-    """Returned by POST /api/billing/cancel-subscription so the
-    BillingView can render the Lame Duck banner immediately without
-    waiting for the next webhook tick."""
+    """Returned by POST /api/billing/cancel so the BillingView can
+    render the Lame Duck banner immediately without waiting for the
+    next webhook tick. Same shape used by /api/billing/reactivate
+    so the frontend can drop both into a single setBrand() call."""
 
     ok: bool
     cancel_at_period_end: bool
@@ -312,7 +313,7 @@ class CancelSubscriptionResponse(BaseModel):
     subscription_status: str
 
 
-@router.post("/cancel-subscription", response_model=CancelSubscriptionResponse)
+@router.post("/cancel", response_model=CancelSubscriptionResponse)
 async def cancel_subscription(
     admin: AdminSession = Depends(get_admin_session),
     session: AsyncSession = Depends(get_session),
@@ -397,6 +398,97 @@ async def cancel_subscription(
     return CancelSubscriptionResponse(
         ok=True,
         cancel_at_period_end=True,
+        current_period_end=brand.current_period_end,
+        subscription_status=brand.subscription_status.value,
+    )
+
+
+@router.post("/reactivate", response_model=CancelSubscriptionResponse)
+async def reactivate_subscription(
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> CancelSubscriptionResponse:
+    """Undo a scheduled cancellation while the subscription is still
+    inside its grace period. Mirrors /cancel structurally so the
+    frontend can reuse the same response shape.
+
+    Calls stripe.Subscription.modify(sub_id, cancel_at_period_end=False).
+    Brand row flips back to ACTIVE + cancel_at_period_end=False.
+
+    Failure modes:
+      - 401 if the admin session references an unknown brand
+      - 400 if no Stripe subscription on file
+      - 409 if the subscription has already been fully CANCELED
+        (current_period_end has elapsed and Stripe deleted it — at
+        that point reactivate is impossible; the brand has to start
+        a new subscription via Checkout, which the InactiveSubscription
+        view handles)
+      - 502 on Stripe API failure
+    """
+    _require_stripe_key()
+
+    brand = await session.get(Brand, admin.brand_id)
+    if brand is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin session references an unknown brand.",
+        )
+    if not brand.stripe_subscription_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No Stripe subscription on file. Nothing to reactivate.",
+        )
+    if brand.subscription_status == SubscriptionStatus.CANCELED:
+        # Terminal state — Stripe has already deleted the subscription
+        # at period end. The frontend should route the user to the
+        # InactiveSubscription view's "Reactivate" button which spins
+        # up a fresh Checkout session instead.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Subscription has already fully canceled. Start a new "
+                "subscription via Checkout."
+            ),
+        )
+
+    try:
+        updated = stripe.Subscription.modify(
+            brand.stripe_subscription_id,
+            cancel_at_period_end=False,
+        )
+    except stripe.StripeError as exc:
+        logger.error(
+            "REACTIVATE-SUBSCRIPTION FAILED brand=%s sub=%s err=%s",
+            brand.id,
+            brand.stripe_subscription_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Stripe could not reactivate the subscription: {exc.user_message or str(exc)}",
+        )
+
+    brand.cancel_at_period_end = False
+    # Bounce back to ACTIVE — the webhook will re-confirm idempotently.
+    # Don't re-set if the subscription is in some other "live" state
+    # (TRIALING / PAST_DUE) — those are valid live states the webhook
+    # owns; only flip from PENDING_CANCELLATION.
+    if brand.subscription_status == SubscriptionStatus.PENDING_CANCELLATION:
+        brand.subscription_status = SubscriptionStatus.ACTIVE
+    cpe_ts = updated.get("current_period_end")
+    if cpe_ts:
+        brand.current_period_end = datetime.fromtimestamp(int(cpe_ts), tz=timezone.utc)
+    await session.commit()
+
+    logger.info(
+        "REACTIVATE-SUBSCRIPTION ok brand=%s sub=%s",
+        brand.id,
+        brand.stripe_subscription_id,
+    )
+
+    return CancelSubscriptionResponse(
+        ok=True,
+        cancel_at_period_end=False,
         current_period_end=brand.current_period_end,
         subscription_status=brand.subscription_status.value,
     )
@@ -953,7 +1045,7 @@ async def stripe_webhook(
     # customer.subscription.updated — fires for many things, but the
     # one we care about is the cancel_at_period_end flag flipping.
     # Two paths land here:
-    #   1. Our own /cancel-subscription endpoint already wrote the
+    #   1. Our own /cancel or /reactivate endpoint already wrote the
     #      mirror values to the brand row before this webhook arrives;
     #      the handler is a no-op idempotent re-confirmation.
     #   2. The brand owner toggles cancel/uncancel directly inside the

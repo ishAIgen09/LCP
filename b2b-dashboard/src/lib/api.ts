@@ -524,7 +524,23 @@ export async function cancelSubscription(
 ): Promise<CancelSubscriptionResponse> {
   return request<CancelSubscriptionResponse>(
     "POST",
-    "/api/billing/cancel-subscription",
+    "/api/billing/cancel",
+    undefined,
+    authHeader(token),
+  )
+}
+
+// Undo a scheduled cancel-at-period-end while still inside the grace
+// window. Powers the sitewide Lame Duck banner's Reactivate button.
+// 409 from the server means the grace window already elapsed and the
+// subscription has fully cancelled — caller should fall through to
+// the InactiveSubscriptionView's new-Checkout path instead.
+export async function reactivateSubscription(
+  token: string,
+): Promise<CancelSubscriptionResponse> {
+  return request<CancelSubscriptionResponse>(
+    "POST",
+    "/api/billing/reactivate",
     undefined,
     authHeader(token),
   )

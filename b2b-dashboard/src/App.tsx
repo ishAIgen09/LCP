@@ -13,7 +13,9 @@ import { OverviewView } from "@/views/OverviewView"
 import { LocationsView } from "@/views/LocationsView"
 import { PromotionsView } from "@/views/PromotionsView"
 import { BillingView } from "@/views/BillingView"
+import { InactiveSubscriptionView } from "@/views/InactiveSubscriptionView"
 import { SettingsView } from "@/views/SettingsView"
+import { LameDuckBanner } from "@/components/LameDuckBanner"
 import {
   initialBrand,
   type Brand,
@@ -69,6 +71,14 @@ function App() {
   // Password" — drives credentialsCafeId for an existing cafe rather than
   // a freshly-created one.
   const [billingRoute, setBillingRoute] = useState(() => detectBillingRoute())
+  // Ephemeral error surface for the Lame Duck banner's reactivate
+  // path. Auto-clears after 4s — see effect below.
+  const [lameDuckError, setLameDuckError] = useState<string | null>(null)
+  useEffect(() => {
+    if (!lameDuckError) return
+    const t = setTimeout(() => setLameDuckError(null), 4000)
+    return () => clearTimeout(t)
+  }, [lameDuckError])
 
   // Reset password landing — handled BEFORE auth gates so a logged-out
   // owner with a reset link can complete the flow without first logging
@@ -317,6 +327,23 @@ function App() {
     return <BaristaPOSView session={session} onLogout={handleLogout} />
   }
 
+  // Hard-wall lockout — when the grace period has elapsed and Stripe
+  // deleted the subscription. Cuts off sidebar / Settings / every
+  // tab; only Reactivate (new Checkout) and Sign Out are reachable.
+  // Note: the barista-POS path above is NOT gated here — the backend
+  // already 402s every scan when cafes.billing_status === CANCELED,
+  // which is the actual security boundary. A future pass can plumb
+  // billing_status into StoreLoginResponse for a UI-side lock.
+  if (brand.subscriptionStatus === "canceled") {
+    return (
+      <InactiveSubscriptionView
+        brand={brand}
+        token={session.token}
+        onSignOut={handleLogout}
+      />
+    )
+  }
+
   return (
     <div className="flex min-h-screen bg-background text-foreground antialiased">
       <Sidebar
@@ -327,6 +354,18 @@ function App() {
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
+        {/* Sticky Lame Duck banner — rides above Topbar across every
+            tab while the brand is in the cancel-at-period-end grace
+            window. Self-removes once cancelAtPeriodEnd flips back
+            to false (the reactivate handler refreshes brand state). */}
+        {brand.cancelAtPeriodEnd ? (
+          <LameDuckBanner
+            brand={brand}
+            token={session.token}
+            onReactivated={() => refreshAdminData(session.token)}
+            onError={(msg) => setLameDuckError(msg)}
+          />
+        ) : null}
         <Topbar
           section={nav}
           brand={brand}
@@ -393,6 +432,18 @@ function App() {
         token={session.token}
         onClose={() => setCredentialsCafeId(null)}
       />
+
+      {/* Lame Duck reactivate-error toast. Auto-dismisses after 4s
+          (effect above) — UI is rare-path so a fixed-position
+          ephemeral toast is enough; no global toaster wired yet. */}
+      {lameDuckError ? (
+        <div
+          role="alert"
+          className="pointer-events-none fixed bottom-6 right-6 z-50 max-w-xs rounded-lg bg-rose-600 px-4 py-3 text-[13px] font-medium text-white shadow-lg ring-1 ring-rose-700/40"
+        >
+          {lameDuckError}
+        </div>
+      ) : null}
     </div>
   )
 }

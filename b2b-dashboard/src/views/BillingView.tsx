@@ -101,22 +101,6 @@ const STATUS_META: Record<
   },
 }
 
-// Lame Duck banner needs the bare date with no "Renews" prefix —
-// the surrounding sentence supplies the framing ("scheduled to cancel
-// on …"). Falls back to "the end of your current cycle" when Stripe
-// hasn't reported a date yet (very rare — pending_cancellation always
-// has a current_period_end), so the sentence still reads.
-function formatLameDuckDate(iso: string | null | undefined): string {
-  if (!iso) return "the end of your current cycle"
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return "the end of your current cycle"
-  return d.toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-  })
-}
-
 function formatRenewal(iso: string | null | undefined): string {
   if (!iso) return "No renewal date on file."
   const d = new Date(iso)
@@ -221,26 +205,9 @@ export function BillingView({
 
   return (
     <div className="space-y-4">
-    {/* Lame Duck banner — drives off `cancelAtPeriodEnd` (mirrored
-        from Stripe via /api/billing/cancel-subscription + the
-        customer.subscription.updated webhook). Sits above every other
-        card so a brand owner cannot miss it on the next page load
-        after they confirm cancellation. */}
-    {brand.cancelAtPeriodEnd && (
-      <div className="flex items-start gap-2.5 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-[13px] text-amber-900">
-        <AlertTriangle
-          className="mt-0.5 h-4 w-4 shrink-0 text-amber-700"
-          strokeWidth={2.25}
-        />
-        <div className="leading-snug">
-          <span className="font-semibold">
-            Your subscription is scheduled to cancel on{" "}
-            {formatLameDuckDate(brand.currentPeriodEnd)}.
-          </span>{" "}
-          You will retain full access until then.
-        </div>
-      </div>
-    )}
+    {/* Lame Duck banner moved to App.tsx so it persists across every
+        tab — see LameDuckBanner.tsx. The duplicate copy that lived
+        here was removed 2026-05-03. */}
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
       <Card className="lg:col-span-2">
         <CardHeader>
