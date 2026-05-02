@@ -35,7 +35,7 @@
 * **Hardening status:** ✅ **Live as of 2026-05-01.** Operator manually deployed the hardened script via "Manage Deployments → New Version." All described behavior (success email per signup + URGENT fallback if appendRow fails + try/catch on both endpoints) is active in production.
 
 ## 2. Stripe Billing (Test Mode)
-*Last updated: **2026-04-30***
+*Last updated: **2026-05-02***
 
 * **Role:** Handles the per-cafe subscription billing. Tier pricing is governed by the **Founding 100** policy — see Section 7 for the full pricing tier rules.
 * **Environment:** Currently running in Test Mode (using `pk_test_...` and `sk_test_...` keys).
@@ -48,13 +48,18 @@
     * LCP+ Global Pass (£7.99/mo) - ID: `price_1TQmN6LjDXRzQll0SvQedP4d`
 * **Post-Founding-100 prices (NOT yet created in Stripe):** Once the combined 100 founding signups are sold, two new Stripe Price IDs need to be created — Private at **£9.99/mo** and LCP+ Global at **£12.99/mo** — and the droplet env vars `STRIPE_PRIVATE_PRICE_ID` / `STRIPE_GLOBAL_PRICE_ID` swapped to the new IDs. Existing founding-tier subscriptions stay on their original price (Stripe pegs each subscription to the price ID it was created with), so the swap only affects new signups. Add a Change-log line when the cutover happens.
 
-### Pro-rata billing (added 2026-04-30)
-All subscription mutations are pay-in-advance: every invoice charges at the start of the period for that period. The implementation differs slightly between *initial signup* (Stripe Checkout) and *mid-cycle changes* (direct Subscription API), because Checkout doesn't accept `proration_behavior` directly:
+### Pro-rata billing (revised 2026-05-02 — signup-day anchor, co-termed proration)
+All subscription mutations stay pay-in-advance, but the **billing-cycle anchor was simplified to "signup day"** in commit `acde1f2`. The earlier 1st-of-month `trial_end` anchor was producing "29 days free"-style edge cases (and on the last day of any month tripped Stripe's 48h `trial_end` floor entirely), so it was ripped out. Current contract:
 
-* **Initial signup via `POST /api/billing/checkout`** — `app/billing.py::create_checkout` sets `subscription_data.trial_end = first-of-next-month UTC`. Customer pays £0 upfront for the partial first month, gets billed the full monthly rate on the 1st of next month, every cycle thereafter aligns to month-start. **48-hour guard:** Stripe rejects `trial_end` values closer than 48h from now, so on the last 1-2 days of any month the helper drops `trial_end` and falls back to default Stripe behavior — full month upfront, billing cycle anchored to today. Affects ~2 days/month; deterministic + no outage. The Stripe call is wrapped in `try/except StripeError` so future failures surface the actual Stripe message in api logs and return 502 (with Stripe's reason) instead of an opaque 500.
-* **Adding cafes mid-cycle (quantity sync)** — `app/billing.py::sync_subscription_quantity` calls `stripe.SubscriptionItem.modify(item_id, quantity=N, proration_behavior="create_prorations")`. Stripe creates positive proration line items for the new cafe(s) for the remainder of the current billing cycle; customer is charged the *prorated difference* on the next regular invoice (NOT the full new monthly rate × full cycle).
-* **Plan upgrades / downgrades (`POST /api/billing/plan-change`)** — ✅ **wired live 2026-05-01** (commit `29b8c09`). The handler now calls `stripe.SubscriptionItem.modify(item_id, price=NEW_PRICE_ID, proration_behavior="create_prorations")`. On upgrade it follows up with `stripe.Invoice.create + stripe.Invoice.pay` so the customer is charged the prorated difference immediately. On downgrade the credit naturally lands on the next monthly invoice (no immediate-invoice step). `_resolve_plan_change_price_id` maps `starter→STRIPE_PRIVATE_PRICE_ID`, `pro→STRIPE_GLOBAL_PRICE_ID`; `premium` returns 422 (no Stripe price configured yet — add `STRIPE_PREMIUM_PRICE_ID` env var + extend the helper when the third tier is provisioned). `brand.scheme_type` syncs post-Stripe-success (best-effort — DB sync failure is logged but never rolls back the Stripe charge). Pre-flight checks: 400 if no Stripe subscription/customer, 402 if subscription not ACTIVE. Stripe call wrapped in `try/except StripeError` → 502 with `exc.user_message`. The audit log line `PLAN-CHANGE` and the proration-math response shape are unchanged from the mock so the dashboard's confirmation modal still renders correctly.
-* **Why all this matters:** the spec at the top of the file (lines 267-313 in `app/billing.py`) is the authoritative pro-rata contract. If pricing logic ever drifts from "pay-in-advance, prorate mid-cycle, anchor to the 1st," update that comment block AND this section in lockstep.
+* **Initial signup via `POST /api/billing/checkout`** — `app/billing.py::create_checkout` issues a vanilla immediate Stripe Checkout. No `trial_end`, no `_trial_end_first_of_next_month` helper, no 48h guard — Stripe defaults take over and the cycle anchors to the day of signup. The Stripe call stays wrapped in `try/except StripeError` (surfaces real Stripe message → 502 instead of opaque 500).
+* **Adding cafes mid-cycle (quantity sync)** — `app/billing.py::sync_subscription_quantity` calls `stripe.SubscriptionItem.modify(item_id, quantity=N, proration_behavior="create_prorations")` and **does NOT call `Invoice.create`**. The proration line items roll onto the brand's NEXT natural invoice on their existing renewal date (co-termed). Issuing an immediate prorated invoice on every Add-Location click would drown small operators in tiny one-off charges, so we deliberately skip that step. `AddLocationDialog` in the b2b-dashboard gates the brand-new Checkout redirect on `!wasActive` so active brands don't re-checkout — they just get the auto-bumped quantity.
+* **Plan upgrades / downgrades (`POST /api/billing/plan-change`)** — ✅ **wired live 2026-05-01** (commit `29b8c09`). The handler calls `stripe.SubscriptionItem.modify(item_id, price=NEW_PRICE_ID, proration_behavior="create_prorations")`. On upgrade it follows up with `stripe.Invoice.create + stripe.Invoice.pay` so the customer is charged the prorated difference immediately (this is the *plan-change* path; *quantity-change* path above does NOT do this). On downgrade the credit naturally lands on the next monthly invoice. `_resolve_plan_change_price_id` maps `starter→STRIPE_PRIVATE_PRICE_ID`, `pro→STRIPE_GLOBAL_PRICE_ID`; `premium` returns 422. `brand.scheme_type` syncs post-Stripe-success (best-effort). Pre-flight: 400 if no Stripe subscription/customer, 402 if subscription not ACTIVE. Stripe call wrapped in `try/except StripeError` → 502 with `exc.user_message`.
+* **Why all this matters:** the spec at the top of `app/billing.py` is the authoritative pro-rata contract. If pricing logic ever drifts from "pay-in-advance, anchor to signup day, co-term mid-cycle quantity changes onto the next invoice," update that comment block AND this section in lockstep.
+
+### Super-Admin Stripe invoice surfacing (added 2026-05-02)
+* New endpoint `GET /api/admin/platform/brands/{brand_id}/invoices` thinly wraps `stripe.Invoice.list(customer=...)` and returns a normalized `BrandInvoicesResponse` — totals, dates, hosted-invoice URL + PDF link, and per-line breakdown including the `proration` flag. Empty response (with `stripe_customer_id=None`) when the brand never went through Checkout, so the UI shows an empty-state instead of a 404.
+* Frontend: admin-dashboard `CafesPage::CafeDetailPanel` gets a "Billing history (Stripe)" button → `BrandInvoicesModal` with expandable per-invoice line items + "Open hosted invoice" link. Used during dispute resolution to walk owners through their exact charges (proration line items from `sync_subscription_quantity` show up labelled).
+* No DB caching — every modal open round-trips to Stripe. Cardinality is small (tens of invoices per brand), well within Stripe's rate limits.
 
 ## 3. Server & Deployment (DigitalOcean)
 *Last updated: **2026-05-01***
@@ -341,9 +346,95 @@ All three are verified live against the local dev DB (commit-time evidence). Re-
 
 ---
 
+## 12. Geospatial Routing (geopy / Nominatim)
+*Last updated: **2026-05-02***
+
+* **Role:** Resolves cafe `address` strings into `(latitude, longitude)` pairs so the consumer Discover view can compute Haversine distances and sort by proximity. Also powers the b2b "Add location" address autocomplete combobox. Replaces the placeholder `mockDistanceMiles(cafe.id)` deterministic-hash distances the founder spotted in E2E testing.
+* **Vendor:** [Nominatim](https://nominatim.org) — OpenStreetMap's free geocoding service. Accessed via the Python `geopy` library (`Nominatim` adapter).
+* **Why Nominatim, not Google/Mapbox:** zero-cost, no API key, no card on file. Trade-off is the rate limit (1 req/sec) and a contactable User-Agent requirement. Fine for a low-volume cafe-creation path; if/when we need higher throughput (e.g. consumer-app reverse-geocoding their current location), swap to a paid provider — the helper module is the single seam.
+* **Helper module:** `app/geocoding.py`
+    * `geocode_address(address: str | None) → (lat, lon) | (None, None)` — single-best-match resolver. Wrapped in `asyncio.to_thread` so the sync `geopy.Nominatim.geocode` call doesn't block the FastAPI event loop. **Fail-soft contract: any error path returns `(None, None)`, never raises.** Cafe create/update will still commit the row even if Nominatim is down.
+    * `geocode_suggest(query: str | None, limit: int = 5) → list[str]` — returns the top N formatted address strings for autocomplete. Capped at 10 server-side; minimum 3-character query (shorter returns `[]`).
+* **User-Agent header (mandatory by Nominatim's policy):** `LocalCoffeePerks/1.0 (geocoder; ops@localcoffeeperks.com)` — set inside `_USER_AGENT` constant. Don't blank it; Nominatim will silently rate-limit anonymous traffic far more aggressively.
+* **Rate-limit policy:**
+    * Live cafe-create / cafe-update path: a single geocode per save → naturally well within the 1 req/sec cap (an admin can't physically create cafes that fast).
+    * Autocomplete: caller (b2b-dashboard `AddressAutocompleteInput`) debounces user input at **800 ms** + cancels in-flight requests via `AbortController` → at most one in-flight request per ongoing typing session.
+    * Backfill script: explicit `await asyncio.sleep(1.5)` between calls (`scripts/backfill_geocodes.py`).
+
+### Where geocoding fires in the codebase
+* **`POST /api/admin/cafes`** (`create_cafe` in `app/main.py`) — geocodes the trimmed `address` immediately before the `Cafe(...)` insert. Failed lookup → row commits with `latitude=NULL, longitude=NULL` (consumer app falls back to mock distance for that row until the address is re-saved).
+* **`PATCH/PUT /api/admin/cafes/{cafe_id}`** (`update_cafe`) — re-geocodes only when the `address` field actually changes. Avoids burning a Nominatim request on edits to phone / hygiene rating / amenities.
+* **`POST /api/admin/platform/cafes`** (`platform_create_cafe`, super-admin override path) — same fail-soft geocode-on-create.
+* **`GET /api/b2b/geocode/autocomplete?q=...`** — admin-JWT-guarded autocomplete endpoint. Returns `{"suggestions": ["..."]}` with up to 5 formatted addresses. 422 on `q` shorter than 3 chars; empty list on Nominatim failure (caller treats this as "no suggestions yet, keep typing").
+
+### Backfill script — `scripts/backfill_geocodes.py`
+* **Purpose:** populate `(latitude, longitude)` on legacy cafe rows that pre-date the geocoding wiring (e.g. seeded via `scripts/seed_local_dev.py` before commit `acde1f2`, or any production rows from before the 2026-05-02 push).
+* **Behavior:** raw-SQL `SELECT id, name, address FROM cafes WHERE latitude IS NULL ORDER BY created_at ASC` → loops, calls `geocode_address`, raw-SQL `UPDATE cafes SET latitude=…, longitude=…` per row, commits each. Sleeps 1.5 s between calls. Uses raw SQL deliberately (not ORM) so the script works on dev DBs that haven't applied every migration up to HEAD — only `id/name/address/latitude/longitude` columns are touched and those have all existed since migration 0010.
+* **Idempotent:** re-runs are no-ops if every row already has coords.
+* **How to run:**
+    ```bash
+    # locally (against docker-compose db)
+    docker compose exec -T api python -m scripts.backfill_geocodes
+    # on the droplet
+    ssh root@178.62.123.228 'cd /var/www/lcp && docker compose exec -T api python -m scripts.backfill_geocodes'
+    ```
+* **Verification:** 2026-05-02 NULLed Monmouth's coords locally → script re-resolved them to `(51.5055145, -0.0914602)`. End-to-end proven before push.
+
+### Operational gotchas
+* **`geopy` is a new pip dep.** Added to `requirements.txt` in commit `acde1f2`. After deploy, the API container needs a rebuild (the GHA workflow already runs `docker compose up --build`, so this happens automatically — no manual step). On a stale image, `_resolve_sync` short-circuits to `(None, None)` and existing rows are unaffected, but new geocodes won't fire.
+* **DigitalOcean does NOT block outbound HTTPS to Nominatim.** Unlike SMTP (see Section 4), port 443 is open. Confirmed with the local rebuild + first successful geocode of Monmouth.
+* **Don't hammer Nominatim from the consumer app.** Any future "search nearby cafes" feature on the consumer side should NOT call Nominatim directly — it'd burn the cap fast. Reverse-geocoding the device location into a postcode for "Find cafes near…" should land on a paid provider before we ship that feature.
+* **Greppable log markers:**
+    * `geocode_address failed for 'addr…': <exception>` — single-resolver failure (cafe save still commits).
+    * `geocode_suggest failed for 'query…': <exception>` — autocomplete failure (UI shows "no matches" hint, not an error toast).
+    * `geocode_address: geopy not installed — skipping geocode` / `geocode_suggest: geopy not installed — returning empty list` — fired when the running container doesn't have `geopy` (stale image).
+
+---
+
+## 13. Consumer App Persistent Login
+*Last updated: **2026-05-02***
+
+* **Role:** Keeps consumer-app users signed in for the full life of their JWT (365 days) across force-quits, OS reboots, and low-memory app evictions. Founder direction 2026-05-02 after E2E testing showed users were getting kicked out aggressively because (a) the consumer JWT inherited the short web-session TTL and (b) the React Native session lived only in memory.
+* **Backend — per-audience JWT TTL (`app/tokens.py`):**
+    * `_encode(claims, ttl_seconds=None)` accepts an optional override; default behaviour for `admin` / `store` / `super-admin` / `brand-invite` audiences is unchanged (still uses `settings.jwt_ttl_hours`).
+    * `encode_consumer(...)` pins the consumer audience to `_CONSUMER_TTL_SECONDS = 365 * 24 * 3600`.
+    * **Web JWTs stay short on purpose** — the b2b-dashboard + admin-dashboard run in browsers where token theft via XSS/extension is a real risk and a 365-day session would be a large blast radius. The native consumer app stores its token in iOS Keychain / Android Keystore via SecureStore, so the same risk profile doesn't apply.
+* **Consumer app — secure storage (`consumer-app/src/sessionStorage.ts`):**
+    * Wraps `expo-secure-store` (added to `package.json` as `~15.0.7`) with three helpers: `loadSession()` / `saveSession(s)` / `clearSession()`. Defensive shape-check on read — malformed payloads from a partial write get dropped, not propagated.
+    * Web is a no-op (every helper short-circuits on `Platform.OS === "web"`). Production target is iOS + Android; `expo start --web` continues to work but doesn't persist sessions.
+* **App lifecycle (`AppShell` in `consumer-app/App.tsx`):**
+    1. Cold launch → `loadSession()` runs in a `useEffect` while the existing splash spinner is on screen; sets a `hydrated` flag when done.
+    2. Until `hydrated` is true, the app shows the same splash spinner the font-gate uses → users with a stored session never see a flash of LoginScreen.
+    3. Whenever `setSession(...)` runs (sign-in, sign-out, profile-edit), a `useEffect` mirrors the new state to SecureStore (`saveSession` if non-null, `clearSession` if null). Sign-out wipes the stored copy so a stale token never resurrects on the next launch.
+* **Native rebuild required:** `expo-secure-store` ships native code (Keychain / Keystore bindings). The next dev-client / TestFlight / Play-internal build must be rebuilt (`npx expo prebuild` + `run:ios` / `run:android`) before the persistent-login path goes live on device. Until then, `Platform.OS` checks pass fine but the SecureStore module isn't bundled — `loadSession` returns `null` and behaviour matches the old in-memory session.
+* **Token-expiry edge case:** if a user's stored JWT expires (e.g. they don't open the app for 366 days), the API will start returning 401 on every call. The current behaviour is "they stay on screen but every call errors" — they have to manually sign out + back in. We deliberately did NOT wire automatic 401-clears-session because it adds complexity that isn't worth it for an event that happens after a year of inactivity.
+* **Storage key:** `lcp.consumer.session.v1` — versioned suffix so we can break-change the persisted shape later without tripping over old payloads.
+
+---
+
+## 14. Consumer Discover — amenity filter UX
+*Last updated: **2026-05-02***
+
+* **Role:** Documents the Discover-tab amenity filter so a future redesign doesn't accidentally regress the filter contract. Founder direction 2026-05-02: **dropdown / bottom-sheet, not horizontal pills** + a synthetic "Pay It Forward" filter row.
+* **Component:** `consumer-app/src/AmenitiesFilterModal.tsx` — bottom-sheet `<Modal>` with a drag-handle, scrollable checklist of amenity rows, and a footer that has a prominent mint "Show Cafés · N filters" primary CTA + a smaller "Clear all" secondary text link beneath. Trigger = `AmenityFilterTrigger` button in the Discover header (mint when filters are active, with a count badge).
+* **Draft / Apply pattern:** toggling rows mutates a local `draft` Set, NOT the parent's `activeAmenities`. Closing the sheet without tapping "Show Cafés" discards the draft. Apply commits the new set + closes the sheet.
+* **Filter logic:** AND-match across selected amenities. A cafe must satisfy *every* selected filter to appear in `visibleCafes`.
+* **Pay It Forward — synthetic filter:**
+    * **Lives in the catalogue, not on the wire.** `consumer-app/src/amenities.ts` exports `PAY_IT_FORWARD_FILTER_ID = "pay_it_forward"` and includes it in `AMENITIES` so the filter sheet renders it as a regular checkbox row (HandHeart icon).
+    * **Cafes never carry `pay_it_forward` in `cafe.amenities` arrays.** It's derived at filter time from `cafe.suspended_coffee_enabled` (the per-cafe Pay It Forward toggle from migration 0020 + Settings → Community Board card).
+    * `DiscoverView::availableAmenityIds` adds `PAY_IT_FORWARD_FILTER_ID` to the available set when any local cafe has `suspended_coffee_enabled=true`. `visibleCafes` special-cases the id and resolves membership against `cafe.suspended_coffee_enabled` instead of `cafe.amenities.includes(...)`.
+    * **DiscoverCafeCard amenity chips + CafeDetailsModal are unchanged.** They iterate `cafe.amenities` only, so the synthetic id never accidentally renders as a regular chip. The Community Board badge (separate component) still drives the per-card visual signal for participating cafes.
+* **Don't add `pay_it_forward` to b2b-dashboard's amenity picker.** It's consumer-side filter sugar only. The backend amenities catalogue (`b2b-dashboard/src/lib/amenities.ts`) lists the genuine amenities operators can tag a cafe with; Pay It Forward's wire-level signal is the boolean toggle on the cafe row.
+
+---
+
 ## Change log
 *Append a single line per change, newest at the top, in the form `YYYY-MM-DD — section — what changed`.*
 
+* **2026-05-02 (later)** — Section 14 added (Consumer Discover amenity filter UX). Bottom-sheet replaces the horizontal pill ScrollView (founder direction). New synthetic `pay_it_forward` filter — lives in `AMENITIES` catalogue but is derived from `cafes.suspended_coffee_enabled`, never appears in any `cafe.amenities` array on the wire. AND-match filter contract + draft/Apply commit pattern documented so future redesigns don't accidentally regress. Don't add the id to b2b-dashboard's amenity picker — consumer-only filter sugar. Commits `71ff40d` (initial bottom-sheet) and `ebe6e2f` (Pay It Forward + Show Cafés CTA polish).
+* **2026-05-02 (later)** — Section 13 added (Consumer App Persistent Login). Backend `_encode` accepts per-audience `ttl_seconds`; `encode_consumer` pinned to 365 days. Web JWTs (admin / store / super-admin / brand-invite) keep `settings.jwt_ttl_hours`. `expo-secure-store ~15.0.7` added to `consumer-app/package.json`; new `src/sessionStorage.ts` wraps load/save/clear with shape-check + web no-op. AppShell hydrates from SecureStore on cold launch (splash spinner during async read), then mirrors every `setSession` call to storage. Native rebuild needed before the path goes live on device. Commit `71afd25`.
+* **2026-05-02** — Section 12 added (Geospatial Routing — geopy/Nominatim). New `app/geocoding.py` (geocode_address, geocode_suggest) wraps geopy/Nominatim via `asyncio.to_thread` with fail-soft semantics. `geopy` added to `requirements.txt`. `create_cafe` / `update_cafe` (re-geocodes only when address changes) / `platform_create_cafe` populate `cafe.latitude` + `cafe.longitude` on save. `GET /api/b2b/geocode/autocomplete?q=...` powers a debounced (800 ms, AbortController-aware) combobox in b2b-dashboard's `AddLocationDialog` + `EditLocationDialog` (shared `AddressAutocompleteInput` component); replaces the 10-row mock corpus. New `scripts/backfill_geocodes.py` walks `WHERE latitude IS NULL` rows, sleeps 1.5 s between Nominatim calls, uses raw SQL on the touched columns so it survives partial-schema dev DBs. Verified end-to-end against local Postgres (Monmouth NULLed → re-resolved to 51.5055, -0.0915). Section 2 also gained a "Super-Admin Stripe invoice surfacing" subsection: `GET /api/admin/platform/brands/{brand_id}/invoices` thinly wraps `stripe.Invoice.list` and feeds the admin-dashboard `BrandInvoicesModal` accordion (proration line items + hosted-invoice link). Commit `ebe6e2f`.
+* **2026-05-02** — Section 2 (Stripe Billing) — pro-rata simplified. Stripped the 1st-of-month `trial_end` anchor + 48h floor guard from `create_checkout` (was producing "29 days free" edge cases). Cycle now anchors to the day of signup. `sync_subscription_quantity` keeps `proration_behavior="create_prorations"` but explicitly does NOT call `Invoice.create` for mid-cycle quantity bumps — prorations roll onto the brand's next natural invoice (co-termed). `AddLocationDialog` already gated the brand-new Checkout redirect on `!wasActive` so active brands don't re-checkout on Add Location; behaviour preserved. Commit `acde1f2`.
 * **2026-05-01 (Phase 2)** — Section 11 added (Custom Offers, Cancellation Feedback, Pay It Forward) — operator-facing reference for commit `4060c92`. Documents the 5 new endpoints, the per-cafe `suspended_coffee_enabled` opt-in toggle, the cafe-scoped pool architectural rule, and the migration-application checklist. Section 3 (DigitalOcean) — added explicit "migrations are NOT auto-applied" note + the SSH + `apply_migration` recipe operators must run after any deploy that ships new migrations.
 * **2026-05-01 (later)** — Section 4 (Email) — added intentional-dev-shim note: `app/consumer_auth.py` `saeed@test.com → OTP 1234` hardcode is permanent dev-test path per founder, not a future-cleanup item.
 * **2026-05-01 (later)** — Sections 2 (Stripe Billing) + 9 (Super-Admin Auth) — three-task batch (commit `29b8c09`):
