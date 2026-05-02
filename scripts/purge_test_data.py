@@ -26,6 +26,29 @@ suspended_coffee_ledger → cafes). Sequence:
 super_admins are deliberately untouched — they're platform staff, not
 test data.
 
+APPEND-ONLY GUARDS
+------------------
+Two ledgers carry BEFORE-DELETE triggers that raise
+`stamp_ledger is append-only (DELETE not allowed)` (and the same shape
+for `suspended_coffee_ledger`) — these protect production from a
+fat-fingered admin DELETE in psql. Defined in:
+
+    models.sql:194-207           stamp_ledger_no_delete (+ no_update)
+    migrations/0020_…suspended… suspended_coffee_no_delete (+ no_update)
+
+The purge needs to bypass them just for its own DELETEs. We:
+  1. Disable ONLY the no_delete triggers (the no_update triggers stay
+     enforced — we never UPDATE these tables).
+  2. Run all the DELETEs inside the same transaction.
+  3. Re-enable the triggers inside the same transaction.
+
+Because every step is in one transaction, a crash mid-way auto-rolls
+back the DISABLE statement, restoring the trigger as a side effect.
+A `finally` safety-net re-enable runs in a fresh implicit transaction
+to cover the rare case where the connection itself drops between the
+DISABLE and the COMMIT (ENABLE TRIGGER is idempotent, so re-enabling
+an already-enabled trigger is a no-op).
+
 Targets the DATABASE_URL configured in app/database.py (i.e. .env on
 local, /root/.env-lcp-production on the droplet). Confirm BOTH the
 URL host AND the kept brand row before passing --confirm.
@@ -44,6 +67,38 @@ from app.database import settings
 
 def _to_asyncpg_dsn(url: str) -> str:
     return url.replace("postgresql+asyncpg://", "postgresql://", 1)
+
+
+# Append-only triggers we need to bypass while DELETE-ing.
+# (table_name, trigger_name) — the trigger names mirror the ones in
+# models.sql + migration 0020. We deliberately do NOT touch the
+# corresponding *_no_update triggers — they stay enforced because the
+# script never UPDATEs these tables, and leaving them on narrows the
+# blast radius if anything else goes sideways.
+APPEND_ONLY_DELETE_TRIGGERS: tuple[tuple[str, str], ...] = (
+    ("stamp_ledger", "stamp_ledger_no_delete"),
+    ("suspended_coffee_ledger", "suspended_coffee_no_delete"),
+)
+
+
+async def _safety_net_reenable(conn: asyncpg.Connection) -> None:
+    """Belt-and-braces: re-enable each delete-block trigger in a fresh
+    implicit transaction. Idempotent (PostgreSQL accepts ENABLE TRIGGER
+    on an already-enabled trigger as a no-op), so this is safe to call
+    even when the main path already re-enabled them.
+
+    Runs from a `finally` block so the table is NEVER left silently
+    unlocked when the script crashes mid-way.
+    """
+    for tbl, trg in APPEND_ONLY_DELETE_TRIGGERS:
+        try:
+            await conn.execute(f"ALTER TABLE {tbl} ENABLE TRIGGER {trg}")
+        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+            print(
+                f"[purge] WARNING: safety-net re-enable failed for "
+                f"{tbl}.{trg}: {exc}. Inspect the DB manually before "
+                f"running anything else against this host."
+            )
 
 
 async def _run(keep_email: str, confirm: bool) -> int:
@@ -96,22 +151,51 @@ async def _run(keep_email: str, confirm: bool) -> int:
             print("[purge] DRY RUN — pass --confirm to execute.")
             return 0
 
-        async with conn.transaction():
-            for table in (
-                "stamp_ledger",
-                "global_ledger",
-                "suspended_coffee_ledger",
-                "consumer_otps",
-                "users",
-            ):
-                deleted = await conn.execute(f"DELETE FROM {table}")
-                print(f"[purge] {table}: {deleted}")
+        # ── Trigger-bypass-protected purge ───────────────────────────
+        # Outer try/finally is the safety net: even if the transaction
+        # below raises after the DISABLE statements but before the
+        # ENABLE statements, the `finally` block re-enables both
+        # triggers in a fresh implicit transaction. (And since the
+        # DISABLEs live inside the same transaction as the DELETEs,
+        # a rollback also reverts them automatically — the safety net
+        # is a defence-in-depth against connection-level failures.)
+        try:
+            async with conn.transaction():
+                for tbl, trg in APPEND_ONLY_DELETE_TRIGGERS:
+                    await conn.execute(
+                        f"ALTER TABLE {tbl} DISABLE TRIGGER {trg}"
+                    )
+                    print(f"[purge] disabled trigger {tbl}.{trg}")
 
-            deleted = await conn.execute(
-                "DELETE FROM brands WHERE id != $1",
-                target["id"],
-            )
-            print(f"[purge] brands (CASCADE → cafes/offers/etc.): {deleted}")
+                for table in (
+                    "stamp_ledger",
+                    "global_ledger",
+                    "suspended_coffee_ledger",
+                    "consumer_otps",
+                    "users",
+                ):
+                    deleted = await conn.execute(f"DELETE FROM {table}")
+                    print(f"[purge] {table}: {deleted}")
+
+                deleted = await conn.execute(
+                    "DELETE FROM brands WHERE id != $1",
+                    target["id"],
+                )
+                print(f"[purge] brands (CASCADE → cafes/offers/etc.): {deleted}")
+
+                # Re-enable inside the same transaction so a successful
+                # COMMIT lands the DB in the canonical "triggers on"
+                # state atomically with the purge.
+                for tbl, trg in APPEND_ONLY_DELETE_TRIGGERS:
+                    await conn.execute(
+                        f"ALTER TABLE {tbl} ENABLE TRIGGER {trg}"
+                    )
+                    print(f"[purge] re-enabled trigger {tbl}.{trg}")
+        finally:
+            # Safety net — runs whether the transaction committed,
+            # rolled back, or never reached the ENABLE statements.
+            # Idempotent, so a no-op on the success path.
+            await _safety_net_reenable(conn)
 
         # Post-purge sanity counts.
         post = {
