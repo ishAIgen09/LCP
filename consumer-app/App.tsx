@@ -36,6 +36,7 @@ import {
 import * as Location from "expo-location";
 
 import { LoginScreen } from "./src/LoginScreen";
+import { clearSession, loadSession, saveSession } from "./src/sessionStorage";
 import { HistoryScreen } from "./src/HistoryScreen";
 import { RewardModal, type RewardPayload } from "./src/RewardModal";
 import { AmenitiesFilterModal } from "./src/AmenitiesFilterModal";
@@ -174,9 +175,56 @@ function AppShell() {
   const [session, setSession] = useState<Session | null>(null);
   const [tab, setTab] = useState<Tab>("home");
   const [reward, setReward] = useState<RewardPayload | null>(null);
+  // `hydrated` gates the persist-on-change effect so we never wipe the
+  // stored session before we've had a chance to read it on cold launch.
+  const [hydrated, setHydrated] = useState(false);
   const handleReward = useCallback((payload: RewardPayload) => {
     setReward(payload);
   }, []);
+
+  // Cold-launch hydration. SecureStore reads are async — until they
+  // resolve, we render the same splash spinner the App-level font
+  // gate uses, so the user sees one continuous loading state instead
+  // of a brief flash of LoginScreen for already-signed-in users.
+  useEffect(() => {
+    let cancelled = false;
+    loadSession().then((stored) => {
+      if (cancelled) return;
+      if (stored) setSession(stored);
+      setHydrated(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Mirror in-memory `session` to SecureStore on every change after
+  // hydration. Sign-in writes the new payload; sign-out (setSession(null))
+  // wipes the stored copy so a stale token never resurrects on the next
+  // launch.
+  useEffect(() => {
+    if (!hydrated) return;
+    if (session) {
+      void saveSession(session);
+    } else {
+      void clearSession();
+    }
+  }, [hydrated, session]);
+
+  if (!hydrated) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: COLOR.bg,
+        }}
+      >
+        <ActivityIndicator color={COLOR.accent} />
+      </View>
+    );
+  }
 
   if (!session) {
     return (

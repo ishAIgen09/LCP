@@ -25,13 +25,25 @@ from app.database import settings
 
 ALGORITHM = "HS256"
 
+# Persistent-login window for the native consumer app (PRD: founder
+# direction 2026-05-02). Web JWTs (admin / super-admin / store) keep
+# the short `settings.jwt_ttl_hours` default for security; only the
+# consumer audience opts into a 365-day session so customers don't get
+# kicked out between coffee runs.
+_CONSUMER_TTL_SECONDS = 365 * 24 * 3600
 
-def _encode(claims: dict[str, Any]) -> str:
+
+def _encode(claims: dict[str, Any], ttl_seconds: int | None = None) -> str:
     now = int(time.time())
+    expires_in = (
+        ttl_seconds
+        if ttl_seconds is not None
+        else settings.jwt_ttl_hours * 3600
+    )
     payload = {
         **claims,
         "iat": now,
-        "exp": now + settings.jwt_ttl_hours * 3600,
+        "exp": now + expires_in,
         "iss": "indie-coffee-loop",
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
@@ -79,6 +91,9 @@ def encode_consumer(
     first_name: str | None,
     last_name: str | None,
 ) -> str:
+    # Long-lived consumer token (365 days) — see _CONSUMER_TTL_SECONDS.
+    # Native app persists this to expo-secure-store so the user stays
+    # signed in across force-closes, restarts, and OS-level memory wipes.
     return _encode(
         {
             "sub": f"consumer:{user_id}",
@@ -88,7 +103,8 @@ def encode_consumer(
             "email": email,
             "first_name": first_name,
             "last_name": last_name,
-        }
+        },
+        ttl_seconds=_CONSUMER_TTL_SECONDS,
     )
 
 
