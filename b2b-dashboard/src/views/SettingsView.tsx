@@ -1,11 +1,15 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
+  AlertTriangle,
   Building2,
   CheckCircle2,
   Globe,
   Loader2,
   Lock,
+  MessageSquare,
+  Send,
   UserRound,
+  XCircle,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -18,8 +22,17 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
-import { humanizeError } from "@/lib/api"
+import {
+  createPortalSession,
+  humanizeError,
+  postProductFeedback,
+} from "@/lib/api"
+import { CancellationFeedbackModal } from "@/components/CancellationFeedbackModal"
 import type { Brand, SchemeType } from "@/lib/mock"
+
+const PRODUCT_FEEDBACK_MAX = 4000
+
+type ToastShape = { message: string; variant: "success" | "error" }
 
 type Patch = {
   name?: string
@@ -36,9 +49,11 @@ type Patch = {
 
 export function SettingsView({
   brand,
+  token,
   onSave,
 }: {
   brand: Brand
+  token: string
   onSave: (patch: Patch) => Promise<void>
 }) {
   // Brand profile drafts
@@ -153,6 +168,62 @@ export function SettingsView({
   }
 
   const saving = status === "saving"
+
+  // ─── Account Management — Cancel Subscription ──────────────────────
+  // The exit survey was previously chained on top of the Manage Billing
+  // button in BillingView; that was a miswiring (a brand updating their
+  // card shouldn't trigger a cancellation flow). The intent surfaces
+  // here, in the Danger Zone, where it semantically belongs.
+  const [cancelOpen, setCancelOpen] = useState(false)
+
+  // ─── Provide Feedback ──────────────────────────────────────────────
+  const [feedbackBody, setFeedbackBody] = useState("")
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false)
+  const [toast, setToast] = useState<ToastShape | null>(null)
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (!toast) return
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    toastTimerRef.current = setTimeout(() => setToast(null), 4000)
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    }
+  }, [toast])
+
+  const trimmedFeedback = feedbackBody.trim()
+  const canSubmitFeedback =
+    trimmedFeedback.length > 0 && !feedbackSubmitting
+
+  const submitFeedback = async () => {
+    if (!canSubmitFeedback) return
+    setFeedbackSubmitting(true)
+    try {
+      await postProductFeedback(token, trimmedFeedback)
+      setFeedbackBody("")
+      setToast({
+        message: "Thanks — your feedback is in. We read every single one.",
+        variant: "success",
+      })
+    } catch (e) {
+      setToast({ message: humanizeError(e), variant: "error" })
+    } finally {
+      setFeedbackSubmitting(false)
+    }
+  }
+
+  // After the cancel exit-survey is submitted, hand off to the Stripe
+  // Customer Portal where the brand actually confirms the cancellation
+  // (cancel-at-period-end). The portal redirect is owned by the modal's
+  // onSuccess callback so a survey-submit failure blocks the redirect.
+  const goToCancelPortal = async () => {
+    try {
+      const { checkout_url } = await createPortalSession(token)
+      window.location.href = checkout_url
+    } catch (e) {
+      setToast({ message: humanizeError(e), variant: "error" })
+    }
+  }
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -351,6 +422,96 @@ export function SettingsView({
             )}
           </Button>
         </div>
+
+        {/* Provide Feedback — continuous loop straight to the operator
+            inbox. Server-side fans out to email + structured log; no DB
+            row is persisted yet (low message volume). */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-[15px] tracking-tight">
+              <MessageSquare className="h-4 w-4 text-muted-foreground" strokeWidth={2.25} />
+              Provide Feedback
+            </CardTitle>
+            <CardDescription>
+              We are constantly evolving LCP and your feedback is absolutely
+              valuable. If there is a feature you&apos;d love to see or
+              something that would work better for you, we are all ears!
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3 pt-0">
+            <textarea
+              value={feedbackBody}
+              onChange={(e) =>
+                setFeedbackBody(e.target.value.slice(0, PRODUCT_FEEDBACK_MAX))
+              }
+              disabled={feedbackSubmitting}
+              rows={5}
+              placeholder="Tell us what would help — feature requests, friction points, anything that's nagging you."
+              className="block w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-[13.5px] leading-relaxed outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+            />
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-[11px] text-muted-foreground">
+                {feedbackBody.length}/{PRODUCT_FEEDBACK_MAX}
+              </span>
+              <Button
+                size="sm"
+                className="h-9 gap-1.5"
+                onClick={submitFeedback}
+                disabled={!canSubmitFeedback}
+              >
+                {feedbackSubmitting ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.25} />
+                    Sending…
+                  </>
+                ) : (
+                  <>
+                    <Send className="h-3.5 w-3.5" strokeWidth={2.25} />
+                    Submit feedback
+                  </>
+                )}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Account Management — Danger Zone. Cancel Subscription lives
+            here (not on the Billing tab) so a brand updating their
+            card / downloading invoices isn't ambushed by an exit
+            survey on every click. */}
+        <Card className="border-destructive/30">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-[15px] tracking-tight text-destructive">
+              <AlertTriangle className="h-4 w-4" strokeWidth={2.25} />
+              Account Management
+            </CardTitle>
+            <CardDescription>
+              Irreversible actions. Cancellation takes effect at the end
+              of your current billing cycle.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
+              <div>
+                <div className="text-[13px] font-semibold text-foreground">
+                  Cancel Subscription
+                </div>
+                <p className="mt-0.5 text-[11.5px] leading-snug text-muted-foreground">
+                  We&apos;ll ask one quick question, then hand you to the
+                  Stripe portal to confirm the cancellation.
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-9 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                onClick={() => setCancelOpen(true)}
+              >
+                Cancel Subscription
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Community Board / Suspended Coffee per-cafe toggle moved
@@ -417,6 +578,47 @@ export function SettingsView({
           </CardContent>
         </Card>
       </div>
+
+      <CancellationFeedbackModal
+        open={cancelOpen}
+        onOpenChange={setCancelOpen}
+        token={token}
+        onSuccess={goToCancelPortal}
+      />
+
+      {toast ? <SettingsToast toast={toast} onDismiss={() => setToast(null)} /> : null}
+    </div>
+  )
+}
+
+function SettingsToast({
+  toast,
+  onDismiss,
+}: {
+  toast: ToastShape
+  onDismiss: () => void
+}) {
+  const Icon = toast.variant === "success" ? CheckCircle2 : XCircle
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className={cn(
+        "fixed bottom-6 right-6 z-50 flex items-start gap-2.5 rounded-lg px-4 py-3 text-[13px] shadow-lg ring-1",
+        toast.variant === "success" && "bg-emerald-600 text-white ring-emerald-700/40",
+        toast.variant === "error" && "bg-rose-600 text-white ring-rose-700/40",
+      )}
+    >
+      <Icon className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={2.4} />
+      <div className="max-w-xs leading-snug">{toast.message}</div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dismiss"
+        className="ml-2 rounded text-white/80 transition-colors hover:text-white"
+      >
+        <XCircle className="h-3.5 w-3.5" strokeWidth={2.4} />
+      </button>
     </div>
   )
 }

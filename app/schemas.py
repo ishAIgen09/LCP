@@ -944,6 +944,33 @@ class CancellationFeedbackResponse(BaseModel):
 
 
 # -----------------------------------------------------------------------------
+# B2B Product Feedback (Settings → Provide Feedback)
+# -----------------------------------------------------------------------------
+
+
+# Cap the free-text body so the email + log entry stay tractable. Picked
+# generously — long-form ideas/bug reports fit, but a runaway paste won't
+# DoS the operator inbox.
+PRODUCT_FEEDBACK_MAX = 4000
+
+
+class ProductFeedbackCreate(BaseModel):
+    """Body of POST /api/b2b/feedback. Brand id + contact email come
+    from the admin JWT — the request body only carries the message."""
+
+    message: str = Field(min_length=1, max_length=PRODUCT_FEEDBACK_MAX)
+
+
+class ProductFeedbackResponse(BaseModel):
+    """Returned on success. We don't persist this in the DB (yet) — it
+    fans out to email + structured log only — so the response is just an
+    ack with a server-side timestamp the dashboard can show in a toast."""
+
+    ok: bool
+    received_at: datetime
+
+
+# -----------------------------------------------------------------------------
 # Pay It Forward / Suspended Coffee (PRD §4.5, migration 0020)
 # -----------------------------------------------------------------------------
 

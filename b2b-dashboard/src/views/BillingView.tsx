@@ -11,22 +11,14 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
 import {
-  createCheckout,
   createPortalSession,
   humanizeError,
+  requestPlanChange,
   type PlanTier,
 } from "@/lib/api"
-import { CancellationFeedbackModal } from "@/components/CancellationFeedbackModal"
+import { PlanChangeConfirmationDialog } from "@/components/PlanChangeConfirmationDialog"
 import type { Brand } from "@/lib/mock"
 
 type PlanRow = {
@@ -74,27 +66,6 @@ const PLANS: PlanRow[] = [
 
 function formatGBP(pence: number): string {
   return `£${(pence / 100).toFixed(2)}`
-}
-
-// Mirror of app/billing.py::_compute_proration_pence — same rounding rule
-// (half-up to nearest pence). Lets the modal show the exact pro-rata
-// charge the server will commit when the plan flips today. Pass a TOTAL
-// monthly delta in pence (i.e. per-location delta × cafeCount) so the
-// returned figure is the all-locations charge, not per-location.
-function previewProration(
-  monthlyTotalDeltaPence: number,
-  now: Date = new Date(),
-): { pence: number; daysRemaining: number; daysInMonth: number } {
-  const year = now.getFullYear()
-  const month = now.getMonth() // 0-indexed
-  const daysInMonth = new Date(year, month + 1, 0).getDate()
-  const daysRemaining = daysInMonth - now.getDate() + 1
-  const numerator = Math.abs(monthlyTotalDeltaPence) * daysRemaining
-  const prorationAbs = Math.floor(
-    (numerator + Math.floor(daysInMonth / 2)) / daysInMonth,
-  )
-  const pence = monthlyTotalDeltaPence >= 0 ? prorationAbs : -prorationAbs
-  return { pence, daysRemaining, daysInMonth }
 }
 
 type ToastShape = { message: string; variant: "success" | "error" }
@@ -157,14 +128,7 @@ export function BillingView({
   // so a successful confirm flips the CURRENT pill + per-loc price + total
   // monthly cost across the whole tab in one render. When the backend
   // exposes brand.plan_tier, seed the initial value from there.
-  // currentPlan is reactive even though confirmPlanChange now navigates
-  // away to Stripe Checkout (no optimistic flip happens client-side
-  // here). Once `brands.plan_tier` lands as a backend field, the BillingView
-  // initial value will seed from `brand.plan_tier` and the setter will
-  // be called from the Stripe webhook → state refresh round-trip.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [currentPlan, setCurrentPlan] = useState<PlanTier>("starter")
-  void setCurrentPlan
   const currentPlanRow =
     PLANS.find((p) => p.id === currentPlan) ?? PLANS[0]
   const totalMonthlyPence = currentPlanRow.pricePence * cafeCount
@@ -183,16 +147,15 @@ export function BillingView({
     }
   }, [toast])
 
-  // Cancel-intercept (PRD §4.2): the "Manage Payment Method & Invoices"
-  // button doesn't open the Stripe portal directly anymore — it opens
-  // CancellationFeedbackModal first. The modal POSTs the survey, then
-  // calls back into `runOpenPortal` which actually performs the Stripe
-  // call + redirect. Closing the modal without submitting cancels the
-  // flow without firing the redirect.
-  const [feedbackOpen, setFeedbackOpen] = useState(false)
-
-  const runOpenPortal = async () => {
+  // Manage Payment Method & Invoices → Stripe Customer Portal. The exit
+  // survey was previously chained on top of this button; that was a
+  // miswiring (a brand updating their card shouldn't trigger a
+  // cancellation flow). The survey now lives behind the dedicated
+  // Cancel Subscription button in Settings → Account Management.
+  const openPortal = async () => {
+    if (opening) return
     setError(null)
+    setOpening(true)
     try {
       const { checkout_url } = await createPortalSession(token)
       window.location.href = checkout_url
@@ -202,31 +165,30 @@ export function BillingView({
     }
   }
 
-  const openPortal = () => {
-    if (opening) return
-    setError(null)
-    setOpening(true)
-    setFeedbackOpen(true)
-  }
-
   const confirmPlanChange = async () => {
     if (!pending || submittingPlan) return
     setSubmittingPlan(true)
     try {
-      // Map dashboard tier id (PlanTier wire format) → backend tier slug
-      // ("private" | "global"). The PlanTier ids stay short for backend
-      // logging compatibility; the Stripe price-id lookup keys on the
-      // human slug.
-      const stripeTier: "private" | "global" =
-        pending.id === "pro" ? "global" : "private"
-      const { checkout_url } = await createCheckout(token, stripeTier)
-      // Full-page redirect into Stripe Checkout. On success, Stripe
-      // sends the user back to /success?session_id=… (handled in
-      // App.tsx::detectBillingRoute). On cancel, /cancel.
-      window.location.href = checkout_url
-      // Don't clear submittingPlan — the redirect is in flight; if the
-      // assignment somehow fails (popup blocker, navigation cancelled),
-      // the catch below will surface an error.
+      const deltaPerLocationPence =
+        pending.pricePence - currentPlanRow.pricePence
+      // Hits POST /api/billing/plan-change which calls
+      // stripe.SubscriptionItem.modify(price=..., proration_behavior=
+      // "create_prorations") on the brand's existing subscription. No
+      // new Checkout Session is created — the proration co-terms onto
+      // the next invoice naturally.
+      await requestPlanChange(token, {
+        from_plan: currentPlan,
+        to_plan: pending.id,
+        price_delta_pence_per_location: deltaPerLocationPence,
+        cafe_count: cafeCount,
+      })
+      setCurrentPlan(pending.id)
+      setPending(null)
+      setSubmittingPlan(false)
+      setToast({
+        message: "Plan upgraded successfully!",
+        variant: "success",
+      })
     } catch (e) {
       setToast({
         message: humanizeError(e),
@@ -385,7 +347,7 @@ export function BillingView({
       </CardContent>
     </Card>
 
-    <PlanChangeDialog
+    <PlanChangeConfirmationDialog
       open={pending !== null}
       onOpenChange={(v) => (!submittingPlan && !v ? setPending(null) : null)}
       fromPlan={PLANS.find((p) => p.id === currentPlan)!}
@@ -393,18 +355,6 @@ export function BillingView({
       cafeCount={cafeCount}
       submitting={submittingPlan}
       onConfirm={confirmPlanChange}
-    />
-
-    <CancellationFeedbackModal
-      open={feedbackOpen}
-      onOpenChange={(v) => {
-        setFeedbackOpen(v)
-        // Modal closed without submitting → user cancelled, reset the
-        // "opening" gate so the button is clickable again.
-        if (!v) setOpening(false)
-      }}
-      token={token}
-      onSuccess={runOpenPortal}
     />
 
     {toast ? <BillingToast toast={toast} onDismiss={() => setToast(null)} /> : null}
@@ -487,167 +437,11 @@ function PlanCard({
           </Button>
         )}
       </div>
-    </div>
-  )
-}
-
-function PlanChangeDialog({
-  open,
-  onOpenChange,
-  fromPlan,
-  toPlan,
-  cafeCount,
-  submitting,
-  onConfirm,
-}: {
-  open: boolean
-  onOpenChange: (v: boolean) => void
-  fromPlan: PlanRow
-  toPlan: PlanRow | null
-  cafeCount: number
-  submitting: boolean
-  onConfirm: () => void
-}) {
-  if (!toPlan) {
-    // Render the Dialog with no body so close-animation still runs cleanly
-    // when `pending` flips back to null.
-    return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent /></Dialog>
-  }
-  const deltaPerLocation = toPlan.pricePence - fromPlan.pricePence
-  const totalDelta = deltaPerLocation * cafeCount
-  const isUpgrade = totalDelta > 0
-  const isDowngrade = totalDelta < 0
-  const verb = isUpgrade ? "Upgrading" : isDowngrade ? "Downgrading" : "Switching"
-  const action = isUpgrade ? "upgrade" : isDowngrade ? "downgrade" : "switch"
-  // Pro-rata charge applies on upgrades only — downgrades land on the next
-  // invoice as a credit per the brand-voice copy ("new rate will be
-  // reflected on your next invoice"), so we deliberately don't surface a
-  // pro-rata credit line for the negative path.
-  const proration = previewProration(totalDelta)
-  const newMonthlyTotal = toPlan.pricePence * cafeCount
-
-  return (
-    <Dialog open={open} onOpenChange={(v) => (!submitting ? onOpenChange(v) : null)}>
-      <DialogContent className="sm:max-w-[480px]">
-        <DialogHeader>
-          <div className="mb-1 flex items-center gap-2">
-            <span
-              className={cn(
-                "grid h-8 w-8 place-items-center rounded-md ring-1",
-                isUpgrade
-                  ? "bg-primary/10 text-primary ring-primary/30"
-                  : "bg-muted text-muted-foreground ring-border",
-              )}
-            >
-              {isUpgrade ? (
-                <ArrowUpRight className="h-4 w-4" strokeWidth={2.25} />
-              ) : (
-                <Sparkles className="h-4 w-4" strokeWidth={2.25} />
-              )}
-            </span>
-            <DialogTitle className="text-[16px] tracking-tight">
-              Confirm plan change
-            </DialogTitle>
-          </div>
-          <DialogDescription>
-            Self-serve plan switch — no approval gate. The Local Perks team
-            is auto-notified.
-          </DialogDescription>
-        </DialogHeader>
-
-        {/* Receipt-style layout: one airy stacked block per fact so the
-            dialog reads like a check-out summary instead of a paragraph. */}
-        <div className="mt-2 divide-y divide-border rounded-lg border border-border bg-muted/20">
-          <ReceiptRow
-            label={`${verb} ${cafeCount} location${cafeCount === 1 ? "" : "s"} to`}
-            value={toPlan.name}
-            valueClass="text-foreground"
-          />
-          {isUpgrade ? (
-            <ReceiptRow
-              label={`Immediate charge today (prorated for ${proration.daysRemaining} of ${proration.daysInMonth} days × ${cafeCount} location${cafeCount === 1 ? "" : "s"})`}
-              value={`~${formatGBP(Math.abs(proration.pence))}`}
-              valueClass="text-primary"
-            />
-          ) : isDowngrade ? (
-            <ReceiptRow
-              label="Charged today"
-              value="£0.00"
-              valueClass="text-muted-foreground"
-              hint="Downgrades take effect on your next invoice — no charge today."
-            />
-          ) : null}
-          <ReceiptRow
-            label="New monthly total starting next invoice"
-            value={`${formatGBP(newMonthlyTotal)}/mo`}
-            valueClass="text-foreground"
-            hint={
-              cafeCount > 0
-                ? `${formatGBP(toPlan.pricePence)}/mo × ${cafeCount} location${cafeCount === 1 ? "" : "s"}`
-                : "No active locations yet — total kicks in once you add your first cafe."
-            }
-          />
-        </div>
-
-        <DialogFooter className="mt-2">
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={submitting}
-          >
-            Cancel
-          </Button>
-          <Button
-            onClick={onConfirm}
-            disabled={submitting}
-            className="gap-1.5"
-          >
-            {submitting ? (
-              <>
-                <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.25} /> Switching…
-              </>
-            ) : (
-              `Confirm ${action}`
-            )}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-// One stacked label/value row for the receipt-style PlanChangeDialog.
-// Generous vertical padding + uppercase micro-label keep each fact its
-// own glanceable line instead of a wall of prose.
-function ReceiptRow({
-  label,
-  value,
-  valueClass,
-  hint,
-}: {
-  label: string
-  value: string
-  valueClass?: string
-  hint?: string
-}) {
-  return (
-    <div className="px-4 py-3.5">
-      <div className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">
-        {label}
-      </div>
-      <div
-        className={cn(
-          "mt-1.5 text-[18px] font-semibold tracking-tight",
-          valueClass ?? "text-foreground",
-        )}
-      >
-        {value}
-      </div>
-      {hint ? (
-        <div className="mt-1 text-[11.5px] leading-snug text-muted-foreground">
-          {hint}
-        </div>
-      ) : null}
+      <p className="text-[10.5px] leading-snug text-muted-foreground">
+        Note: Prices currently do not include VAT. If Local Coffee Perks
+        becomes VAT registered in the future, this amount will be adjusted
+        accordingly.
+      </p>
     </div>
   )
 }

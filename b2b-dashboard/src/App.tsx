@@ -364,6 +364,7 @@ function App() {
             {nav === "settings" && (
               <SettingsView
                 brand={brand}
+                token={session.token}
                 onSave={handleUpdateBrand}
               />
             )}

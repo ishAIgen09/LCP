@@ -537,6 +537,25 @@ export async function postCancellationFeedback(
   )
 }
 
+// Settings → Provide Feedback. Logged + emailed to the operator inbox
+// server-side (no DB row yet — see app/b2b_routes.py::submit_product_feedback).
+export type ProductFeedbackResponse = {
+  ok: boolean
+  received_at: string
+}
+
+export async function postProductFeedback(
+  token: string,
+  message: string,
+): Promise<ProductFeedbackResponse> {
+  return request<ProductFeedbackResponse>(
+    "POST",
+    "/api/b2b/feedback",
+    { message },
+    authHeader(token),
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Pay It Forward / Suspended Coffee — POS-side (Venue API key auth)
 // PRD §4.5 + migration 0020.

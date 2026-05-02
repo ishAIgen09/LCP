@@ -39,6 +39,7 @@ from app.models import (
     StampLedger,
     SuspendedCoffeeLedger,
 )
+from app.email_sender import send_email
 from app.schemas import (
     AdminSession,
     B2BScanRequest,
@@ -47,6 +48,8 @@ from app.schemas import (
     CancellationFeedbackResponse,
     CommunityPoolStatus,
     DonateTillRequest,
+    ProductFeedbackCreate,
+    ProductFeedbackResponse,
     SuspendedCoffeeMutationResponse,
 )
 
@@ -172,6 +175,65 @@ async def cancellation_feedback(
         bool(row.details),
     )
     return row
+
+
+# ─────────────────────────────────────────────────────────────────────
+# B2B Product Feedback — Settings → Provide Feedback. Continuous
+# feedback loop captured by the same brand-admin JWT that owns the
+# dashboard. We email the operator inbox + log a structured line; no
+# DB row is persisted yet (the message volume is low enough that an
+# email + log are the right primitives until we need triage tooling).
+# ─────────────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/feedback",
+    response_model=ProductFeedbackResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def submit_product_feedback(
+    payload: ProductFeedbackCreate,
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> ProductFeedbackResponse:
+    """Capture a brand owner's product feedback. Fans out to:
+      - structured log line (greppable by brand_id)
+      - email to hello@localcoffeeperks.com (best-effort; never raises)
+    """
+    from datetime import datetime, timezone
+
+    received_at = datetime.now(timezone.utc)
+    body = payload.message.strip()
+
+    brand = await session.get(Brand, admin.brand_id)
+    brand_name = brand.name if brand is not None else "(unknown brand)"
+    contact_email = brand.contact_email if brand is not None else "(unknown)"
+
+    logger.info(
+        "PRODUCT-FEEDBACK brand_id=%s brand_name=%s contact=%s message=%r",
+        admin.brand_id,
+        brand_name,
+        contact_email,
+        body,
+    )
+
+    subject = f"[LCP feedback] {brand_name}"
+    # Plain HTML body — minimal markup so the operator inbox stays
+    # readable. send_email's stub fallback will print to stdout if no
+    # transport is configured (local dev), so the message is never lost.
+    html_body = (
+        f"<p><strong>Brand:</strong> {brand_name}</p>"
+        f"<p><strong>Contact:</strong> {contact_email}</p>"
+        f"<p><strong>Brand id:</strong> {admin.brand_id}</p>"
+        f"<p><strong>Message:</strong></p>"
+        f"<pre style='white-space:pre-wrap;font-family:inherit;'>{body}</pre>"
+    )
+    try:
+        send_email("hello@localcoffeeperks.com", subject, html_body, body)
+    except Exception as exc:  # noqa: BLE001 — best-effort delivery
+        logger.warning("PRODUCT-FEEDBACK email failed: %s", exc)
+
+    return ProductFeedbackResponse(ok=True, received_at=received_at)
 
 
 # ─────────────────────────────────────────────────────────────────────
