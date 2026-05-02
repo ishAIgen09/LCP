@@ -27,6 +27,7 @@ import {
   Navigation,
   Quote,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Star,
   User as UserIcon,
@@ -37,9 +38,10 @@ import * as Location from "expo-location";
 import { LoginScreen } from "./src/LoginScreen";
 import { HistoryScreen } from "./src/HistoryScreen";
 import { RewardModal, type RewardPayload } from "./src/RewardModal";
+import { AmenitiesFilterModal } from "./src/AmenitiesFilterModal";
 import { CafeDetailsModal } from "./src/CafeDetailsModal";
 import { EditProfileModal } from "./src/EditProfileModal";
-import { AMENITIES, lookupAmenity, type AmenityDef } from "./src/amenities";
+import { lookupAmenity, type AmenityDef } from "./src/amenities";
 import {
   fetchDiscoverCafes,
   fetchWallet,
@@ -849,19 +851,15 @@ function DiscoverView({ session }: { session: Session }) {
   const [selected, setSelected] = useState<DiscoverCafe | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
-  // Multi-select amenity filter — tap to toggle, "All" clears the set.
-  // Match is AND across selected amenities (Dog Friendly *and* Wi-Fi).
+  // Multi-select amenity filter — committed via the AmenitiesFilterModal
+  // bottom sheet (founder direction 2026-05-02). Match is AND across the
+  // selected amenities (Dog Friendly *and* Wi-Fi). The trigger button on
+  // the Discover header opens the sheet; nothing applies until the user
+  // hits the modal's Apply CTA.
   const [activeAmenities, setActiveAmenities] = useState<Set<string>>(
     () => new Set(),
   );
-  const toggleAmenity = useCallback((id: string) => {
-    setActiveAmenities((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+  const [filterOpen, setFilterOpen] = useState(false);
   const clearAmenities = useCallback(() => {
     setActiveAmenities(new Set());
   }, []);
@@ -985,11 +983,9 @@ function DiscoverView({ session }: { session: Session }) {
         Within {DISCOVERY_RADIUS_MILES} miles · sorted by closest first.
       </Text>
 
-      <SmartFilterRow
-        activeIds={activeAmenities}
-        onToggle={toggleAmenity}
-        onClear={clearAmenities}
-        availableIds={availableAmenityIds}
+      <AmenityFilterTrigger
+        count={activeAmenities.size}
+        onPress={() => setFilterOpen(true)}
       />
 
       {cafes === null ? (
@@ -1151,98 +1147,90 @@ function DiscoverView({ session }: { session: Session }) {
           );
         }}
       />
+
+      <AmenitiesFilterModal
+        open={filterOpen}
+        initialSelected={activeAmenities}
+        availableIds={availableAmenityIds}
+        onClose={() => setFilterOpen(false)}
+        onApply={(next) => {
+          setActiveAmenities(next);
+          setFilterOpen(false);
+        }}
+      />
     </ScrollView>
   );
 }
 
-// Horizontal pill row for the Discover smart-filter. Renders the catalogue
-// of amenities as a multi-select chip group — tap any pill to toggle it
-// on/off, stack as many as you like (Dog Friendly *and* Wi-Fi). Greys out
-// any amenity not on a nearby cafe so the row stays honest. The leading
-// "All" pill clears the entire selection.
-function SmartFilterRow({
-  activeIds,
-  onToggle,
-  onClear,
-  availableIds,
+// Discover header trigger that opens the AmenitiesFilterModal. Replaces
+// the old horizontal pill ScrollView per founder direction (2026-05-02).
+// Shows a count badge whenever any amenity is committed so the user can
+// see at a glance whether the feed is filtered.
+function AmenityFilterTrigger({
+  count,
+  onPress,
 }: {
-  activeIds: ReadonlySet<string>;
-  onToggle: (id: string) => void;
-  onClear: () => void;
-  availableIds: ReadonlySet<string>;
+  count: number;
+  onPress: () => void;
 }) {
-  const noneSelected = activeIds.size === 0;
+  const active = count > 0;
   return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      contentContainerStyle={{ paddingTop: 14, paddingBottom: 4 }}
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={
+        active ? `Edit amenity filters (${count} active)` : "Filter amenities"
+      }
+      className="mt-4 h-11 flex-row items-center self-start rounded-full px-4"
+      style={({ pressed }) => ({
+        backgroundColor: active ? COLOR.accent : COLOR.surface,
+        borderWidth: 1,
+        borderColor: active ? COLOR.accent : COLOR.border,
+        opacity: pressed ? 0.85 : 1,
+      })}
     >
-      <Pressable
-        onPress={onClear}
-        className="mr-2 h-9 items-center justify-center rounded-full px-3.5"
-        style={({ pressed }) => ({
-          backgroundColor: noneSelected ? COLOR.accent : COLOR.surface,
-          borderWidth: 1,
-          borderColor: noneSelected ? COLOR.accent : COLOR.border,
-          opacity: pressed ? 0.85 : 1,
-        })}
+      <SlidersHorizontal
+        size={14}
+        color={active ? COLOR.accentInk : COLOR.text}
+        strokeWidth={2.2}
+      />
+      <Text
+        style={{
+          marginLeft: 8,
+          fontFamily: FONT.semibold,
+          fontSize: 12.5,
+          color: active ? COLOR.accentInk : COLOR.text,
+          letterSpacing: 0.3,
+        }}
       >
-        <Text
+        Filter amenities
+      </Text>
+      {active ? (
+        <View
           style={{
-            fontSize: 11.5,
-            color: noneSelected ? COLOR.accentInk : COLOR.text,
-            fontFamily: FONT.semibold,
-            letterSpacing: 0.4,
+            marginLeft: 8,
+            minWidth: 22,
+            height: 22,
+            paddingHorizontal: 6,
+            borderRadius: 11,
+            backgroundColor: COLOR.accentInk,
+            alignItems: "center",
+            justifyContent: "center",
           }}
         >
-          All
-        </Text>
-      </Pressable>
-      {AMENITIES.map((a) => {
-        const isActive = activeIds.has(a.id);
-        const isAvailable = availableIds.has(a.id);
-        const Icon = a.Icon;
-        return (
-          <Pressable
-            key={a.id}
-            onPress={() => onToggle(a.id)}
-            disabled={!isAvailable && !isActive}
-            accessibilityRole="button"
-            accessibilityState={{ selected: isActive }}
-            accessibilityLabel={`${isActive ? "Remove" : "Add"} filter ${a.label}`}
-            className="mr-2 h-9 flex-row items-center justify-center rounded-full px-3"
-            style={({ pressed }) => ({
-              backgroundColor: isActive ? COLOR.accent : COLOR.surface,
-              borderWidth: 1,
-              borderColor: isActive
-                ? COLOR.accent
-                : isAvailable
-                  ? COLOR.border
-                  : "rgba(255,255,255,0.04)",
-              opacity: pressed ? 0.85 : isAvailable || isActive ? 1 : 0.45,
-            })}
+          <Text
+            style={{
+              fontFamily: FONT.semibold,
+              fontSize: 11,
+              color: COLOR.accent,
+              letterSpacing: 0.4,
+            }}
           >
-            <Icon
-              size={12}
-              color={isActive ? COLOR.accentInk : COLOR.roastedAlmond}
-              strokeWidth={2.2}
-            />
-            <Text
-              style={{
-                marginLeft: 6,
-                fontSize: 11.5,
-                color: isActive ? COLOR.accentInk : COLOR.text,
-                fontFamily: FONT.semibold,
-                letterSpacing: 0.3,
-              }}
-            >
-              {a.label}
-            </Text>
-          </Pressable>
-        );
-      })}
-    </ScrollView>
+            {count}
+          </Text>
+        </View>
+      ) : null}
+    </Pressable>
   );
 }
 
