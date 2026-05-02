@@ -35,7 +35,7 @@
 * **Hardening status:** ✅ **Live as of 2026-05-01.** Operator manually deployed the hardened script via "Manage Deployments → New Version." All described behavior (success email per signup + URGENT fallback if appendRow fails + try/catch on both endpoints) is active in production.
 
 ## 2. Stripe Billing (Test Mode)
-*Last updated: **2026-05-02***
+*Last updated: **2026-05-02 (later)***
 
 * **Role:** Handles the per-cafe subscription billing. Tier pricing is governed by the **Founding 100** policy — see Section 7 for the full pricing tier rules.
 * **Environment:** Currently running in Test Mode (using `pk_test_...` and `sk_test_...` keys).
@@ -55,6 +55,26 @@ All subscription mutations stay pay-in-advance, but the **billing-cycle anchor w
 * **Adding cafes mid-cycle (quantity sync)** — `app/billing.py::sync_subscription_quantity` calls `stripe.SubscriptionItem.modify(item_id, quantity=N, proration_behavior="create_prorations")` and **does NOT call `Invoice.create`**. The proration line items roll onto the brand's NEXT natural invoice on their existing renewal date (co-termed). Issuing an immediate prorated invoice on every Add-Location click would drown small operators in tiny one-off charges, so we deliberately skip that step. `AddLocationDialog` in the b2b-dashboard gates the brand-new Checkout redirect on `!wasActive` so active brands don't re-checkout — they just get the auto-bumped quantity.
 * **Plan upgrades / downgrades (`POST /api/billing/plan-change`)** — ✅ **wired live 2026-05-01** (commit `29b8c09`). The handler calls `stripe.SubscriptionItem.modify(item_id, price=NEW_PRICE_ID, proration_behavior="create_prorations")`. On upgrade it follows up with `stripe.Invoice.create + stripe.Invoice.pay` so the customer is charged the prorated difference immediately (this is the *plan-change* path; *quantity-change* path above does NOT do this). On downgrade the credit naturally lands on the next monthly invoice. `_resolve_plan_change_price_id` maps `starter→STRIPE_PRIVATE_PRICE_ID`, `pro→STRIPE_GLOBAL_PRICE_ID`; `premium` returns 422. `brand.scheme_type` syncs post-Stripe-success (best-effort). Pre-flight: 400 if no Stripe subscription/customer, 402 if subscription not ACTIVE. Stripe call wrapped in `try/except StripeError` → 502 with `exc.user_message`.
 * **Why all this matters:** the spec at the top of `app/billing.py` is the authoritative pro-rata contract. If pricing logic ever drifts from "pay-in-advance, anchor to signup day, co-term mid-cycle quantity changes onto the next invoice," update that comment block AND this section in lockstep.
+
+### ⚠️ Tier MUST be threaded from `brand.scheme_type` — never defaulted (added 2026-05-02 later)
+Every caller of `createCheckout(token, …)` (frontend) — and by extension `POST /api/billing/checkout` (backend) — MUST pass an explicit tier derived from the brand row. Both the frontend client and the backend route default to `"private"` when the argument is missing, and the webhook then persists `metadata.tier = "private"` to `brand.scheme_type` (lines 765-769 of `app/billing.py`), **silently overwriting** whatever tier the Super Admin chose at brand creation.
+
+The bug class was hit on 2026-05-02 by a brand created as Global being charged £5 instead of £7.99 during onboarding. Two call sites were silently defaulting:
+- `b2b-dashboard/src/views/SetupView.tsx::StepPayment` — onboarding wizard payment step
+- `b2b-dashboard/src/App.tsx::handleAddLocation` — active-dashboard "first cafe → auto-checkout" path
+
+Both now derive tier explicitly:
+```ts
+const tier: "private" | "global" =
+  brand.schemeType === "global" ? "global" : "private"
+await createCheckout(token, tier)
+```
+The webhook side is correct — leave it alone; the bug is always upstream. Setup wizard now threads `brand` from Step 1 (returned by `adminSetup()`) → Step 2 → Step 3 so `StepPayment` has it natively.
+
+### Plan-change is in-place (no Checkout redirect for tier swaps) — reinforced 2026-05-02 later
+Stripe Checkout is reserved for the very first cafe + subscription signup. **Tier swaps NEVER redirect to Checkout** — they POST to `/api/billing/plan-change` directly, which calls `stripe.SubscriptionItem.modify(price=…, proration_behavior="create_prorations")` against the brand's existing subscription. Frontend (`b2b-dashboard/src/components/PlanChangeConfirmationDialog.tsx`) toasts on success and closes the modal. Re-running Checkout for tier swaps would create a second customer + subscription per attempt and confuse the webhook tier persistence — that path is now removed end-to-end.
+
+The Manage Payment Method & Invoices button on Billing opens the Stripe Customer Portal directly. The cancellation-feedback exit survey is NOT chained on top of this button — it lives ONLY behind the Cancel Subscription button in Settings → Account Management (Danger Zone). Mixing the two confused brands updating their card with the cancellation flow.
 
 ### Super-Admin Stripe invoice surfacing (added 2026-05-02)
 * New endpoint `GET /api/admin/platform/brands/{brand_id}/invoices` thinly wraps `stripe.Invoice.list(customer=...)` and returns a normalized `BrandInvoicesResponse` — totals, dates, hosted-invoice URL + PDF link, and per-line breakdown including the `proration` flag. Empty response (with `stripe_customer_id=None`) when the brand never went through Checkout, so the UI shows an empty-state instead of a 404.
@@ -79,9 +99,9 @@ All subscription mutations stay pay-in-advance, but the **billing-cycle anchor w
 * **UFW firewall:** active, default-deny incoming, allowed: 22 (SSH), 80, 443, 8000.
 
 ## 4. Email & Transactional Delivery (Resend ✅ confirmed live in prod)
-*Last updated: **2026-04-30 (eve)***
+*Last updated: **2026-05-02 (later)***
 
-* **Role:** Official business communication AND outbound transactional email — brand-invite welcome, consumer OTP, brand password-reset.
+* **Role:** Official business communication AND outbound transactional email — brand-invite welcome, consumer OTP, brand password-reset, **B2B product feedback ack** (added 2026-05-02 — Settings → Provide Feedback POSTs to `/api/b2b/feedback` which best-effort emails `hello@localcoffeeperks.com`).
 * **Address:** `hello@localcoffeeperks.com`
 * **Vendor history:** Zoho Mail (initial) → Google Workspace SMTP (2026-04-30 morning) → **Resend** (2026-04-30 evening, ✅ confirmed live with `EMAIL SENT via Resend id=re_...` log lines after first successful invite). The Google Workspace SMTP transport remained dead-on-arrival on the production droplet because **DigitalOcean blocks all outbound SMTP** (ports 25, 465, 587) on this droplet — confirmed via `[Errno 101] Network is unreachable` from inside the api container against `smtp.gmail.com`. Resend bypasses this entirely because its API runs over HTTPS port 443.
 
@@ -159,6 +179,19 @@ Templating is plain Python f-string interpolation — no Jinja or other templati
 * SMTP: `smtppro.zoho.eu:465` (SSL)
 * Auth: 16-char Zoho App-Specific Password (no spaces).
 * Multi-device gotcha: Zoho's anti-replay heuristics silently disabled a device when two shared the same App Password — every device needed its own.
+
+### Founder-locked template copy (last refreshed 2026-05-02)
+All transactional templates live in `app/email_sender.py` and share `_wrap()` for the brand chrome (Espresso `#1A1412` bg + Mint `#00E576` accent + 560px column).
+
+* **`send_brand_invite_email` 3-step block** (`Welcome to the family, {cafe_owner_name}!`):
+    * **Step 1 — Secure your account:** Click the button below to set your password and unlock the dashboard.
+    * **Step 2 — Set up your locations:** Add your cafe details, toggle on your Pay-It-Forward community board, and activate your subscription.
+    * **Step 3 — Launch the Barista POS:** Open the Barista POS link on your till or tablet, log in with your Store ID and PIN, and start scanning customer phones!
+    * (Replaces the original "Make it yours / Upload logo" + "Print QR table talkers" steps that didn't match the actual product flow — there's no logo upload and no QR table talkers.)
+* **`send_otp_email` subtext:** "If you didn't request this code, you can safely ignore this email."
+* **Shared `_wrap()` footer** — applies to brand-invite, OTP, password-reset, AND product-feedback ack: "This is an automated security message from Local Coffee Perks. Please do not reply to this email." (Replaces the brand-invite-specific "You're receiving this because someone added your email to a Local Coffee Perks invite…" boilerplate, which was technically wrong on OTP / password-reset emails — those go to existing accounts, not new invitees.)
+
+If a future template needs an invite-specific footer back, refactor `_wrap()` to take an optional footer override rather than hardcoding around the shared one.
 
 ## 5. App Store & Google Play (D-U-N-S in flight)
 *Last updated: **2026-04-28***
@@ -426,11 +459,26 @@ All three are verified live against the local dev DB (commit-time evidence). Re-
     * **DiscoverCafeCard amenity chips + CafeDetailsModal are unchanged.** They iterate `cafe.amenities` only, so the synthetic id never accidentally renders as a regular chip. The Community Board badge (separate component) still drives the per-card visual signal for participating cafes.
 * **Don't add `pay_it_forward` to b2b-dashboard's amenity picker.** It's consumer-side filter sugar only. The backend amenities catalogue (`b2b-dashboard/src/lib/amenities.ts`) lists the genuine amenities operators can tag a cafe with; Pay It Forward's wire-level signal is the boolean toggle on the cafe row.
 
+## 15. Frontend dist deploy rule (Nginx serves committed bundles)
+*Last updated: **2026-05-02 (later)***
+
+* **All three SPAs ship via committed `dist/` directories** served by Nginx on the droplet — no build step runs server-side. Source-only commits are deploy no-ops.
+    * `b2b-dashboard/dist/` → `dashboard.localcoffeeperks.com`
+    * `admin-dashboard/dist/` → `hq.localcoffeeperks.com`
+    * `main-website/dist/` → `localcoffeeperks.com` (apex)
+* **After every source change in any of those three trees, run `npm run build`** in that directory (which runs `tsc -b && vite build`) before committing. Stage source AND the regenerated dist files in the same commit — Vite emits new hash-named bundles (`assets/index-XXXX.js`) and removes old ones, so `git add dist/` picks the diff up.
+* **Verify the deploy canary** before pushing. Pick a string the source change introduced (e.g. "Ready to scan" for the always-on-camera POS work) and confirm it lands in the new bundle: `grep -c "<canary>" b2b-dashboard/dist/assets/index-*.js`. Confirm the OLD canary is gone too.
+* **Lesson learned 2026-05-02:** commit `16fb8c1` shipped the always-on-camera POS source but left the dist stale. The live POS kept showing "Start camera" for days until commit `65d1d82` rebuilt the bundle. The OG-preview bug (Section 10) hit the same way — source-only edits don't reach scrapers/clients when Nginx serves the static dist.
+* **Same rule for the marketing site share previews** (Section 10) — when changing OG/Twitter meta, edit BOTH `main-website/index.html` AND `main-website/dist/index.html` (or rebuild). Skip one and the live page diverges from social-card scrapers.
+
 ---
 
 ## Change log
 *Append a single line per change, newest at the top, in the form `YYYY-MM-DD — section — what changed`.*
 
+* **2026-05-02 (latest)** — Section 4 (Email) — founder-locked template copy refreshed in commits `96294f6` (welcome Step 2/3 rewritten — "Set up your locations" + "Launch the Barista POS" replaces logo-upload + QR-table-talkers boilerplate that didn't match the product) and `d7b0142` (OTP subtext tightened; shared `_wrap()` footer replaces invite-specific boilerplate with generic "automated security message — do not reply" so OTP / password-reset emails read correctly). New B2B feedback ack added to the recipient list — `POST /api/b2b/feedback` (admin JWT) emails `hello@localcoffeeperks.com` via the existing `send_email` transport.
+* **2026-05-02 (latest)** — Section 15 added (Frontend dist deploy rule). Documents the source-only-is-a-no-op pitfall: all three SPAs (b2b, admin, main-website) ship via committed `dist/` directories — `npm run build` MUST run after every source change. Lesson came from commit `16fb8c1` shipping the always-on-camera POS source but leaving the dist stale; the live POS kept showing "Start camera" for days until commit `65d1d82` rebuilt the bundle. Includes a deploy-canary grep recipe.
+* **2026-05-02 (latest)** — Section 2 (Stripe Billing) — two architectural rules added. **Tier MUST be threaded from `brand.scheme_type`, never defaulted** — fixes a bug class where `createCheckout(token)` with no tier defaulted to `"private"` and the webhook then silently overwrote a Global brand to Private (commit `65d1d82` fixed both call sites: SetupView Step 3 + App.tsx::handleAddLocation). **Plan-change is in-place** — tier swaps POST to `/api/billing/plan-change` directly + toast (commit `86fdf8a`); Stripe Checkout is reserved for first-cafe signup. Manage Payment Method opens the Customer Portal directly; cancellation survey now lives ONLY behind Settings → Account Management. New `b2b-dashboard/src/components/PlanChangeConfirmationDialog.tsx` frames math as "next invoice" — no more "IMMEDIATE CHARGE TODAY" framing.
 * **2026-05-02 (later)** — Section 14 added (Consumer Discover amenity filter UX). Bottom-sheet replaces the horizontal pill ScrollView (founder direction). New synthetic `pay_it_forward` filter — lives in `AMENITIES` catalogue but is derived from `cafes.suspended_coffee_enabled`, never appears in any `cafe.amenities` array on the wire. AND-match filter contract + draft/Apply commit pattern documented so future redesigns don't accidentally regress. Don't add the id to b2b-dashboard's amenity picker — consumer-only filter sugar. Commits `71ff40d` (initial bottom-sheet) and `ebe6e2f` (Pay It Forward + Show Cafés CTA polish).
 * **2026-05-02 (later)** — Section 13 added (Consumer App Persistent Login). Backend `_encode` accepts per-audience `ttl_seconds`; `encode_consumer` pinned to 365 days. Web JWTs (admin / store / super-admin / brand-invite) keep `settings.jwt_ttl_hours`. `expo-secure-store ~15.0.7` added to `consumer-app/package.json`; new `src/sessionStorage.ts` wraps load/save/clear with shape-check + web no-op. AppShell hydrates from SecureStore on cold launch (splash spinner during async read), then mirrors every `setSession` call to storage. Native rebuild needed before the path goes live on device. Commit `71afd25`.
 * **2026-05-02** — Section 12 added (Geospatial Routing — geopy/Nominatim). New `app/geocoding.py` (geocode_address, geocode_suggest) wraps geopy/Nominatim via `asyncio.to_thread` with fail-soft semantics. `geopy` added to `requirements.txt`. `create_cafe` / `update_cafe` (re-geocodes only when address changes) / `platform_create_cafe` populate `cafe.latitude` + `cafe.longitude` on save. `GET /api/b2b/geocode/autocomplete?q=...` powers a debounced (800 ms, AbortController-aware) combobox in b2b-dashboard's `AddLocationDialog` + `EditLocationDialog` (shared `AddressAutocompleteInput` component); replaces the 10-row mock corpus. New `scripts/backfill_geocodes.py` walks `WHERE latitude IS NULL` rows, sleeps 1.5 s between Nominatim calls, uses raw SQL on the touched columns so it survives partial-schema dev DBs. Verified end-to-end against local Postgres (Monmouth NULLed → re-resolved to 51.5055, -0.0915). Section 2 also gained a "Super-Admin Stripe invoice surfacing" subsection: `GET /api/admin/platform/brands/{brand_id}/invoices` thinly wraps `stripe.Invoice.list` and feeds the admin-dashboard `BrandInvoicesModal` accordion (proration line items + hosted-invoice link). Commit `ebe6e2f`.
