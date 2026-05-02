@@ -108,6 +108,18 @@ class Brand(Base):
     current_period_end: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True)
     )
+    # Migration 0021. Set when a brand owner clicks Cancel Subscription
+    # in Settings → Account Management — we mirror Stripe's
+    # `cancel_at_period_end` flag so the BillingView can render the
+    # Lame Duck warning banner ("Your subscription is scheduled to
+    # cancel on …") without a round-trip to Stripe on every page load.
+    # Goes back to FALSE if the user resumes via the Stripe Portal —
+    # the customer.subscription.updated webhook keeps it in lockstep.
+    cancel_at_period_end: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    )
     password_hash: Mapped[str | None] = mapped_column(Text)
     # KYC / Stripe-compliance fields (migration 0009). All nullable — existing
     # rows pre-date KYC collection; the admin fills these in at their own pace

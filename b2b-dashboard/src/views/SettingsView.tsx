@@ -3,9 +3,7 @@ import {
   AlertTriangle,
   Building2,
   CheckCircle2,
-  Globe,
   Loader2,
-  Lock,
   MessageSquare,
   Send,
   UserRound,
@@ -14,16 +12,8 @@ import {
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import {
-  createPortalSession,
   humanizeError,
   postProductFeedback,
 } from "@/lib/api"
@@ -51,10 +41,15 @@ export function SettingsView({
   brand,
   token,
   onSave,
+  onCancelSuccess,
 }: {
   brand: Brand
   token: string
   onSave: (patch: Patch) => Promise<void>
+  // Optional refresh hook fired AFTER a successful cancellation so the
+  // BillingView Lame Duck banner picks up without a manual reload.
+  // Wired from App.tsx → refreshAdminData.
+  onCancelSuccess?: () => Promise<void>
 }) {
   // Brand profile drafts
   const [draftName, setDraftName] = useState(brand.name)
@@ -212,16 +207,24 @@ export function SettingsView({
     }
   }
 
-  // After the cancel exit-survey is submitted, hand off to the Stripe
-  // Customer Portal where the brand actually confirms the cancellation
-  // (cancel-at-period-end). The portal redirect is owned by the modal's
-  // onSuccess callback so a survey-submit failure blocks the redirect.
-  const goToCancelPortal = async () => {
-    try {
-      const { checkout_url } = await createPortalSession(token)
-      window.location.href = checkout_url
-    } catch (e) {
-      setToast({ message: humanizeError(e), variant: "error" })
+  // After the modal commits the cancellation server-side (feedback +
+  // cancel_at_period_end), surface the success toast and ask the
+  // parent to refresh the brand row so the BillingView Lame Duck
+  // banner picks up immediately. No Stripe portal redirect — that
+  // path was removed 2026-05-03.
+  const handleCancelSuccess = async () => {
+    setToast({
+      message:
+        "Cancellation scheduled. You'll keep full access until the end of your current cycle.",
+      variant: "success",
+    })
+    if (onCancelSuccess) {
+      try {
+        await onCancelSuccess()
+      } catch {
+        // Refresh failures are cosmetic — the next page load will
+        // pick up the new state via getAdminMe.
+      }
     }
   }
 
@@ -423,9 +426,13 @@ export function SettingsView({
           </Button>
         </div>
 
-        {/* Provide Feedback — continuous loop straight to the operator
-            inbox. Server-side fans out to email + structured log; no DB
-            row is persisted yet (low message volume). */}
+      </div>
+
+      {/* Right column: Provide Feedback (founder-direction 2026-05-03,
+          replacing the old Loyalty Scheme informational card — scheme
+          is now locked at brand-creation time so the picker had become
+          a vestigial surface). */}
+      <div className="space-y-4">
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-[15px] tracking-tight">
@@ -445,7 +452,7 @@ export function SettingsView({
                 setFeedbackBody(e.target.value.slice(0, PRODUCT_FEEDBACK_MAX))
               }
               disabled={feedbackSubmitting}
-              rows={5}
+              rows={6}
               placeholder="Tell us what would help — feature requests, friction points, anything that's nagging you."
               className="block w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-[13.5px] leading-relaxed outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
             />
@@ -474,116 +481,51 @@ export function SettingsView({
             </div>
           </CardContent>
         </Card>
+      </div>
 
-        {/* Account Management — Danger Zone. Cancel Subscription lives
-            here (not on the Billing tab) so a brand updating their
-            card / downloading invoices isn't ambushed by an exit
-            survey on every click. */}
-        <Card className="border-destructive/30">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-[15px] tracking-tight text-destructive">
-              <AlertTriangle className="h-4 w-4" strokeWidth={2.25} />
-              Account Management
-            </CardTitle>
-            <CardDescription>
-              Irreversible actions. Cancellation takes effect at the end
-              of your current billing cycle.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="pt-0">
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
-              <div>
-                <div className="text-[13px] font-semibold text-foreground">
-                  Cancel Subscription
-                </div>
-                <p className="mt-0.5 text-[11.5px] leading-snug text-muted-foreground">
-                  We&apos;ll ask one quick question, then hand you to the
-                  Stripe portal to confirm the cancellation.
-                </p>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-9 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                onClick={() => setCancelOpen(true)}
-              >
+      {/* Account Management — Danger Zone. Lives at the very bottom
+          of the page, full-width across both columns, so it reads as
+          a deliberate "this is irreversible" surface rather than a
+          row inside the regular form column. */}
+      <Card className="border-destructive/30 lg:col-span-3">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-[15px] tracking-tight text-destructive">
+            <AlertTriangle className="h-4 w-4" strokeWidth={2.25} />
+            Account Management
+          </CardTitle>
+          <CardDescription>
+            Irreversible actions. Cancellation takes effect at the end
+            of your current billing cycle.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
+            <div>
+              <div className="text-[13px] font-semibold text-foreground">
                 Cancel Subscription
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Community Board / Suspended Coffee per-cafe toggle moved
-          2026-05-02 into the Add Location + Edit Location dialogs so
-          the opt-in is set when each location is configured (instead
-          of a brand-level grid that became hard to scan as multi-cafe
-          brands grew). The CommunityBoardCard component below is
-          retained but no longer rendered — kept in case we ever want
-          a brand-wide overview surface again. */}
-      <div className="space-y-4">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-[15px] tracking-tight">Loyalty scheme</CardTitle>
-            <CardDescription>Switch between global and private.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3 pt-0">
-            <Select
-              value={draftScheme}
-              onValueChange={(v: SchemeType) => setDraftScheme(v)}
-              disabled={saving}
-            >
-              <SelectTrigger className="h-10 w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="global">Global · Open Network</SelectItem>
-                <SelectItem value="private">Private Chain</SelectItem>
-              </SelectContent>
-            </Select>
-
-            <div
-              className={cn(
-                "rounded-lg border p-3.5",
-                draftScheme === "global"
-                  ? "border-emerald-200 bg-emerald-50/50"
-                  : "border-violet-200 bg-violet-50/50",
-              )}
-            >
-              <div className="flex items-center gap-2 text-[12.5px] font-semibold tracking-tight text-foreground">
-                {draftScheme === "global" ? (
-                  <>
-                    <Globe className="h-3.5 w-3.5" strokeWidth={2.25} /> Global · Open Network
-                  </>
-                ) : (
-                  <>
-                    <Lock className="h-3.5 w-3.5" strokeWidth={2.25} /> Private · Walled Garden
-                  </>
-                )}
               </div>
-              <p className="mt-1 text-[11.5px] leading-snug text-muted-foreground">
-                {draftScheme === "global"
-                  ? "Stamps pool across every Global cafe in the network. Higher discoverability, shared goodwill."
-                  : "Stamps only pool across your own cafes. Fuller control of your loyalty economy."}
+              <p className="mt-0.5 text-[11.5px] leading-snug text-muted-foreground">
+                We&apos;ll ask one quick question, then schedule the
+                cancellation for the end of your current cycle.
               </p>
             </div>
-
-            {draftScheme !== brand.schemeType && (
-              <p className="text-[11px] text-muted-foreground">
-                Changing the scheme re-scopes every customer's stamp balance for this brand. Hit
-                <span className="font-medium text-foreground"> Save changes </span>
-                on the left to apply.
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+              onClick={() => setCancelOpen(true)}
+            >
+              Cancel Subscription
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       <CancellationFeedbackModal
         open={cancelOpen}
         onOpenChange={setCancelOpen}
         token={token}
-        onSuccess={goToCancelPortal}
+        onSuccess={handleCancelSuccess}
       />
 
       {toast ? <SettingsToast toast={toast} onDismiss={() => setToast(null)} /> : null}

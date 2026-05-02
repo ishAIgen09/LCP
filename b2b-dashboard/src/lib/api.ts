@@ -127,8 +127,17 @@ type ApiBrand = {
   slug: string
   contact_email: string
   scheme_type: SchemeType
-  subscription_status: "active" | "trialing" | "past_due" | "canceled" | "incomplete"
+  subscription_status:
+    | "active"
+    | "trialing"
+    | "past_due"
+    | "canceled"
+    | "incomplete"
+    | "pending_cancellation"
   current_period_end?: string | null
+  // Mirrors brands.cancel_at_period_end (migration 0021). Drives the
+  // BillingView Lame Duck banner.
+  cancel_at_period_end?: boolean
   owner_first_name?: string | null
   owner_last_name?: string | null
   owner_phone?: string | null
@@ -254,6 +263,7 @@ export function brandFromApi(b: ApiBrand): Brand {
     subscriptionStatus: b.subscription_status === "incomplete" ? "past_due" : b.subscription_status,
     createdAt: new Date().toISOString().slice(0, 10),
     currentPeriodEnd: b.current_period_end ?? null,
+    cancelAtPeriodEnd: b.cancel_at_period_end ?? false,
     ownerFirstName: b.owner_first_name ?? null,
     ownerLastName: b.owner_last_name ?? null,
     ownerPhone: b.owner_phone ?? null,
@@ -493,6 +503,28 @@ export async function createPortalSession(
   return request<{ checkout_url: string }>(
     "POST",
     "/api/billing/portal",
+    undefined,
+    authHeader(token),
+  )
+}
+
+// Cancel-at-period-end. Calls stripe.Subscription.modify(
+//   cancel_at_period_end=True) server-side; brand stays operational
+// until current_period_end. Powers the Settings → Account Management
+// → Cancel Subscription button via the CancellationFeedbackModal.
+export type CancelSubscriptionResponse = {
+  ok: boolean
+  cancel_at_period_end: boolean
+  current_period_end: string | null
+  subscription_status: string
+}
+
+export async function cancelSubscription(
+  token: string,
+): Promise<CancelSubscriptionResponse> {
+  return request<CancelSubscriptionResponse>(
+    "POST",
+    "/api/billing/cancel-subscription",
     undefined,
     authHeader(token),
   )

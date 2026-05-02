@@ -255,6 +255,12 @@ class BrandProfile(BaseModel):
     scheme_type: SchemeType
     subscription_status: SubscriptionStatus
     current_period_end: datetime | None = None
+    # Mirrors brands.cancel_at_period_end (migration 0021). True when
+    # the brand owner has clicked Cancel Subscription — drives the
+    # BillingView Lame Duck banner. Defaults False on the wire so
+    # older clients that pre-date the column treat it as "not
+    # scheduled" without breaking the Brand response shape.
+    cancel_at_period_end: bool = False
     # KYC fields. Returned so the Settings form can prefill — nullable since
     # existing brands pre-date KYC collection.
     owner_first_name: str | None = None

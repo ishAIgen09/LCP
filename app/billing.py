@@ -296,6 +296,112 @@ async def create_portal_session(
     return CheckoutResponse(checkout_url=portal_session.url)
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Cancel-at-period-end — Settings → Account Management Danger Zone
+# ─────────────────────────────────────────────────────────────────────
+
+
+class CancelSubscriptionResponse(BaseModel):
+    """Returned by POST /api/billing/cancel-subscription so the
+    BillingView can render the Lame Duck banner immediately without
+    waiting for the next webhook tick."""
+
+    ok: bool
+    cancel_at_period_end: bool
+    current_period_end: datetime | None
+    subscription_status: str
+
+
+@router.post("/cancel-subscription", response_model=CancelSubscriptionResponse)
+async def cancel_subscription(
+    admin: AdminSession = Depends(get_admin_session),
+    session: AsyncSession = Depends(get_session),
+) -> CancelSubscriptionResponse:
+    """Schedule the brand's Stripe subscription to cancel at the end
+    of the current billing cycle. The brand stays fully operational
+    (cafes ACTIVE, scans + redeems work) until `current_period_end`
+    naturally arrives — at which point Stripe fires
+    `customer.subscription.deleted` and our existing webhook flips
+    everything to CANCELED.
+
+    NEVER does an immediate cancel — the founder's policy (memory:
+    project_cancel_at_period_end) is grace-period preservation.
+
+    Failure modes:
+      - 401 if admin session references an unknown brand
+      - 400 if the brand never went through Checkout (no Stripe sub)
+      - 409 if already cancelling (idempotent retry returns 200, but
+        a true conflict — e.g. status==CANCELED — surfaces as 409)
+      - 502 on Stripe API failure (with the actual stripe message)
+    """
+    _require_stripe_key()
+
+    brand = await session.get(Brand, admin.brand_id)
+    if brand is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin session references an unknown brand.",
+        )
+    if not brand.stripe_subscription_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "No Stripe subscription on file. Nothing to cancel — add "
+                "your first location to start a subscription first."
+            ),
+        )
+    if brand.subscription_status == SubscriptionStatus.CANCELED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Subscription is already fully canceled.",
+        )
+
+    try:
+        updated = stripe.Subscription.modify(
+            brand.stripe_subscription_id,
+            cancel_at_period_end=True,
+        )
+    except stripe.StripeError as exc:
+        logger.error(
+            "CANCEL-SUBSCRIPTION FAILED brand=%s sub=%s err=%s",
+            brand.id,
+            brand.stripe_subscription_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Stripe could not schedule the cancellation: {exc.user_message or str(exc)}",
+        )
+
+    # Persist the local-state mirror. We don't wait for the
+    # subscription.updated webhook to flip these — the BillingView
+    # banner needs to land on the very next page render. Webhook
+    # still fires later and will be a no-op (idempotent).
+    brand.cancel_at_period_end = True
+    brand.subscription_status = SubscriptionStatus.PENDING_CANCELLATION
+    # Keep current_period_end aligned with what Stripe reports — the
+    # frontend uses this to render the "scheduled to cancel on …"
+    # date string.
+    cpe_ts = updated.get("current_period_end")
+    if cpe_ts:
+        brand.current_period_end = datetime.fromtimestamp(int(cpe_ts), tz=timezone.utc)
+    await session.commit()
+
+    logger.info(
+        "CANCEL-SUBSCRIPTION ok brand=%s sub=%s ends=%s",
+        brand.id,
+        brand.stripe_subscription_id,
+        brand.current_period_end,
+    )
+
+    return CancelSubscriptionResponse(
+        ok=True,
+        cancel_at_period_end=True,
+        current_period_end=brand.current_period_end,
+        subscription_status=brand.subscription_status.value,
+    )
+
+
 # Plan tier ids accepted by /plan-change. Locked at the boundary so a typo
 # from the dashboard surfaces as 422 rather than landing in the audit log.
 PlanTier = Literal["starter", "pro", "premium"]
@@ -842,6 +948,83 @@ async def stripe_webhook(
             "received": True,
             "brand_id": str(brand.id),
             "status": "canceled",
+        }
+
+    # customer.subscription.updated — fires for many things, but the
+    # one we care about is the cancel_at_period_end flag flipping.
+    # Two paths land here:
+    #   1. Our own /cancel-subscription endpoint already wrote the
+    #      mirror values to the brand row before this webhook arrives;
+    #      the handler is a no-op idempotent re-confirmation.
+    #   2. The brand owner toggles cancel/uncancel directly inside the
+    #      Stripe Customer Portal — Stripe fires updated WITHOUT us
+    #      having moved first. The handler is the only thing that
+    #      keeps the DB + UI honest in that case.
+    if event_type == "customer.subscription.updated":
+        obj = event["data"]["object"]
+        stripe_subscription_id = obj.get("id")
+        stripe_customer_id = obj.get("customer")
+
+        brand: Brand | None = None
+        if stripe_subscription_id:
+            brand = (
+                await session.execute(
+                    select(Brand).where(
+                        Brand.stripe_subscription_id == stripe_subscription_id
+                    )
+                )
+            ).scalar_one_or_none()
+        if brand is None and stripe_customer_id:
+            brand = (
+                await session.execute(
+                    select(Brand).where(Brand.stripe_customer_id == stripe_customer_id)
+                )
+            ).scalar_one_or_none()
+        if brand is None:
+            return {"received": True, "warning": "no matching brand"}
+
+        new_cape = bool(obj.get("cancel_at_period_end", False))
+        cpe_ts = obj.get("current_period_end")
+        changed = False
+
+        if brand.cancel_at_period_end != new_cape:
+            brand.cancel_at_period_end = new_cape
+            changed = True
+
+        # When cancel_at_period_end flips on, mirror status →
+        # PENDING_CANCELLATION. When it flips OFF (resume), bounce
+        # back to ACTIVE. Don't override CANCELED — that's terminal
+        # and only customer.subscription.deleted should set it.
+        if (
+            new_cape
+            and brand.subscription_status
+            not in (
+                SubscriptionStatus.PENDING_CANCELLATION,
+                SubscriptionStatus.CANCELED,
+            )
+        ):
+            brand.subscription_status = SubscriptionStatus.PENDING_CANCELLATION
+            changed = True
+        elif (
+            not new_cape
+            and brand.subscription_status == SubscriptionStatus.PENDING_CANCELLATION
+        ):
+            brand.subscription_status = SubscriptionStatus.ACTIVE
+            changed = True
+
+        if cpe_ts:
+            cpe = datetime.fromtimestamp(int(cpe_ts), tz=timezone.utc)
+            if brand.current_period_end != cpe:
+                brand.current_period_end = cpe
+                changed = True
+
+        if changed:
+            await session.commit()
+        return {
+            "received": True,
+            "brand_id": str(brand.id),
+            "cancel_at_period_end": new_cape,
+            "status": brand.subscription_status.value,
         }
 
     return {"received": True}

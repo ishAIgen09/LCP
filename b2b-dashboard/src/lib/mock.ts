@@ -30,9 +30,18 @@ export type Brand = {
   // tier at signup and the dashboard mirrors that choice.
   plan: "Private Scheme" | "LCP+ Global Pass"
   planPrice: string
-  subscriptionStatus: "active" | "trialing" | "past_due" | "canceled"
+  subscriptionStatus:
+    | "active"
+    | "trialing"
+    | "past_due"
+    | "canceled"
+    | "pending_cancellation"
   createdAt: string
   currentPeriodEnd?: string | null
+  // True between Cancel Subscription click and current_period_end
+  // expiry — backend mirrors Stripe's `cancel_at_period_end` flag
+  // (migration 0021). Drives BillingView's Lame Duck warning banner.
+  cancelAtPeriodEnd: boolean
   // KYC fields (nullable — filled in from Settings at the admin's pace).
   ownerFirstName: string | null
   ownerLastName: string | null
@@ -76,6 +85,7 @@ export const initialBrand: Brand = {
   planPrice: "£7.99 / month per cafe",
   subscriptionStatus: "active",
   createdAt: "2026-04-02",
+  cancelAtPeriodEnd: false,
   ownerFirstName: null,
   ownerLastName: null,
   ownerPhone: null,

@@ -371,6 +371,7 @@ function App() {
                 brand={brand}
                 token={session.token}
                 onSave={handleUpdateBrand}
+                onCancelSuccess={() => refreshAdminData(session.token)}
               />
             )}
             <BuildCreditFooter />

@@ -217,7 +217,7 @@ async def submit_product_feedback(
         body,
     )
 
-    subject = f"[LCP feedback] {brand_name}"
+    subject = f"[LCP Feedback] New Submission from {brand_name}"
     # Plain HTML body — minimal markup so the operator inbox stays
     # readable. send_email's stub fallback will print to stdout if no
     # transport is configured (local dev), so the message is never lost.

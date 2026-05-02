@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { AlertTriangle, ArrowRight, Loader2 } from "lucide-react"
+import { AlertTriangle, Loader2 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -11,7 +11,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import {
+  cancelSubscription,
+  humanizeError,
   postCancellationFeedback,
+  type CancelSubscriptionResponse,
   type CancellationReason,
 } from "@/lib/api"
 
@@ -31,14 +34,22 @@ const CANCELLATION_REASONS: ReadonlyArray<{ id: CancellationReason; label: strin
 
 const DETAILS_MAX = 500
 
-// Modal that intercepts the Stripe Customer Portal redirect (PRD §4.2).
-// Caller owns the redirect itself — we POST the feedback survey and call
-// `onSuccess` ONLY after the survey lands. If the API rejects the survey,
-// the caller's redirect never fires, so the user can't sneak past.
+// Cancel-subscription survey + commit. Two-step API call inside one
+// modal click:
+//   1. POST /api/b2b/cancellation-feedback to capture WHY the brand is
+//      leaving (founder direction — never let a churned brand get away
+//      without a reason).
+//   2. POST /api/billing/cancel-subscription to flip Stripe's
+//      cancel_at_period_end flag + mirror it to the brand row.
 //
-// `token` is the brand admin JWT. `onSuccess` is what triggers the
-// portal redirect (typically `await createPortalSession(token)` then
-// `window.location.href = checkout_url`).
+// On success we hand the cancel-response back to the parent via
+// `onSuccess` so the caller can toast + refresh the brand state to
+// pick up the Lame Duck banner. The parent NEVER opens the Stripe
+// portal — that path was intentionally removed (founder direction
+// 2026-05-03; the modal previously redirected to portal which was
+// confusing alongside the Settings → Account Management button).
+//
+// `token` is the brand admin JWT.
 export function CancellationFeedbackModal({
   open,
   onOpenChange,
@@ -48,7 +59,7 @@ export function CancellationFeedbackModal({
   open: boolean
   onOpenChange: (v: boolean) => void
   token: string
-  onSuccess: () => Promise<void> | void
+  onSuccess: (result: CancelSubscriptionResponse) => Promise<void> | void
 }) {
   const [reason, setReason] = useState<CancellationReason | null>(null)
   const [details, setDetails] = useState("")
@@ -82,22 +93,24 @@ export function CancellationFeedbackModal({
     setSubmitting(true)
     setError(null)
     try {
+      // 1. Capture the reason BEFORE flipping the subscription so a
+      //    feedback-write failure aborts the cancel — we never want to
+      //    lose a churn signal.
       await postCancellationFeedback(token, {
         reason,
-        // Send `null` rather than an empty string for non-other answers
-        // so the server-side normalization doesn't have to second-guess
-        // an "intentionally empty" value.
         details: detailsTrimmed.length > 0 ? detailsTrimmed : null,
         acknowledged,
       })
-      // Survey landed — hand off to caller's portal-redirect path.
-      // We close BEFORE awaiting onSuccess because typical redirects
-      // tear the page down and any unmount-after-redirect leaves a
-      // half-state.
+      // 2. Schedule the Stripe cancel_at_period_end. Backend mirrors
+      //    the flag + status to the brand row before the response so
+      //    the parent's refresh picks up the Lame Duck banner state.
+      const result = await cancelSubscription(token)
+      // Close BEFORE awaiting onSuccess so the toast/refresh path the
+      // parent runs doesn't race against the modal unmount.
       onOpenChange(false)
-      await onSuccess()
+      await onSuccess(result)
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't submit feedback. Try again.")
+      setError(humanizeError(e))
       setSubmitting(false)
     }
   }
@@ -107,16 +120,17 @@ export function CancellationFeedbackModal({
       <DialogContent className="sm:max-w-[520px]">
         <DialogHeader>
           <div className="mb-1 flex items-center gap-2">
-            <span className="grid h-8 w-8 place-items-center rounded-md bg-amber-500/10 text-amber-600 ring-1 ring-amber-500/30">
+            <span className="grid h-8 w-8 place-items-center rounded-md bg-rose-500/10 text-rose-600 ring-1 ring-rose-500/30">
               <AlertTriangle className="h-4 w-4" strokeWidth={2.25} />
             </span>
             <DialogTitle className="text-[16px] tracking-tight">
-              Before you go — a quick word
+              We&apos;re sorry to see you go.
             </DialogTitle>
           </div>
           <DialogDescription>
-            We&apos;re here to help if anything&apos;s broken. Tell us why you&apos;re heading to
-            billing, then we&apos;ll send you straight to the Stripe portal.
+            We are always striving to improve. Please let us know why
+            you&apos;re leaving. Your account will remain fully active
+            until the end of your current billing cycle.
           </DialogDescription>
         </DialogHeader>
 
@@ -177,8 +191,7 @@ export function CancellationFeedbackModal({
             />
             <span className="text-foreground">
               I understand my account stays active until the end of the current
-              billing cycle, and that cancellation must be confirmed inside the
-              Stripe portal that opens next.
+              billing cycle, after which it will be cancelled.
             </span>
           </label>
         </div>
@@ -197,20 +210,21 @@ export function CancellationFeedbackModal({
           >
             Cancel
           </Button>
+          {/* Destructive button — this is the irreversible commit. The
+              button styling explicitly leans rose so the brand owner
+              can't mistake it for a soft "Continue" action. */}
           <Button
             onClick={handleSubmit}
             disabled={!canSubmit}
-            className="gap-1.5"
+            variant="destructive"
+            className="gap-1.5 bg-rose-600 text-white hover:bg-rose-600/90"
           >
             {submitting ? (
               <>
-                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Submitting…
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Cancelling…
               </>
             ) : (
-              <>
-                Continue to Stripe
-                <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.25} />
-              </>
+              "Confirm Cancellation"
             )}
           </Button>
         </DialogFooter>
