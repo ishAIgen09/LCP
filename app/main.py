@@ -1512,16 +1512,27 @@ def _get_openai_client():
     return _openai_client
 
 
-async def _ai_agent_live_metrics(session: AsyncSession) -> dict[str, int]:
-    """Pull a small bundle of platform-level counts so the AI assistant
-    can answer "how many brands signed up today?" without round-tripping
-    through a SQL tool call. Six aggregates, one query each — cheap on
-    Postgres for the cardinalities we're at (≤ thousands)."""
+# Per-scheme per-cafe monthly rate, in pence. Mirrors the Founding 100
+# pricing in INFRASTRUCTURE.md §7 + app/billing.py::_INLINE_FALLBACK_UNIT_PENCE.
+# When the post-Founding-100 pricing flips, swap these (and bump the
+# inline-fallback table in billing.py at the same time).
+_AI_AGENT_RATE_PENCE_BY_SCHEME: dict[SchemeType, int] = {
+    SchemeType.PRIVATE: 500,
+    SchemeType.GLOBAL: 799,
+}
+
+
+async def _ai_agent_live_metrics(session: AsyncSession) -> dict[str, object]:
+    """Pull a bundle of platform-level metrics so the AI assistant can
+    quote real numbers when asked. One query per metric — cheap on
+    Postgres for the cardinalities we're at (≤ thousands). Values are
+    `int` for counts, plus a couple of structured nested dicts for
+    metrics that need more than a single number (top-cafe)."""
     today_start = datetime.now(timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
 
-    metrics: dict[str, int] = {}
+    metrics: dict[str, object] = {}
 
     metrics["total_brands"] = int(
         (
@@ -1553,6 +1564,24 @@ async def _ai_agent_live_metrics(session: AsyncSession) -> dict[str, int]:
         ).scalar_one()
     )
 
+    # Total registered consumers — every row in `users` is one consumer
+    # account. Suspended users still count toward total_customers; the
+    # `is_suspended` flag is operational, not a deletion.
+    metrics["total_customers"] = int(
+        (
+            await session.execute(select(func.count()).select_from(User))
+        ).scalar_one()
+    )
+    metrics["customers_today"] = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(User)
+                .where(User.created_at >= today_start)
+            )
+        ).scalar_one()
+    )
+
     # Brand-level Stripe subscription state. Mirrors the Billing tab's
     # canonical "active subs" definition: subscription_status=ACTIVE.
     metrics["active_subscriptions"] = int(
@@ -1564,6 +1593,33 @@ async def _ai_agent_live_metrics(session: AsyncSession) -> dict[str, int]:
             )
         ).scalar_one()
     )
+
+    # Total MRR — sum across every cafe whose billing_status is ACTIVE
+    # or PENDING_CANCELLATION (cancel-at-period-end cafes are still
+    # paying through their grace window per /platform/billing) at that
+    # cafe's parent brand's scheme rate. Group by scheme so we get one
+    # row per (count, rate) pair, then dot-product. Avoids a per-row
+    # fold in Python at the cost of one tiny GROUP BY query.
+    mrr_rows = (
+        await session.execute(
+            select(Brand.scheme_type, func.count(Cafe.id))
+            .join(Brand, Brand.id == Cafe.brand_id)
+            .where(
+                Cafe.billing_status.in_(
+                    (
+                        SubscriptionStatus.ACTIVE,
+                        SubscriptionStatus.PENDING_CANCELLATION,
+                    )
+                )
+            )
+            .group_by(Brand.scheme_type)
+        )
+    ).all()
+    mrr_pence = 0
+    for scheme, cafe_count in mrr_rows:
+        rate = _AI_AGENT_RATE_PENCE_BY_SCHEME.get(scheme, 0)
+        mrr_pence += int(cafe_count) * rate
+    metrics["total_mrr_pence"] = mrr_pence
 
     # Total scans = count of EARNED rows on global_ledger. One per
     # till-side scan event (regardless of how many stamps it issued).
@@ -1586,6 +1642,26 @@ async def _ai_agent_live_metrics(session: AsyncSession) -> dict[str, int]:
             )
         ).scalar_one()
     )
+
+    # Top performing cafe by lifetime ledger activity. Counts both
+    # EARN and REDEEM rows since the founder framed this as "scans"
+    # generally — every ledger event is one barista interaction.
+    top_cafe_row = (
+        await session.execute(
+            select(Cafe.name, func.count(GlobalLedger.id).label("scan_count"))
+            .join(GlobalLedger, GlobalLedger.venue_id == Cafe.id)
+            .group_by(Cafe.id, Cafe.name)
+            .order_by(func.count(GlobalLedger.id).desc())
+            .limit(1)
+        )
+    ).first()
+    if top_cafe_row is not None:
+        metrics["top_cafe"] = {
+            "name": str(top_cafe_row[0]),
+            "scan_count": int(top_cafe_row[1]),
+        }
+    else:
+        metrics["top_cafe"] = None
 
     # Pay It Forward — total drinks ever donated (consumer + till). Each
     # ledger row is one drink unit; events 'donate_loyalty' + 'donate_till'
@@ -1613,10 +1689,28 @@ async def _ai_agent_live_metrics(session: AsyncSession) -> dict[str, int]:
     return metrics
 
 
-def _format_live_metrics_block(metrics: dict[str, int]) -> str:
+def _format_live_metrics_block(metrics: dict[str, object]) -> str:
     """Plaintext block appended to the system prompt so the model has
     real numbers to quote when the admin asks."""
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    # MRR formatted as £X.XX so the model doesn't have to do unit
+    # conversion in its head and risk dropping a decimal place.
+    mrr_pence = int(metrics["total_mrr_pence"])  # type: ignore[arg-type]
+    mrr_gbp = mrr_pence / 100.0
+
+    top_cafe = metrics.get("top_cafe")
+    if isinstance(top_cafe, dict) and top_cafe.get("name"):
+        top_cafe_line = (
+            f"- Top Performing Cafe: {top_cafe['name']!r} with "
+            f"{top_cafe['scan_count']} lifetime ledger events "
+            "(EARN + REDEEM combined)\n"
+        )
+    else:
+        top_cafe_line = (
+            "- Top Performing Cafe: (no scans recorded yet on any cafe)\n"
+        )
+
     return (
         f"\n\nLive platform snapshot (as of {now_iso}). Use these "
         "exact numbers when the admin asks for current totals; do "
@@ -1625,10 +1719,18 @@ def _format_live_metrics_block(metrics: dict[str, int]) -> str:
         f"(joined today: {metrics['brands_today']})\n"
         f"- Total Cafes: {metrics['total_cafes']} "
         f"(added today: {metrics['cafes_today']})\n"
+        f"- Total Customers (registered consumers): "
+        f"{metrics['total_customers']} "
+        f"(joined today: {metrics['customers_today']})\n"
         f"- Active Subscriptions (brand-level Stripe ACTIVE): "
         f"{metrics['active_subscriptions']}\n"
+        f"- Total MRR (sum across cafes in ACTIVE/PENDING_CANCELLATION "
+        f"at their brand's scheme rate — £5/cafe Private, £7.99/cafe "
+        f"LCP+ Global, Founding 100 pricing): "
+        f"£{mrr_gbp:,.2f} (= {mrr_pence} pence)\n"
         f"- Total Scans (lifetime EARN events on global_ledger): "
         f"{metrics['total_scans']} (today: {metrics['scans_today']})\n"
+        f"{top_cafe_line}"
         f"- Suspended Coffees donated (lifetime): "
         f"{metrics['total_suspended_coffees_donated']}\n"
         f"- Community Board pool balance (donations minus serves, "
