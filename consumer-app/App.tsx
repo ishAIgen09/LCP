@@ -332,6 +332,12 @@ function HomeView({
   // seeds silently instead of celebrating on app-open.
   const prevTotalRef = useRef<number | null>(null);
   const prevBankedRef = useRef<number | null>(null);
+  // Per-pool stamp_balance map — keyed "global" or `private:${brand_id}`.
+  // Used to identify WHICH pool the latest earn landed in so the
+  // RewardModal can surface that pool's current_stamps as the "NEW
+  // BALANCE" progress (instead of always reading global, which is
+  // unrelated when the earn happened at a private brand cafe).
+  const prevPoolBalancesRef = useRef<Map<string, number> | null>(null);
 
   // AppState gating — stop polling when the app is backgrounded. Saves
   // battery + avoids piling up stale requests against a localtunnel URL
@@ -388,16 +394,49 @@ function HomeView({
         const seeded = prevTotal !== null && prevBanked !== null;
         const stampsUp = seeded && totalBalance > prevTotal!;
         const bankedUp = seeded && totalBanked > prevBanked!;
+
+        // Build the per-pool stamp_balance snapshot for THIS poll. Used
+        // both to feed the RewardModal the right pool's current_stamps
+        // and to seed the next tick's delta detection.
+        const currPoolBalances = new Map<string, number>();
+        currPoolBalances.set("global", wallet.global_balance.stamp_balance);
+        for (const b of wallet.private_balances) {
+          currPoolBalances.set(`private:${b.brand_id}`, b.stamp_balance);
+        }
+
         if (seeded && stampsUp && wallet.latest_earn) {
+          // Find the pool that grew the most since the last poll — that's
+          // the pool the earn landed in. Falls back to global if for
+          // some reason no pool delta is positive (defensive — shouldn't
+          // happen given stampsUp is true).
+          const prevPools = prevPoolBalancesRef.current ?? new Map<string, number>();
+          let bestPoolKey = "global";
+          let bestPoolDelta = -Infinity;
+          for (const [key, value] of currPoolBalances) {
+            const prev = prevPools.get(key) ?? 0;
+            const delta = value - prev;
+            if (delta > bestPoolDelta) {
+              bestPoolDelta = delta;
+              bestPoolKey = key;
+            }
+          }
+          const earnPoolCurrentStamps =
+            bestPoolKey === "global"
+              ? wallet.global_balance.current_stamps
+              : (wallet.private_balances.find(
+                  (b) => `private:${b.brand_id}` === bestPoolKey,
+                )?.current_stamps ?? wallet.global_balance.current_stamps);
+
           onReward({
             stampsEarned: Math.max(1, totalBalance - prevTotal!),
             cafeId: wallet.latest_earn.cafe_id,
             cafeName: wallet.latest_earn.cafe_name,
             cafeAddress: wallet.latest_earn.cafe_address,
-            // Celebration shows the passport balance — the mobile's
-            // "primary" card. A future pass can scope this to the earn's
-            // brand once latest_earn carries brand_id.
-            newBalance: wallet.global_balance.current_stamps,
+            // Show the current_stamps of the POOL the earn landed in
+            // (global passport OR the specific private brand). Reading
+            // global blindly was the source of "0 / 10" when the earn
+            // was on a private brand and the global pool was empty.
+            newBalance: earnPoolCurrentStamps,
             freeDrinkUnlocked: bankedUp,
             suspendedCoffeeEnabled:
               wallet.latest_earn.suspended_coffee_enabled,
@@ -405,6 +444,7 @@ function HomeView({
         }
         prevTotalRef.current = totalBalance;
         prevBankedRef.current = totalBanked;
+        prevPoolBalancesRef.current = currPoolBalances;
       } catch (e) {
         if (__DEV__) {
           console.log(

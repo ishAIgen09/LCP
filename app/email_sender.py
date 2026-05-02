@@ -340,8 +340,8 @@ def send_brand_invite_email(
             <div style="width:30px;height:30px;border-radius:15px;background:{MINT};color:{ESPRESSO};font-weight:700;font-size:13.5px;line-height:30px;text-align:center;">2</div>
           </td>
           <td valign="top">
-            <div style="font-size:13.5px;font-weight:600;color:{TEXT_LIGHT};margin:5px 0 4px 0;">Make it yours</div>
-            <div style="font-size:13px;line-height:1.55;color:{TEXT_LIGHT};opacity:0.78;">Upload your café's logo and brand colours so your regulars feel right at home.</div>
+            <div style="font-size:13.5px;font-weight:600;color:{TEXT_LIGHT};margin:5px 0 4px 0;">Set up your locations</div>
+            <div style="font-size:13px;line-height:1.55;color:{TEXT_LIGHT};opacity:0.78;">Add your cafe details, toggle on your Pay-It-Forward community board, and activate your subscription.</div>
           </td>
         </tr>
       </table>
@@ -355,8 +355,8 @@ def send_brand_invite_email(
             <div style="width:30px;height:30px;border-radius:15px;background:{MINT};color:{ESPRESSO};font-weight:700;font-size:13.5px;line-height:30px;text-align:center;">3</div>
           </td>
           <td valign="top">
-            <div style="font-size:13.5px;font-weight:600;color:{TEXT_LIGHT};margin:5px 0 4px 0;">Print your QR table talkers</div>
-            <div style="font-size:13px;line-height:1.55;color:{TEXT_LIGHT};opacity:0.78;">We've already generated your unique QR codes — print them straight from the dashboard and put them on the counter.</div>
+            <div style="font-size:13.5px;font-weight:600;color:{TEXT_LIGHT};margin:5px 0 4px 0;">Launch the Barista POS</div>
+            <div style="font-size:13px;line-height:1.55;color:{TEXT_LIGHT};opacity:0.78;">Open the Barista POS link on your till or tablet, log in with your Store ID and PIN, and start scanning customer phones!</div>
           </td>
         </tr>
       </table>
