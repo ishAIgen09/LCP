@@ -692,6 +692,45 @@ async def consumer_cafes(
 # ─────────────────────────────────────────────────────────────────────
 
 
+async def _resolve_last_earn_cafe(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    scope: str,
+    brand_id: uuid.UUID | None,
+) -> Cafe | None:
+    """Return the Cafe row of the user's most recent EARN matching the
+    requested scope.
+
+    For scope='private' we filter by `brand_id` (caller required to
+    pass it). For scope='global' we filter by the brand's
+    `scheme_type='global'`. The query joins through cafes → brands so
+    we only consider scans where the cafe's parent brand still exists
+    (no orphaned cafes).
+
+    Returns None when the user has no qualifying EARN history. The
+    caller turns this into a 404 with a friendly message.
+    """
+    stmt = (
+        select(Cafe)
+        .select_from(StampLedger)
+        .join(Cafe, Cafe.id == StampLedger.cafe_id)
+        .join(Brand, Brand.id == Cafe.brand_id)
+        .where(
+            StampLedger.customer_id == user_id,
+            StampLedger.event_type == LedgerEventType.EARN,
+        )
+        .order_by(StampLedger.created_at.desc())
+        .limit(1)
+    )
+    if scope == "private":
+        stmt = stmt.where(Cafe.brand_id == brand_id)
+    else:  # 'global'
+        stmt = stmt.where(Brand.scheme_type == SchemeType.GLOBAL)
+
+    return (await session.execute(stmt)).scalars().first()
+
+
 @consumer_router.post(
     "/suspended-coffee/donate-loyalty",
     response_model=SuspendedCoffeeMutationResponse,
@@ -723,17 +762,51 @@ async def suspended_coffee_donate_loyalty(
          donor identity per the privacy rule (PRD §4.5.3).
 
     Failure modes (all 4xx, never 5xx):
-      - 404 if cafe_id doesn't exist
+      - 404 if cafe_id doesn't exist (or auto-resolve found nothing)
       - 403 if cafe.suspended_coffee_enabled is False
       - 400 if scoped balance < 10 stamps (with the actual count in the
         message so the UI can surface "you have X / 10")
+      - 409 if the auto-resolved last-visited cafe isn't participating
+        (so the UI can prompt the user to pick a different one)
     """
-    cafe = await session.get(Cafe, payload.cafe_id)
-    if cafe is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Cafe not found."
+    # ── Resolve destination cafe ─────────────────────────────────────
+    # Priority: explicit cafe_id first; otherwise auto-route to the
+    # user's most recent EARN matching the requested scope. See
+    # DonateLoyaltyRequest's docstring for the call-shape contract.
+    if payload.cafe_id is not None:
+        cafe = await session.get(Cafe, payload.cafe_id)
+        if cafe is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Cafe not found."
+            )
+    else:
+        cafe = await _resolve_last_earn_cafe(
+            session,
+            user_id=consumer.user_id,
+            scope=payload.scope,  # type: ignore[arg-type]  — validator guarantees set
+            brand_id=payload.brand_id,
         )
+        if cafe is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    "No recent visits found to auto-route the donation. "
+                    "Pick a cafe yourself."
+                ),
+            )
+
     if not cafe.suspended_coffee_enabled:
+        # Different status code for the auto-routed path so the UI can
+        # distinguish "you tried to donate to a non-participating cafe"
+        # (user picked) vs "your last visit isn't participating" (auto).
+        if payload.cafe_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Your last visit ({cafe.name}) isn't participating in "
+                    "Pay It Forward. Pick another cafe."
+                ),
+            )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(

@@ -1,7 +1,7 @@
 import "./global.css";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, AppState, type AppStateStatus, Platform, Pressable, ScrollView, StatusBar, Text, View } from "react-native";
+import { ActivityIndicator, Alert, AppState, type AppStateStatus, Platform, Pressable, ScrollView, StatusBar, Text, View } from "react-native";
 import {
   SafeAreaProvider,
   SafeAreaView,
@@ -23,6 +23,7 @@ import {
   Gift,
   HandHeart,
   House,
+  Info,
   MapPin,
   Navigation,
   Quote,
@@ -42,6 +43,7 @@ import { RewardModal, type RewardPayload } from "./src/RewardModal";
 import { AmenitiesFilterModal } from "./src/AmenitiesFilterModal";
 import { CafeDetailsModal } from "./src/CafeDetailsModal";
 import { EditProfileModal } from "./src/EditProfileModal";
+import { useFirstTimeWelcome, WelcomeModal } from "./src/WelcomeModal";
 import {
   PAY_IT_FORWARD_FILTER_ID,
   lookupAmenity,
@@ -284,6 +286,7 @@ function AppShell() {
           setReward(null);
         }}
       />
+      <FirstTimeWelcomeGate />
     </View>
   );
 }
@@ -420,12 +423,22 @@ function HomeView({
               bestPoolKey = key;
             }
           }
-          const earnPoolCurrentStamps =
+          const earnPoolBrand =
             bestPoolKey === "global"
-              ? wallet.global_balance.current_stamps
-              : (wallet.private_balances.find(
+              ? null
+              : wallet.private_balances.find(
                   (b) => `private:${b.brand_id}` === bestPoolKey,
-                )?.current_stamps ?? wallet.global_balance.current_stamps);
+                ) ?? null;
+          const earnPoolCurrentStamps =
+            earnPoolBrand
+              ? earnPoolBrand.current_stamps
+              : wallet.global_balance.current_stamps;
+          // Scope feeds the donation flow's "Last Stamp" router. A
+          // private-pool earn means the donate UI is 1-tap to the
+          // brand's last visit; a global earn opens the LCP+ picker
+          // option. Fed straight through to the RewardModal payload.
+          const earnScope: "private" | "global" =
+            earnPoolBrand ? "private" : "global";
 
           onReward({
             stampsEarned: Math.max(1, totalBalance - prevTotal!),
@@ -440,6 +453,9 @@ function HomeView({
             freeDrinkUnlocked: bankedUp,
             suspendedCoffeeEnabled:
               wallet.latest_earn.suspended_coffee_enabled,
+            scope: earnScope,
+            brandId: earnPoolBrand?.brand_id,
+            brandName: earnPoolBrand?.brand_name,
           });
         }
         prevTotalRef.current = totalBalance;
@@ -650,6 +666,23 @@ function HomeView({
           >
             LCP+ Global Passport
           </Text>
+          {/* Ecosystem tooltip — founder-locked copy. Native Alert
+              keeps the surface lightweight (no extra modal state) and
+              gives the right "tap-and-read" pattern on phones. */}
+          <Pressable
+            onPress={() =>
+              Alert.alert(
+                "LCP+ Global Passport",
+                "Stamps earned from our LCP+ members. You can earn and redeem these across the entire LCP+ network!",
+              )
+            }
+            accessibilityRole="button"
+            accessibilityLabel="What is the LCP+ Global Passport?"
+            hitSlop={10}
+            className="ml-1.5"
+          >
+            <Info size={13} color={COLOR.accent} strokeWidth={2.2} />
+          </Pressable>
         </View>
         <Text
           className="mt-1 text-[12px]"
@@ -782,6 +815,21 @@ function HomeView({
           >
             My Brand Cards
           </Text>
+          {/* Founder-locked tooltip — Private Brand Cards explainer. */}
+          <Pressable
+            onPress={() =>
+              Alert.alert(
+                "Private Brand Cards",
+                "Stamps exclusive to this brand. These can only be earned and redeemed at this specific brand's locations.",
+              )
+            }
+            accessibilityRole="button"
+            accessibilityLabel="What are Private Brand Cards?"
+            hitSlop={10}
+            className="ml-1.5"
+          >
+            <Info size={13} color={COLOR.textDim} strokeWidth={2.2} />
+          </Pressable>
           {privateBalances.length > 0 ? (
             <View
               className="ml-2 rounded-full px-2 py-0.5"
@@ -1938,4 +1986,15 @@ function BottomNav({
       </View>
     </View>
   );
+}
+
+// First-time welcome modal — fires exactly once across the user's
+// lifetime on this device, gated by `lcp.consumer.has_seen_welcome.v1`
+// in expo-secure-store (see WelcomeModal.tsx for the storage details).
+// Renders alongside the main app shell so it overlays whatever tab the
+// user lands on. Self-contained so the parent doesn't have to thread
+// any state through.
+function FirstTimeWelcomeGate() {
+  const { visible, dismiss } = useFirstTimeWelcome(true);
+  return <WelcomeModal visible={visible} onDismiss={dismiss} />;
 }

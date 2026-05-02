@@ -998,12 +998,55 @@ class CommunityPoolStatus(BaseModel):
 
 
 class DonateLoyaltyRequest(BaseModel):
-    """Body of POST /api/consumer/suspended-coffee/donate-loyalty. The
-    consumer must have at least 1 banked reward (floor(stamps / 10) >= 1)
-    for the SAME brand the cafe belongs to — the handler enforces this in
-    a transaction with SELECT … FOR UPDATE on the user row."""
+    """Body of POST /api/consumer/suspended-coffee/donate-loyalty.
 
-    cafe_id: UUID
+    Three call shapes (in priority order — the handler picks the first
+    that resolves to a valid cafe):
+
+      1. `cafe_id` set explicitly. Used by the LCP+ "Choose another
+         cafe" combobox where the user picks a destination cafe by
+         hand. The cafe must be participating in Pay It Forward.
+
+      2. `cafe_id` null + `scope='private'` + `brand_id` set. Auto-
+         routes to the user's most recent EARN at that brand (the
+         "last stamp" / 1-tap private donate flow). Cafe must be
+         participating; if their last visit isn't, the request is
+         rejected with 409 so the UI can prompt the user to pick a
+         different one.
+
+      3. `cafe_id` null + `scope='global'`. Auto-routes to the user's
+         most recent EARN at any LCP+-network (scheme_type='global')
+         cafe.
+
+    The consumer must hold ≥ 1 banked reward (floor(stamps / 10) ≥ 1)
+    for the SAME brand the destination cafe belongs to — the handler
+    enforces this in a transaction with SELECT … FOR UPDATE on the
+    user row.
+    """
+
+    cafe_id: UUID | None = None
+    # 'private' or 'global'. Required when cafe_id is omitted; ignored
+    # when cafe_id is supplied (the scope is implied by the cafe row).
+    scope: Literal["private", "global"] | None = None
+    # Required when scope='private' and cafe_id is omitted. Used to
+    # filter the auto-resolve query down to the brand the consumer
+    # tapped Donate from.
+    brand_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def _check(self) -> "DonateLoyaltyRequest":
+        if self.cafe_id is None:
+            if self.scope is None:
+                raise ValueError(
+                    "scope is required when cafe_id is omitted "
+                    "('private' or 'global')."
+                )
+            if self.scope == "private" and self.brand_id is None:
+                raise ValueError(
+                    "brand_id is required when scope='private' and "
+                    "cafe_id is omitted."
+                )
+        return self
 
 
 class DonateTillRequest(BaseModel):

@@ -1,7 +1,5 @@
 import { useMemo, useState } from "react";
 import {
-  ActivityIndicator,
-  Alert,
   Modal,
   Pressable,
   Text,
@@ -9,8 +7,8 @@ import {
 } from "react-native";
 import { Coffee, Gift, HandHeart, MapPin, Sparkles } from "lucide-react-native";
 
-import { ApiError, donateLoyalty } from "./api";
 import { COLOR, FONT } from "./theme";
+import { DonationFlow, type DonationContext } from "./DonationFlow";
 
 export type RewardPayload = {
   stampsEarned: number;
@@ -26,6 +24,18 @@ export type RewardPayload = {
   // whether we render the side-by-side Redeem / Donate CTAs (founder
   // direction 2026-05-02) or the legacy single-CTA dismiss.
   suspendedCoffeeEnabled?: boolean;
+  // Scope of the pool that just earned (set by App.tsx polling logic
+  // — see the per-pool delta detection in HomeView). Drives the
+  // "Last Stamp" donation routing: 'private' → 1-tap auto-donate to
+  // the brand's last-visited cafe; 'global' → default to last LCP+
+  // visit + offer a "Choose another cafe" combobox. Optional for the
+  // SAMPLE_REWARDS dev sandbox; treated as 'global' when absent.
+  scope?: "private" | "global";
+  // Required when scope='private' — passed straight through to the
+  // donate endpoint so it auto-routes to the latest scan at this
+  // brand. Ignored for scope='global'.
+  brandId?: string;
+  brandName?: string;
 };
 
 const DISMISS_PHRASES = [
@@ -60,7 +70,10 @@ export function RewardModal({
     () => DISMISS_PHRASES[Math.floor(Math.random() * DISMISS_PHRASES.length)],
     [payload],
   );
-  const [donating, setDonating] = useState(false);
+  // DonationFlow visibility — gated on the user tapping the Donate
+  // button. We render the modal unconditionally (with `null` context
+  // when not active) so its open/close transition stays smooth.
+  const [donateOpen, setDonateOpen] = useState(false);
   if (!payload) return null;
   const {
     stampsEarned,
@@ -70,6 +83,9 @@ export function RewardModal({
     newBalance,
     freeDrinkUnlocked,
     suspendedCoffeeEnabled,
+    scope,
+    brandId,
+    brandName,
   } = payload;
   const stampsLabel = stampsEarned === 1 ? "stamp" : "stamps";
 
@@ -87,39 +103,30 @@ export function RewardModal({
     ? "Congrats — your next drink is on the house."
     : null;
 
+  // Build the DonationFlow context from the just-scanned earn. Falls
+  // back to global scope when the polling layer didn't tag the
+  // payload (defensive — older callers that pre-date the per-pool
+  // delta detection wouldn't carry scope).
+  const donationContext: DonationContext | null =
+    !showDonate || !token
+      ? null
+      : scope === "private" && brandId
+        ? {
+            scope: "private",
+            brandId,
+            brandName: brandName ?? "this brand",
+            defaultCafeName: cafeName,
+          }
+        : { scope: "global", defaultCafeName: cafeName };
+
   const handleDonate = () => {
-    if (donating || !cafeId || !token) return;
-    Alert.alert(
-      "Donate this drink?",
-      `Pay it forward at ${cafeName}. Your reward goes onto their Community Board for someone who needs it next.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Donate",
-          style: "default",
-          onPress: async () => {
-            setDonating(true);
-            try {
-              await donateLoyalty(token, cafeId);
-              Alert.alert(
-                "Drink donated!",
-                "Thank you — your coffee is on the board for the next person who needs one.",
-              );
-              onDonationSuccess?.();
-              onClose();
-            } catch (e) {
-              const msg =
-                e instanceof ApiError
-                  ? e.detail
-                  : "Couldn't donate right now. Try again in a moment.";
-              Alert.alert("Donation failed", msg);
-            } finally {
-              setDonating(false);
-            }
-          },
-        },
-      ],
-    );
+    if (!donationContext) return;
+    setDonateOpen(true);
+  };
+
+  const handleDonationSuccess = () => {
+    onDonationSuccess?.();
+    onClose();
   };
 
   return (
@@ -278,11 +285,10 @@ export function RewardModal({
                 onPress={onClose}
                 accessibilityRole="button"
                 accessibilityLabel="Close — redeem your free drink at the till"
-                disabled={donating}
                 className="h-12 flex-1 flex-row items-center justify-center rounded-2xl"
                 style={({ pressed }) => ({
                   backgroundColor: COLOR.accent,
-                  opacity: donating ? 0.6 : pressed ? 0.85 : 1,
+                  opacity: pressed ? 0.85 : 1,
                 })}
               >
                 <Coffee size={14} color={COLOR.accentInk} strokeWidth={2.4} />
@@ -297,28 +303,21 @@ export function RewardModal({
                 onPress={handleDonate}
                 accessibilityRole="button"
                 accessibilityLabel="Donate this drink to the cafe's Community Board"
-                disabled={donating}
                 className="h-12 flex-1 flex-row items-center justify-center rounded-2xl"
                 style={({ pressed }) => ({
                   backgroundColor: COLOR.surface,
                   borderWidth: 1,
                   borderColor: COLOR.accent,
-                  opacity: donating ? 0.6 : pressed ? 0.85 : 1,
+                  opacity: pressed ? 0.85 : 1,
                 })}
               >
-                {donating ? (
-                  <ActivityIndicator color={COLOR.accent} size="small" />
-                ) : (
-                  <>
-                    <HandHeart size={14} color={COLOR.accent} strokeWidth={2.4} />
-                    <Text
-                      className="ml-2 text-[13.5px] font-semibold"
-                      style={{ color: COLOR.accent, letterSpacing: 0.3 }}
-                    >
-                      Donate to Community
-                    </Text>
-                  </>
-                )}
+                <HandHeart size={14} color={COLOR.accent} strokeWidth={2.4} />
+                <Text
+                  className="ml-2 text-[13.5px] font-semibold"
+                  style={{ color: COLOR.accent, letterSpacing: 0.3 }}
+                >
+                  Donate to Community
+                </Text>
               </Pressable>
             </View>
           ) : (
@@ -337,6 +336,18 @@ export function RewardModal({
           )}
         </Pressable>
       </Pressable>
+
+      {/* Donation flow — overlays the celebration modal when the user
+          taps Donate. Carries the scope detected by the wallet
+          poller so private-scope earns get the 1-tap path and
+          LCP+ earns get the "Choose another cafe" combobox. */}
+      <DonationFlow
+        visible={donateOpen}
+        context={donationContext}
+        token={token ?? ""}
+        onClose={() => setDonateOpen(false)}
+        onSuccess={handleDonationSuccess}
+      />
     </Modal>
   );
 }

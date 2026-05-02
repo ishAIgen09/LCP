@@ -288,17 +288,35 @@ export type SuspendedCoffeeMutationResponse = {
   new_pool_balance: number;
 };
 
+// Three call shapes (matches DonateLoyaltyRequest validator on the
+// server — see app/schemas.py):
+//
+//   1. { cafeId }                            — explicit cafe pick
+//      (LCP+ combobox / "Choose another cafe" path).
+//   2. { scope: "private", brandId }         — auto-route to the
+//      user's most recent EARN at that brand (1-tap private donate).
+//   3. { scope: "global" }                   — auto-route to the
+//      user's most recent EARN at any LCP+ network cafe.
+//
+// 409 is the auto-route-mismatch path (last visited cafe isn't
+// participating in Pay It Forward) — the UI should surface a "pick
+// another cafe" prompt and re-fire shape 1 with a chosen cafeId.
+export type DonateLoyaltyArgs =
+  | { cafeId: string; scope?: undefined; brandId?: undefined }
+  | { cafeId?: undefined; scope: "private"; brandId: string }
+  | { cafeId?: undefined; scope: "global"; brandId?: undefined };
+
 export function donateLoyalty(
   token: string,
-  cafeId: string,
+  args: DonateLoyaltyArgs,
 ): Promise<SuspendedCoffeeMutationResponse> {
-  // Authenticated POST — body carries the destination cafe; server
-  // resolves the brand from cafe_id and validates that the user has
-  // ≥ 10 scoped stamps for that brand. 400 on insufficient stamps,
-  // 403 if the cafe hasn't toggled the feature on.
+  const body: Record<string, string | null> = {};
+  if (args.cafeId) body.cafe_id = args.cafeId;
+  if (args.scope) body.scope = args.scope;
+  if (args.brandId) body.brand_id = args.brandId;
   return postJSONWithAuth<SuspendedCoffeeMutationResponse>(
     "/api/consumer/suspended-coffee/donate-loyalty",
-    { cafe_id: cafeId },
+    body,
     token,
   );
 }

@@ -72,7 +72,7 @@ export function CafeDetailsModal({
           onPress: async () => {
             setDonating(true);
             try {
-              const result = await donateLoyalty(token, cafe.id);
+              const result = await donateLoyalty(token, { cafeId: cafe.id });
               onDonationSuccess(result.new_pool_balance);
               Alert.alert(
                 "Thank you!",
