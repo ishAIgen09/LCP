@@ -735,6 +735,12 @@ function offerHeadline(offer: Offer): string {
   if (offer.type === "double_stamps") {
     return `Double stamps on ${targetLabel}`
   }
+  if (offer.type === "custom") {
+    // Render the operator's bespoke text verbatim — that's the whole
+    // point of the custom offer type. Falls back to a placeholder
+    // string so the preview never goes blank while they type.
+    return offer.customText?.trim() || "Your custom offer"
+  }
   return typeLabel
 }
 

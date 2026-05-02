@@ -130,6 +130,26 @@ export function verifyOtp(input: {
   });
 }
 
+export type ConsumerProfile = {
+  consumer_id: string;
+  first_name: string | null;
+  last_name: string | null;
+  email: string | null;
+};
+
+export function updateConsumerProfile(
+  token: string,
+  input: { first_name?: string | null; last_name?: string | null },
+): Promise<ConsumerProfile> {
+  // PATCH /api/consumer/me — server trims values; an empty string clears
+  // the field. Omitted keys leave the existing value untouched.
+  return patchJSONWithAuth<ConsumerProfile>(
+    "/api/consumer/me",
+    input,
+    token,
+  );
+}
+
 export type LatestEarn = {
   transaction_id: string;
   cafe_name: string;
@@ -286,10 +306,27 @@ async function postJSONWithAuth<T>(
   body: unknown,
   token: string,
 ): Promise<T> {
+  return mutateJSONWithAuth<T>("POST", path, body, token);
+}
+
+async function patchJSONWithAuth<T>(
+  path: string,
+  body: unknown,
+  token: string,
+): Promise<T> {
+  return mutateJSONWithAuth<T>("PATCH", path, body, token);
+}
+
+async function mutateJSONWithAuth<T>(
+  method: "POST" | "PATCH" | "PUT",
+  path: string,
+  body: unknown,
+  token: string,
+): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${API_BASE_URL}${path}`, {
-      method: "POST",
+      method,
       headers: {
         ...DEFAULT_HEADERS,
         "Content-Type": "application/json",

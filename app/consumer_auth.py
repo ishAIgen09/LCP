@@ -25,7 +25,7 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -53,6 +53,7 @@ from app.schemas import (
     ConsumerHistoryEntry,
     ConsumerOfferPayload,
     ConsumerProfile,
+    ConsumerProfileUpdate,
     ConsumerRequestOTP,
     ConsumerRequestOTPResponse,
     ConsumerVerifyOTP,
@@ -250,6 +251,40 @@ async def verify_otp(
 # auto-rollover in /api/b2b/scan, this value naturally stays in 0..9, and the
 # mobile app reads it as the "progress to the next free drink" counter.
 REWARD_THRESHOLD = 10
+
+
+# Consumer Profile-tab Edit Name flow. PATCH semantics — fields the
+# client omits are left untouched; an empty string clears the field.
+# Returns the freshly persisted profile so the client can drop it
+# straight into its session state without a follow-up fetch.
+@consumer_router.patch("/me", response_model=ConsumerProfile)
+@consumer_router.put("/me", response_model=ConsumerProfile)
+async def update_consumer_profile(
+    payload: ConsumerProfileUpdate,
+    consumer: ConsumerSession = Depends(get_consumer_session),
+    session: AsyncSession = Depends(get_session),
+) -> ConsumerProfile:
+    user = await session.get(User, consumer.user_id)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Consumer session references an unknown user.",
+        )
+    fields = payload.model_dump(exclude_unset=True)
+    if "first_name" in fields:
+        cleaned = (fields["first_name"] or "").strip()
+        user.first_name = cleaned or None
+    if "last_name" in fields:
+        cleaned = (fields["last_name"] or "").strip()
+        user.last_name = cleaned or None
+    await session.commit()
+    await session.refresh(user)
+    return ConsumerProfile(
+        consumer_id=user.till_code,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        email=user.email,
+    )
 
 
 @consumer_router.get("/me/balance", response_model=ConsumerBalanceResponse)
@@ -504,11 +539,21 @@ def _haversine_miles(lat1: float, lng1: float, lat2: float, lng2: float) -> floa
 
 @consumer_router.get("/cafes", response_model=list[ConsumerCafePayload])
 async def consumer_cafes(
-    lat: float | None = None,
-    lng: float | None = None,
+    # Accept both the original `lat`/`lng` pair (existing consumer-app
+    # client) and the spec-canonical `user_lat`/`user_lon` (PRD). When
+    # both are given the canonical form wins. Either way we feed a
+    # single (lat, lng) pair into the Haversine math below.
+    lat: float | None = Query(default=None),
+    lng: float | None = Query(default=None),
+    user_lat: float | None = Query(default=None),
+    user_lon: float | None = Query(default=None),
     _consumer: ConsumerSession = Depends(get_consumer_session),
     session: AsyncSession = Depends(get_session),
 ) -> list[ConsumerCafePayload]:
+    if user_lat is not None:
+        lat = user_lat
+    if user_lon is not None:
+        lng = user_lon
     # Pull cafes + their parent Brand in one pass so we can derive
     # `is_lcp_plus` without an N+1 follow-up query.
     rows = (
@@ -573,6 +618,31 @@ async def consumer_cafes(
         and -180.0 <= lng <= 180.0
     )
 
+    # Batch-compute pool balances for participating cafes. One GROUP BY
+    # query keyed by cafe_id; cafes that haven't toggled the feature on
+    # don't need a pool count (badge wouldn't show anyway), so we skip
+    # them in the WHERE clause entirely.
+    pool_balances: dict[uuid.UUID, int] = {}
+    enabled_cafe_ids = [c.id for c, _b in rows if c.suspended_coffee_enabled]
+    if enabled_cafe_ids:
+        pool_rows = (
+            await session.execute(
+                select(
+                    SuspendedCoffeeLedger.cafe_id,
+                    func.coalesce(
+                        func.sum(SuspendedCoffeeLedger.units_delta), 0
+                    ).label("balance"),
+                )
+                .where(SuspendedCoffeeLedger.cafe_id.in_(enabled_cafe_ids))
+                .group_by(SuspendedCoffeeLedger.cafe_id)
+            )
+        ).all()
+        for row in pool_rows:
+            # Defensive clamp — should never see a negative balance given
+            # the FOR UPDATE serve guard, but if we do, surface 0 rather
+            # than leak a negative number to the consumer-app.
+            pool_balances[row.cafe_id] = max(int(row.balance), 0)
+
     payloads: list[ConsumerCafePayload] = []
     for cafe, brand in rows:
         distance: float | None = None
@@ -593,6 +663,13 @@ async def consumer_cafes(
                 latitude=cafe.latitude,
                 longitude=cafe.longitude,
                 distance_miles=distance,
+                # Pay It Forward / Suspended Coffee (PRD §4.5). The cafe
+                # row's flag drives the Community Board badge in the
+                # Explore card; the per-cafe pool balance feeds the
+                # CafeDetailsModal counter. Both default to false / 0
+                # for cafes that haven't enrolled.
+                suspended_coffee_enabled=cafe.suspended_coffee_enabled,
+                suspended_coffee_pool=pool_balances.get(cafe.id, 0),
             )
         )
 

@@ -35,7 +35,10 @@ from app.auth import (
 from app.email_sender import send_brand_invite_email
 from app.auth_routes import router as auth_router
 from app.b2b_routes import router as b2b_router
+import stripe
+
 from app.billing import router as billing_router, sync_subscription_quantity
+from app.geocoding import geocode_address
 from app.consumer_auth import (
     consumer_router as consumer_api_router,
     router as consumer_auth_router,
@@ -60,6 +63,9 @@ from app.schemas import (
     AdminSession,
     BalanceResponse,
     BrandCreate,
+    BrandInvoice,
+    BrandInvoiceLine,
+    BrandInvoicesResponse,
     BrandProfile,
     BrandResponse,
     BrandUpdate,
@@ -1336,6 +1342,122 @@ async def platform_cafe_stats(
     )
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Super-Admin Stripe invoice fetch (dispute resolution)
+# ─────────────────────────────────────────────────────────────────────
+#
+# Lists every invoice on file at Stripe for a given brand's customer.
+# Used by the admin-dashboard Brand-detail accordion when the operator
+# needs to walk a disputing brand owner through their billing history
+# (proration line items, mid-cycle adds, refunds, etc.).
+#
+# We thinly wrap stripe.Invoice.list — no DB-side caching. Each call
+# round-trips to Stripe; cardinality is small (a brand has tens of
+# invoices, not thousands) so this stays well within Stripe's rate
+# limits even for a busy super-admin session.
+@app.get(
+    "/api/admin/platform/brands/{brand_id}/invoices",
+    response_model=BrandInvoicesResponse,
+)
+async def platform_brand_invoices(
+    brand_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> BrandInvoicesResponse:
+    brand = await session.get(Brand, brand_id)
+    if brand is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Brand not found."
+        )
+
+    # Brand never went through Checkout → no Stripe customer to query.
+    # Return an empty list (not 404) so the UI can show the empty-state
+    # rather than treating it as a hard error.
+    if not brand.stripe_customer_id:
+        return BrandInvoicesResponse(
+            brand_id=brand.id,
+            brand_name=brand.name,
+            stripe_customer_id=None,
+            invoices=[],
+        )
+
+    if not settings.stripe_secret_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="STRIPE_SECRET_KEY is not configured.",
+        )
+    # main.py doesn't import billing's stripe.api_key bootstrap so we
+    # set it defensively here. Cheap idempotent assignment.
+    stripe.api_key = settings.stripe_secret_key
+
+    try:
+        # `expand=["data.lines"]` is implicit — Stripe returns the first
+        # page of lines.data inline. For invoices with > 10 lines we'd
+        # need to paginate per-invoice; in practice a per-cafe sub never
+        # exceeds 4-5 lines (base + prorations) so we leave it for now.
+        listing = stripe.Invoice.list(
+            customer=brand.stripe_customer_id, limit=50
+        )
+    except stripe.StripeError as exc:
+        logger.error(
+            "Stripe Invoice.list failed: brand=%s customer=%s err=%s",
+            brand.id,
+            brand.stripe_customer_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Stripe could not list invoices: {exc.user_message or str(exc)}",
+        )
+
+    def _ts(v: int | None) -> datetime | None:
+        if v is None:
+            return None
+        return datetime.fromtimestamp(int(v), tz=timezone.utc)
+
+    invoices: list[BrandInvoice] = []
+    for inv in listing.get("data", []):
+        lines_payload: list[BrandInvoiceLine] = []
+        for line in inv.get("lines", {}).get("data", []) or []:
+            period = line.get("period") or {}
+            lines_payload.append(
+                BrandInvoiceLine(
+                    description=line.get("description"),
+                    amount_pence=int(line.get("amount") or 0),
+                    currency=str(line.get("currency") or "gbp"),
+                    proration=bool(line.get("proration") or False),
+                    quantity=line.get("quantity"),
+                    period_start=_ts(period.get("start")),
+                    period_end=_ts(period.get("end")),
+                )
+            )
+        invoices.append(
+            BrandInvoice(
+                id=str(inv.get("id")),
+                number=inv.get("number"),
+                status=str(inv.get("status") or "draft"),
+                amount_paid_pence=int(inv.get("amount_paid") or 0),
+                amount_due_pence=int(inv.get("amount_due") or 0),
+                total_pence=int(inv.get("total") or 0),
+                currency=str(inv.get("currency") or "gbp"),
+                # `created` is always set on real invoices; tolerate
+                # missing for synthetic dev data.
+                created_at=_ts(inv.get("created")) or datetime.now(timezone.utc),
+                period_start=_ts(inv.get("period_start")),
+                period_end=_ts(inv.get("period_end")),
+                hosted_invoice_url=inv.get("hosted_invoice_url"),
+                invoice_pdf=inv.get("invoice_pdf"),
+                lines=lines_payload,
+            )
+        )
+
+    return BrandInvoicesResponse(
+        brand_id=brand.id,
+        brand_name=brand.name,
+        stripe_customer_id=brand.stripe_customer_id,
+        invoices=invoices,
+    )
+
+
 # System prompt for the super-admin AI assistant. Intentionally lean:
 # gives the model just enough schema context to answer questions about
 # platform revenue, cafe ROI, and user behaviour in LCP's language
@@ -1439,52 +1561,70 @@ async def platform_ai_agent(payload: AiAgentRequest) -> AiAgentResponse:
         )
 
 
-# Sequential 3-digit store numbers ("001", "002", …) so brand owners
-# read clean human-friendly IDs instead of the previous random
-# `M7K2X9` allocation. Implementation:
-#   1. Find MAX(numeric store_number) across the entire `cafes` table —
-#      ignoring legacy alpha-prefixed numbers like "MMTH01" via a regex
-#      filter on the stable digits subset.
-#   2. Increment by 1, zero-pad to >=3 chars (rolls cleanly to 4-digit
-#      "1000" once the platform ever needs >999 cafes).
-#   3. Tight retry loop in case of a write race with a concurrent POST
-#      (the cafes.store_number UNIQUE constraint will throw IntegrityError
-#      and the next attempt will pick up the now-higher MAX).
+# Brand-prefixed store numbers: derive a 2-3 letter prefix from the
+# brand name and append a 3-digit sequential counter scoped to that
+# prefix (e.g. "Daily Beans" → DB001, DB002; "Monmouth" → MON001).
+# Brand owners hand the resulting ID to baristas as the POS handle.
 #
-# IMPORTANT: store_number remains GLOBALLY unique by DB constraint,
-# which means brand-A's 5th cafe will be "005" and brand-B's first
-# cafe will then be "006", not its own "001". A truly per-brand-scoped
-# counter would require dropping the global UNIQUE in favour of
-# UNIQUE(brand_id, store_number) AND extending the barista login to
-# disambiguate by brand — out of scope for this pass. The number is
-# still clean + sequential + brand owners can hand it to baristas as
-# a 3-digit ID, which is the UX win the spec was asking for.
+# Prefix derivation:
+#   - Multi-word brand → first letter of up to 3 leading words (Daily
+#     Beans → DB, Local Coffee Perks → LCP).
+#   - Single-word brand → first 3 letters (Monmouth → MON).
+#   - Non-alphanumerics are stripped; result is uppercased.
+#   - If the brand name yields nothing usable (empty / pure symbols),
+#     we fall back to "STR" so allocation never blocks.
+#
+# Counter is per-prefix (MAX of the trailing digits among cafes whose
+# store_number matches `^{PREFIX}[0-9]+$`). The cafes.store_number
+# UNIQUE constraint stays the safety net — a tight retry loop handles
+# write races with concurrent POSTs.
+def _brand_store_prefix(brand_name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9 ]+", " ", brand_name or "").strip()
+    if not cleaned:
+        return "STR"
+    words = [w for w in cleaned.split() if w]
+    if len(words) >= 2:
+        prefix = "".join(w[0] for w in words[:3]).upper()
+    else:
+        prefix = words[0][:3].upper()
+    # Strip any digits the user happened to lead with (e.g. "5th Wave"
+    # → "5W") so the prefix is purely alphabetic where possible. We
+    # tolerate digits if that's all there is.
+    alpha = re.sub(r"[^A-Z]", "", prefix)
+    return alpha if len(alpha) >= 2 else (prefix or "STR")
+
+
 async def _allocate_store_number(
     session: AsyncSession,
-    brand_id: UUID | None = None,
+    brand: Brand | None = None,
     max_attempts: int = 5,
 ) -> str:
-    # `brand_id` is accepted for forward compatibility (per-brand scoping
-    # later) and used to log a friendlier debug line, but the actual
-    # MAX is taken globally to honour the existing UNIQUE constraint.
-    _ = brand_id
+    prefix = _brand_store_prefix(brand.name) if brand is not None else "STR"
+    pattern = f"^{prefix}[0-9]+$"
     for _attempt in range(max_attempts):
-        # CAST + regex filter so "MMTH01"-style legacy values don't
-        # poison the MAX. Postgres-flavoured regex: anchored ^[0-9]+$.
         max_row = (
             await session.execute(
                 text(
-                    "SELECT COALESCE(MAX(store_number::int), 0) "
+                    "SELECT COALESCE(MAX(NULLIF(regexp_replace("
+                    "store_number, :prefix, ''), '')::int), 0) "
                     "FROM cafes "
-                    "WHERE store_number ~ '^[0-9]+$'"
-                )
+                    "WHERE store_number ~ :pattern"
+                ),
+                {"prefix": f"^{prefix}", "pattern": pattern},
             )
         ).scalar_one()
         next_int = int(max_row) + 1
-        candidate = f"{next_int:03d}"
-        # Defensive existence check before insert — the row write path
-        # will also enforce uniqueness, but checking here avoids a
-        # commit/rollback round-trip on the happy path.
+        candidate = f"{prefix}{next_int:03d}"
+        # store_number CHECK is `^[A-Z0-9]{3,10}$`; bail loudly if a
+        # weird brand name + huge counter ever blew past 10 chars.
+        if not re.fullmatch(r"[A-Z0-9]{3,10}", candidate):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Generated store number '{candidate}' exceeds the "
+                    "10-character limit — set one explicitly."
+                ),
+            )
         existing = (
             await session.execute(
                 select(Cafe.id).where(Cafe.store_number == candidate)
@@ -1726,10 +1866,14 @@ async def platform_create_cafe(
                 detail=f"Store number '{store_number}' is already in use.",
             )
     else:
-        store_number = await _allocate_store_number(session)
+        store_number = await _allocate_store_number(session, brand=brand)
 
     base_slug = f"{brand.slug}-{_slugify(name)}"
     slug = await _unique_cafe_slug(session, base_slug)
+
+    # Best-effort geocode (same as create_cafe). Super-Admin override
+    # path — failures stay quiet; the row is the priority.
+    p_lat, p_lon = await geocode_address(address)
 
     cafe = Cafe(
         brand_id=brand.id,
@@ -1738,6 +1882,8 @@ async def platform_create_cafe(
         address=address,
         contact_email=brand.contact_email,
         store_number=store_number,
+        latitude=p_lat,
+        longitude=p_lon,
     )
     session.add(cafe)
     try:
@@ -2076,24 +2222,32 @@ async def create_cafe(
                 detail=f"Store ID '{normalized_store_number}' is already in use.",
             )
     else:
-        # No explicit store_number → allocate the next sequential 3-digit
-        # ID. The brand-admin Add Location flow doesn't ask the owner to
-        # pick a number — they just want a clean human-friendly handle
-        # they can hand to a barista.
+        # No explicit store_number → allocate the next brand-prefixed
+        # sequential ID (e.g. Daily Beans → DB001, DB002). The brand-
+        # admin Add Location flow doesn't ask the owner to pick a
+        # number — they just want a clean handle to hand to a barista.
         normalized_store_number = await _allocate_store_number(
-            session, brand_id=brand.id,
+            session, brand=brand,
         )
+
+    # Best-effort geocode → unlocks Haversine distance math in the
+    # consumer Discover feed. Failures land as (None, None) and the
+    # consumer app falls back to its deterministic mock distance.
+    address_clean = payload.address.strip()
+    lat, lon = await geocode_address(address_clean)
 
     cafe = Cafe(
         brand_id=brand.id,
         name=f"{brand.name} — {payload.name.strip()}",
         slug=slug,
-        address=payload.address.strip(),
+        address=address_clean,
         contact_email=(payload.contact_email or brand.contact_email).strip(),
         store_number=normalized_store_number,
         pin_hash=hash_password(payload.pin) if payload.pin else None,
         phone=payload.phone.strip() if payload.phone else None,
         food_hygiene_rating=payload.food_hygiene_rating,
+        latitude=lat,
+        longitude=lon,
     )
     session.add(cafe)
     await session.commit()
@@ -2141,8 +2295,16 @@ async def update_cafe(
 
     if payload.address is not None:
         trimmed = payload.address.strip()
-        if trimmed:
+        if trimmed and trimmed != cafe.address:
             cafe.address = trimmed
+            # Re-geocode whenever the address actually changes. We don't
+            # try to detect "same address, slight typo fix" — Nominatim's
+            # cheap enough that re-running on every edit is fine, and a
+            # fresh resolve guards against stale coords from a prior
+            # mistyped address.
+            new_lat, new_lon = await geocode_address(trimmed)
+            cafe.latitude = new_lat
+            cafe.longitude = new_lon
     if payload.phone is not None:
         trimmed_phone = payload.phone.strip()
         cafe.phone = trimmed_phone or None

@@ -23,7 +23,12 @@ export type Brand = {
   slug: string
   contactEmail: string
   schemeType: SchemeType
-  plan: "Starter" | "Growth" | "Scale"
+  // Plan label is derived from schemeType server-side mapping:
+  //   private → "Private Scheme"        (£5 / mo per cafe)
+  //   global  → "LCP+ Global Pass"      (£7.99 / mo per cafe)
+  // The legacy "Starter" / "Growth" labels are gone — owners pick their
+  // tier at signup and the dashboard mirrors that choice.
+  plan: "Private Scheme" | "LCP+ Global Pass"
   planPrice: string
   subscriptionStatus: "active" | "trialing" | "past_due" | "canceled"
   createdAt: string
@@ -67,8 +72,8 @@ export const initialBrand: Brand = {
   slug: "halcyon-coffee",
   contactEmail: "owner@halcyoncoffee.co.uk",
   schemeType: "global",
-  plan: "Growth",
-  planPrice: "£5 / month per cafe",
+  plan: "LCP+ Global Pass",
+  planPrice: "£7.99 / month per cafe",
   subscriptionStatus: "active",
   createdAt: "2026-04-02",
   ownerFirstName: null,

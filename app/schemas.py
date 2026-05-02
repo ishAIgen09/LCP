@@ -600,6 +600,14 @@ class ConsumerAuthResponse(BaseModel):
     consumer: ConsumerProfile
 
 
+# Consumer-app Profile-tab Edit Name flow. Both fields optional so the
+# client can send just one if the user only edits half the name. A blank
+# string clears the field; anything else is trimmed + capped at 60 chars.
+class ConsumerProfileUpdate(BaseModel):
+    first_name: str | None = Field(default=None, max_length=60)
+    last_name: str | None = Field(default=None, max_length=60)
+
+
 class LatestEarnPayload(BaseModel):
     transaction_id: UUID
     cafe_name: str
@@ -973,3 +981,52 @@ class SuspendedCoffeeMutationResponse(BaseModel):
 
     ok: bool = True
     new_pool_balance: int = Field(ge=0)
+
+
+# ────────────────────────────────────────────────────────────────────
+# Super-Admin Stripe invoice surfacing — supports the dispute-resolution
+# accordion in admin-dashboard. We thinly wrap stripe.Invoice payloads
+# so the frontend doesn't need its own Stripe SDK and so we can keep
+# the response shape stable across Stripe API version bumps.
+# ────────────────────────────────────────────────────────────────────
+
+
+class BrandInvoiceLine(BaseModel):
+    """One row of `invoice.lines.data` — what the owner sees broken out
+    on their invoice. `proration=True` flags the prorated charges that
+    sync_subscription_quantity creates when a brand adds/removes a cafe
+    mid-cycle (Batch 2 #2)."""
+
+    description: str | None = None
+    amount_pence: int
+    currency: str
+    proration: bool = False
+    quantity: int | None = None
+    period_start: datetime | None = None
+    period_end: datetime | None = None
+
+
+class BrandInvoice(BaseModel):
+    id: str
+    number: str | None = None
+    # Stripe enum: paid / open / void / draft / uncollectible
+    status: str
+    amount_paid_pence: int
+    amount_due_pence: int
+    total_pence: int
+    currency: str
+    created_at: datetime
+    period_start: datetime | None = None
+    period_end: datetime | None = None
+    hosted_invoice_url: str | None = None
+    invoice_pdf: str | None = None
+    lines: list[BrandInvoiceLine]
+
+
+class BrandInvoicesResponse(BaseModel):
+    brand_id: UUID
+    brand_name: str
+    # NULL when the brand has never gone through Stripe Checkout — the
+    # frontend renders an empty-state instead of an error in that case.
+    stripe_customer_id: str | None
+    invoices: list[BrandInvoice]

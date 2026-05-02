@@ -11,3 +11,4 @@ pyjwt
 bcrypt
 openai
 resend
+geopy

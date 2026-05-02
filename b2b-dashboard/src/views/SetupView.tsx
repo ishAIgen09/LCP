@@ -11,6 +11,7 @@ import {
   Loader2,
   LockKeyhole,
   MapPin,
+  Phone,
   Sparkles,
   Store,
 } from "lucide-react"
@@ -327,6 +328,7 @@ function StepAddLocation({
 }) {
   const [name, setName] = useState("")
   const [address, setAddress] = useState("")
+  const [phone, setPhone] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -341,6 +343,9 @@ function StepAddLocation({
       const cafe = await createCafe(token, {
         name: name.trim(),
         address: address.trim(),
+        // Phone is optional during onboarding — if blank we send null so
+        // the backend's coerce-empty-to-NULL semantics apply uniformly.
+        phone: phone.trim() ? phone.trim() : null,
       })
       onComplete(cafe.name)
     } catch (e) {
@@ -401,6 +406,28 @@ function StepAddLocation({
           <p className="mt-1.5 text-[11px] text-muted-foreground">
             One-line address — the consumer app uses this to power Get
             Directions.
+          </p>
+        </Field>
+
+        <Field label="Mobile number (optional)">
+          <div className="relative">
+            <Phone
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+              strokeWidth={1.9}
+            />
+            <Input
+              type="tel"
+              placeholder="+44 20 7946 0958"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              className="h-11 pl-9"
+              autoComplete="tel"
+              disabled={submitting}
+            />
+          </div>
+          <p className="mt-1.5 text-[11px] text-muted-foreground">
+            Surfaced on the consumer app's "Contact &amp; Location" sheet.
+            Add it now or fill it in later from the Locations tab.
           </p>
         </Field>
 

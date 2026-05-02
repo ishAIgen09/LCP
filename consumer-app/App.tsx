@@ -38,10 +38,12 @@ import { LoginScreen } from "./src/LoginScreen";
 import { HistoryScreen } from "./src/HistoryScreen";
 import { RewardModal, type RewardPayload } from "./src/RewardModal";
 import { CafeDetailsModal } from "./src/CafeDetailsModal";
+import { EditProfileModal } from "./src/EditProfileModal";
 import { AMENITIES, lookupAmenity, type AmenityDef } from "./src/amenities";
 import {
   fetchDiscoverCafes,
   fetchWallet,
+  type ConsumerProfile,
   type DiscoverCafe,
   type DiscoverOffer,
   type FoodHygieneRating,
@@ -198,7 +200,20 @@ function AppShell() {
         {tab === "history" && <HistoryScreen session={session} />}
         {tab === "discover" && <DiscoverView session={session} />}
         {tab === "profile" && (
-          <ProfileView session={session} onSignOut={() => setSession(null)} />
+          <ProfileView
+            session={session}
+            onSignOut={() => setSession(null)}
+            onProfileUpdate={(profile) =>
+              setSession((s) =>
+                s
+                  ? {
+                      ...s,
+                      consumer: { ...s.consumer, ...profile },
+                    }
+                  : s,
+              )
+            }
+          />
         )}
       </SafeAreaView>
       <BottomNav active={tab} onChange={setTab} />
@@ -834,7 +849,22 @@ function DiscoverView({ session }: { session: Session }) {
   const [selected, setSelected] = useState<DiscoverCafe | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
-  const [activeAmenity, setActiveAmenity] = useState<string | null>(null);
+  // Multi-select amenity filter — tap to toggle, "All" clears the set.
+  // Match is AND across selected amenities (Dog Friendly *and* Wi-Fi).
+  const [activeAmenities, setActiveAmenities] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const toggleAmenity = useCallback((id: string) => {
+    setActiveAmenities((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const clearAmenities = useCallback(() => {
+    setActiveAmenities(new Set());
+  }, []);
 
   // Location permission + first fix. One-shot on mount — if the user denies
   // permission or the GPS errors, coords stays null and the cafe feed
@@ -920,9 +950,15 @@ function DiscoverView({ session }: { session: Session }) {
 
   const visibleCafes = useMemo(() => {
     if (!localCafes) return localCafes;
-    if (!activeAmenity) return localCafes;
-    return localCafes.filter((c) => c.amenities.includes(activeAmenity));
-  }, [localCafes, activeAmenity]);
+    if (activeAmenities.size === 0) return localCafes;
+    // AND-match: a cafe must satisfy *every* selected amenity.
+    return localCafes.filter((c) => {
+      for (const id of activeAmenities) {
+        if (!c.amenities.includes(id)) return false;
+      }
+      return true;
+    });
+  }, [localCafes, activeAmenities]);
 
   return (
     <ScrollView
@@ -950,8 +986,9 @@ function DiscoverView({ session }: { session: Session }) {
       </Text>
 
       <SmartFilterRow
-        active={activeAmenity}
-        onChange={setActiveAmenity}
+        activeIds={activeAmenities}
+        onToggle={toggleAmenity}
+        onClear={clearAmenities}
         availableIds={availableAmenityIds}
       />
 
@@ -1038,8 +1075,8 @@ function DiscoverView({ session }: { session: Session }) {
               color: COLOR.text,
             }}
           >
-            {activeAmenity
-              ? "No cafés match that filter near you"
+            {activeAmenities.size > 0
+              ? "No cafés match those filters near you"
               : "No cafés within " + DISCOVERY_RADIUS_MILES + " miles ☕"}
           </Text>
           <Text
@@ -1051,13 +1088,13 @@ function DiscoverView({ session }: { session: Session }) {
               lineHeight: 18,
             }}
           >
-            {activeAmenity
-              ? "Try clearing the filter or picking a different amenity."
+            {activeAmenities.size > 0
+              ? "Try removing a filter or picking a different combination."
               : "We're onboarding local roasters now. Check back soon — fresh perks are brewing."}
           </Text>
-          {activeAmenity ? (
+          {activeAmenities.size > 0 ? (
             <Pressable
-              onPress={() => setActiveAmenity(null)}
+              onPress={clearAmenities}
               accessibilityRole="button"
               className="mt-3 h-9 items-center justify-center self-start rounded-full px-4"
               style={({ pressed }) => ({
@@ -1075,7 +1112,7 @@ function DiscoverView({ session }: { session: Session }) {
                   letterSpacing: 0.3,
                 }}
               >
-                Clear filter
+                Clear filters
               </Text>
             </Pressable>
           ) : null}
@@ -1119,19 +1156,22 @@ function DiscoverView({ session }: { session: Session }) {
 }
 
 // Horizontal pill row for the Discover smart-filter. Renders the catalogue
-// of amenities; greys out (and disables) any pill whose amenity isn't on a
-// nearby cafe so the row stays honest without truncating the list. Tap a
-// pill once to filter, tap again to clear — passing `null` to onChange
-// removes the filter.
+// of amenities as a multi-select chip group — tap any pill to toggle it
+// on/off, stack as many as you like (Dog Friendly *and* Wi-Fi). Greys out
+// any amenity not on a nearby cafe so the row stays honest. The leading
+// "All" pill clears the entire selection.
 function SmartFilterRow({
-  active,
-  onChange,
+  activeIds,
+  onToggle,
+  onClear,
   availableIds,
 }: {
-  active: string | null;
-  onChange: (id: string | null) => void;
+  activeIds: ReadonlySet<string>;
+  onToggle: (id: string) => void;
+  onClear: () => void;
   availableIds: ReadonlySet<string>;
 }) {
+  const noneSelected = activeIds.size === 0;
   return (
     <ScrollView
       horizontal
@@ -1139,19 +1179,19 @@ function SmartFilterRow({
       contentContainerStyle={{ paddingTop: 14, paddingBottom: 4 }}
     >
       <Pressable
-        onPress={() => onChange(null)}
+        onPress={onClear}
         className="mr-2 h-9 items-center justify-center rounded-full px-3.5"
         style={({ pressed }) => ({
-          backgroundColor: active === null ? COLOR.accent : COLOR.surface,
+          backgroundColor: noneSelected ? COLOR.accent : COLOR.surface,
           borderWidth: 1,
-          borderColor: active === null ? COLOR.accent : COLOR.border,
+          borderColor: noneSelected ? COLOR.accent : COLOR.border,
           opacity: pressed ? 0.85 : 1,
         })}
       >
         <Text
           style={{
             fontSize: 11.5,
-            color: active === null ? COLOR.accentInk : COLOR.text,
+            color: noneSelected ? COLOR.accentInk : COLOR.text,
             fontFamily: FONT.semibold,
             letterSpacing: 0.4,
           }}
@@ -1160,16 +1200,17 @@ function SmartFilterRow({
         </Text>
       </Pressable>
       {AMENITIES.map((a) => {
-        const isActive = active === a.id;
+        const isActive = activeIds.has(a.id);
         const isAvailable = availableIds.has(a.id);
         const Icon = a.Icon;
         return (
           <Pressable
             key={a.id}
-            onPress={() => onChange(isActive ? null : a.id)}
+            onPress={() => onToggle(a.id)}
             disabled={!isAvailable && !isActive}
             accessibilityRole="button"
-            accessibilityLabel={`Filter by ${a.label}`}
+            accessibilityState={{ selected: isActive }}
+            accessibilityLabel={`${isActive ? "Remove" : "Add"} filter ${a.label}`}
             className="mr-2 h-9 flex-row items-center justify-center rounded-full px-3"
             style={({ pressed }) => ({
               backgroundColor: isActive ? COLOR.accent : COLOR.surface,
@@ -1578,10 +1619,13 @@ function CommunityBoardPill() {
 function ProfileView({
   session,
   onSignOut,
+  onProfileUpdate,
 }: {
   session: Session;
   onSignOut: () => void;
+  onProfileUpdate: (profile: ConsumerProfile) => void;
 }) {
+  const [editOpen, setEditOpen] = useState(false);
   const fullName =
     [session.consumer.first_name, session.consumer.last_name]
       .filter(Boolean)
@@ -1594,12 +1638,43 @@ function ProfileView({
       >
         Profile
       </Text>
-      <Text
-        className="mt-2 text-[26px] font-semibold"
-        style={{ color: COLOR.text, letterSpacing: -0.5 }}
-      >
-        {fullName}
-      </Text>
+      <View className="mt-2 flex-row items-center" style={{ gap: 10 }}>
+        <Text
+          className="text-[26px] font-semibold"
+          style={{
+            color: COLOR.text,
+            letterSpacing: -0.5,
+            flexShrink: 1,
+          }}
+          numberOfLines={1}
+        >
+          {fullName}
+        </Text>
+        <Pressable
+          onPress={() => setEditOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Edit your name"
+          hitSlop={8}
+          className="h-7 items-center justify-center rounded-full px-3"
+          style={({ pressed }) => ({
+            backgroundColor: COLOR.surface,
+            borderWidth: 1,
+            borderColor: COLOR.border,
+            opacity: pressed ? 0.85 : 1,
+          })}
+        >
+          <Text
+            style={{
+              fontFamily: FONT.semibold,
+              fontSize: 11,
+              color: COLOR.text,
+              letterSpacing: 0.4,
+            }}
+          >
+            Edit
+          </Text>
+        </Pressable>
+      </View>
       <Text className="mt-1 text-sm" style={{ color: COLOR.textMuted }}>
         {session.consumer.email}
       </Text>
@@ -1647,6 +1722,15 @@ function ProfileView({
           Sign out
         </Text>
       </Pressable>
+
+      <EditProfileModal
+        open={editOpen}
+        token={session.token}
+        initialFirstName={session.consumer.first_name}
+        initialLastName={session.consumer.last_name}
+        onClose={() => setEditOpen(false)}
+        onSaved={onProfileUpdate}
+      />
     </View>
   );
 }

@@ -236,16 +236,19 @@ export type B2BScanResponse = {
 }
 
 export function brandFromApi(b: ApiBrand): Brand {
-  // Plan tier isn't modelled server-side yet — derive from subscription_status
-  // so the dashboard can render consistent labels.
-  const isActive = b.subscription_status === "active"
+  // Plan label + price flow from the brand's scheme_type, locked at
+  // signup. We don't surface "no active subscription" as a separate plan
+  // string — the renewal/grace-period state lives on subscriptionStatus
+  // and lights up its own UI elsewhere. Keeping the plan card honest
+  // about which scheme the owner picked is what matters here.
+  const isGlobal = b.scheme_type === "global"
   return {
     name: b.name,
     slug: b.slug,
     contactEmail: b.contact_email,
     schemeType: b.scheme_type,
-    plan: isActive ? "Growth" : "Starter",
-    planPrice: isActive ? "£5 / month per cafe" : "—",
+    plan: isGlobal ? "LCP+ Global Pass" : "Private Scheme",
+    planPrice: isGlobal ? "£7.99 / month per cafe" : "£5 / month per cafe",
     subscriptionStatus: b.subscription_status === "incomplete" ? "past_due" : b.subscription_status,
     createdAt: new Date().toISOString().slice(0, 10),
     currentPeriodEnd: b.current_period_end ?? null,

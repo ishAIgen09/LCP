@@ -371,66 +371,72 @@ export function SettingsView({
         </div>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-[15px] tracking-tight">Loyalty scheme</CardTitle>
-          <CardDescription>Switch between global and private.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3 pt-0">
-          <Select
-            value={draftScheme}
-            onValueChange={(v: SchemeType) => setDraftScheme(v)}
-            disabled={saving}
-          >
-            <SelectTrigger className="h-10 w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="global">Global · Open Network</SelectItem>
-              <SelectItem value="private">Private Chain</SelectItem>
-            </SelectContent>
-          </Select>
+      <div className="space-y-4">
+        {/* Community Board pinned to the top of the right column —
+            owners told us this was the headline brand-positioning
+            decision they wanted in their face when reviewing settings,
+            so it sits above scheme/KYC. */}
+        <CommunityBoardCard
+          cafes={cafes}
+          onToggle={onToggleCafeSuspendedCoffee}
+        />
 
-          <div
-            className={cn(
-              "rounded-lg border p-3.5",
-              draftScheme === "global"
-                ? "border-emerald-200 bg-emerald-50/50"
-                : "border-violet-200 bg-violet-50/50",
-            )}
-          >
-            <div className="flex items-center gap-2 text-[12.5px] font-semibold tracking-tight text-foreground">
-              {draftScheme === "global" ? (
-                <>
-                  <Globe className="h-3.5 w-3.5" strokeWidth={2.25} /> Global · Open Network
-                </>
-              ) : (
-                <>
-                  <Lock className="h-3.5 w-3.5" strokeWidth={2.25} /> Private · Walled Garden
-                </>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-[15px] tracking-tight">Loyalty scheme</CardTitle>
+            <CardDescription>Switch between global and private.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3 pt-0">
+            <Select
+              value={draftScheme}
+              onValueChange={(v: SchemeType) => setDraftScheme(v)}
+              disabled={saving}
+            >
+              <SelectTrigger className="h-10 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="global">Global · Open Network</SelectItem>
+                <SelectItem value="private">Private Chain</SelectItem>
+              </SelectContent>
+            </Select>
+
+            <div
+              className={cn(
+                "rounded-lg border p-3.5",
+                draftScheme === "global"
+                  ? "border-emerald-200 bg-emerald-50/50"
+                  : "border-violet-200 bg-violet-50/50",
               )}
+            >
+              <div className="flex items-center gap-2 text-[12.5px] font-semibold tracking-tight text-foreground">
+                {draftScheme === "global" ? (
+                  <>
+                    <Globe className="h-3.5 w-3.5" strokeWidth={2.25} /> Global · Open Network
+                  </>
+                ) : (
+                  <>
+                    <Lock className="h-3.5 w-3.5" strokeWidth={2.25} /> Private · Walled Garden
+                  </>
+                )}
+              </div>
+              <p className="mt-1 text-[11.5px] leading-snug text-muted-foreground">
+                {draftScheme === "global"
+                  ? "Stamps pool across every Global cafe in the network. Higher discoverability, shared goodwill."
+                  : "Stamps only pool across your own cafes. Fuller control of your loyalty economy."}
+              </p>
             </div>
-            <p className="mt-1 text-[11.5px] leading-snug text-muted-foreground">
-              {draftScheme === "global"
-                ? "Stamps pool across every Global cafe in the network. Higher discoverability, shared goodwill."
-                : "Stamps only pool across your own cafes. Fuller control of your loyalty economy."}
-            </p>
-          </div>
 
-          {draftScheme !== brand.schemeType && (
-            <p className="text-[11px] text-muted-foreground">
-              Changing the scheme re-scopes every customer's stamp balance for this brand. Hit
-              <span className="font-medium text-foreground"> Save changes </span>
-              on the left to apply.
-            </p>
-          )}
-        </CardContent>
-      </Card>
-
-      <CommunityBoardCard
-        cafes={cafes}
-        onToggle={onToggleCafeSuspendedCoffee}
-      />
+            {draftScheme !== brand.schemeType && (
+              <p className="text-[11px] text-muted-foreground">
+                Changing the scheme re-scopes every customer's stamp balance for this brand. Hit
+                <span className="font-medium text-foreground"> Save changes </span>
+                on the left to apply.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   )
 }

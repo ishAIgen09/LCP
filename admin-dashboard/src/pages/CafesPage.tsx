@@ -8,6 +8,7 @@ import {
   ClipboardCopy,
   Coffee,
   Download,
+  ExternalLink,
   Filter,
   Gift,
   Loader2,
@@ -15,6 +16,7 @@ import {
   Pencil,
   Plus,
   Power,
+  Receipt,
   RefreshCw,
   Scale,
   Shield,
@@ -31,6 +33,7 @@ import {
   createBrand,
   createPlatformCafe,
   exportCafesCsv,
+  fetchBrandInvoices,
   fetchCafeSecurity,
   fetchCafeStats,
   fetchCafes,
@@ -39,6 +42,9 @@ import {
   updatePlatformCafe,
   type AdminCafe,
   type AdminCafeSecurity,
+  type BrandInvoice,
+  type BrandInvoiceLine,
+  type BrandInvoicesResponse,
   type BrandInviteResponse,
   type CafeJoinedWindow,
   type CafeListFilter,
@@ -53,6 +59,22 @@ const GBP = new Intl.NumberFormat("en-GB", {
   currency: "GBP",
   maximumFractionDigits: 2,
 });
+
+// Super-Admin dispute-resolution surface — they need to see at a glance
+// when a cafe came onto the platform without doing date math. We render
+// "Joined: DD MMM YYYY" so the column title carries no extra weight.
+const JOINED_DATE_FORMATTER = new Intl.DateTimeFormat("en-GB", {
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+});
+
+function formatJoinedDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return `Joined: ${JOINED_DATE_FORMATTER.format(d)}`;
+}
 
 type RangeOption = { id: CafeStatsRange; label: string };
 const RANGE_OPTIONS: RangeOption[] = [
@@ -322,6 +344,7 @@ function CafesTable({
               <th className="px-5 py-3 font-semibold">Cafe Name</th>
               <th className="px-5 py-3 font-semibold">Brand</th>
               <th className="px-5 py-3 font-semibold">Plan Type</th>
+              <th className="px-5 py-3 font-semibold">Joined</th>
               <th className="px-5 py-3 font-semibold">Status</th>
               <th className="px-5 py-3 text-right font-semibold">Actions</th>
             </tr>
@@ -409,6 +432,9 @@ function CafeRow({
       <td className="px-5 py-3.5 text-neutral-300">{cafe.brand_name}</td>
       <td className="px-5 py-3.5">
         <PlanTypePill scheme={cafe.scheme_type} />
+      </td>
+      <td className="px-5 py-3.5 text-[12.5px] text-neutral-300">
+        {formatJoinedDate(cafe.created_at)}
       </td>
       <td className="px-5 py-3.5">
         {/* Cafe-level billing_status — set from the Billing tab's Cancel
@@ -757,6 +783,7 @@ function CafeDetailPanel({
   const [range, setRange] = useState<CafeStatsRange>("30d");
   const [stats, setStats] = useState<CafeStats | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [invoicesOpen, setInvoicesOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -802,7 +829,27 @@ function CafeDetailPanel({
         <span className="text-neutral-700">·</span>
         <PlanTypePill scheme={cafe.scheme_type} />
         <StatusPill status={cafe.billing_status} />
+        <span className="text-neutral-700">·</span>
+        <span className="text-neutral-400">{formatJoinedDate(cafe.created_at)}</span>
       </div>
+
+      <div className="mt-5">
+        <button
+          type="button"
+          onClick={() => setInvoicesOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-md border border-emerald-600/40 bg-emerald-950/40 px-3 py-1.5 text-[11.5px] font-semibold text-emerald-200 transition-colors hover:border-emerald-500 hover:bg-emerald-900/40 hover:text-emerald-100"
+        >
+          <Receipt className="h-3.5 w-3.5" strokeWidth={2.2} />
+          Billing history (Stripe)
+        </button>
+      </div>
+
+      <BrandInvoicesModal
+        open={invoicesOpen}
+        brandId={cafe.brand_id}
+        brandName={cafe.brand_name}
+        onClose={() => setInvoicesOpen(false)}
+      />
 
       <div className="mt-8 flex items-center gap-2">
         <CalendarClock
@@ -825,6 +872,267 @@ function CafeDetailPanel({
     </div>
   );
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Super-Admin "Billing History" — Stripe invoices for the brand
+// behind this cafe. Each row is collapsed to header + amount + date,
+// expanding shows lines.data (proration-friendly so the operator can
+// walk a disputing brand owner through the exact charges).
+// ─────────────────────────────────────────────────────────────────
+
+function BrandInvoicesModal({
+  open,
+  brandId,
+  brandName,
+  onClose,
+}: {
+  open: boolean;
+  brandId: string;
+  brandName: string;
+  onClose: () => void;
+}) {
+  const [data, setData] = useState<BrandInvoicesResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setData(null);
+    setExpanded(new Set());
+    fetchBrandInvoices(brandId)
+      .then((res) => {
+        if (!cancelled) setData(res);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : "Failed to load invoices.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, brandId]);
+
+  if (!open) return null;
+
+  const toggle = (id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-6"
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-neutral-800 bg-[#161616] shadow-2xl"
+      >
+        <div className="flex items-start justify-between border-b border-neutral-800 px-6 py-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <Receipt className="h-4 w-4 text-emerald-400" strokeWidth={2.2} />
+              <h2 className="text-base font-semibold text-neutral-50">
+                Billing history
+              </h2>
+            </div>
+            <p className="mt-1 text-xs text-neutral-400">
+              Stripe invoices issued to{" "}
+              <span className="font-medium text-neutral-200">{brandName}</span>.
+              Click a row to see line items and proration breakdown.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="rounded-md p-1.5 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-100"
+          >
+            <X className="h-4 w-4" strokeWidth={2} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          {loading ? (
+            <div className="flex items-center gap-2 text-sm text-neutral-400">
+              <Loader2 className="h-4 w-4 animate-spin text-emerald-400" strokeWidth={2.2} />
+              Fetching from Stripe…
+            </div>
+          ) : error ? (
+            <div className="rounded-md border border-red-900/60 bg-red-950/40 p-4 text-sm text-red-200">
+              {error}
+            </div>
+          ) : !data || data.invoices.length === 0 ? (
+            <div className="rounded-md border border-dashed border-neutral-800 bg-neutral-900/40 p-6 text-center text-sm text-neutral-400">
+              {data?.stripe_customer_id
+                ? "No invoices on file at Stripe yet."
+                : "This brand hasn't completed Stripe Checkout, so no invoices exist."}
+            </div>
+          ) : (
+            <ul className="space-y-2">
+              {data.invoices.map((inv) => (
+                <BrandInvoiceRow
+                  key={inv.id}
+                  invoice={inv}
+                  expanded={expanded.has(inv.id)}
+                  onToggle={() => toggle(inv.id)}
+                />
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const INVOICE_DATE_FMT = new Intl.DateTimeFormat("en-GB", {
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+});
+
+function formatPence(pence: number, currency: string): string {
+  const upper = (currency || "gbp").toUpperCase();
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency: upper,
+    minimumFractionDigits: 2,
+  }).format(pence / 100);
+}
+
+function invoiceStatusTone(status: string): string {
+  switch (status) {
+    case "paid":
+      return "border-emerald-700/60 bg-emerald-900/30 text-emerald-200";
+    case "open":
+      return "border-amber-700/60 bg-amber-900/30 text-amber-200";
+    case "uncollectible":
+    case "void":
+      return "border-red-800/60 bg-red-950/40 text-red-200";
+    default:
+      return "border-neutral-700 bg-neutral-900/60 text-neutral-300";
+  }
+}
+
+function BrandInvoiceRow({
+  invoice,
+  expanded,
+  onToggle,
+}: {
+  invoice: BrandInvoice;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const created = new Date(invoice.created_at);
+  return (
+    <li className="rounded-md border border-neutral-800 bg-neutral-950/40">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left transition-colors hover:bg-neutral-900/60"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-neutral-500">
+            <span>{INVOICE_DATE_FMT.format(created)}</span>
+            <span className="text-neutral-700">·</span>
+            <span className="font-mono text-neutral-300">
+              {invoice.number ?? invoice.id}
+            </span>
+          </div>
+          <div className="mt-1 text-sm font-semibold text-neutral-100">
+            {formatPence(invoice.total_pence, invoice.currency)}
+          </div>
+        </div>
+        <span
+          className={
+            "rounded-full border px-2.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-wider " +
+            invoiceStatusTone(invoice.status)
+          }
+        >
+          {invoice.status}
+        </span>
+        <ChevronDown
+          className={
+            "h-4 w-4 shrink-0 text-neutral-400 transition-transform " +
+            (expanded ? "rotate-180" : "")
+          }
+          strokeWidth={2.2}
+        />
+      </button>
+      {expanded ? (
+        <div className="border-t border-neutral-800 px-4 py-3">
+          {invoice.lines.length === 0 ? (
+            <p className="text-xs text-neutral-500">
+              Stripe returned no line items for this invoice.
+            </p>
+          ) : (
+            <ul className="space-y-1.5">
+              {invoice.lines.map((line, i) => (
+                <BrandInvoiceLineRow
+                  key={i}
+                  line={line}
+                  currency={invoice.currency}
+                />
+              ))}
+            </ul>
+          )}
+          {invoice.hosted_invoice_url ? (
+            <a
+              href={invoice.hosted_invoice_url}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-3 inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-emerald-300 hover:text-emerald-200"
+            >
+              <ExternalLink className="h-3 w-3" strokeWidth={2.2} />
+              Open hosted invoice
+            </a>
+          ) : null}
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+function BrandInvoiceLineRow({
+  line,
+  currency,
+}: {
+  line: BrandInvoiceLine;
+  currency: string;
+}) {
+  return (
+    <li className="flex items-start justify-between gap-4 rounded border border-neutral-900 bg-neutral-900/40 px-3 py-2 text-xs">
+      <div className="min-w-0 flex-1">
+        <div className="text-neutral-200">
+          {line.description ?? "(unlabeled line)"}
+        </div>
+        {line.proration ? (
+          <div className="mt-0.5 inline-flex items-center rounded bg-amber-900/40 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-200">
+            Proration
+          </div>
+        ) : null}
+      </div>
+      <div className="shrink-0 text-right font-mono text-[11.5px] text-neutral-100">
+        {formatPence(line.amount_pence, line.currency || currency)}
+      </div>
+    </li>
+  );
+}
+
 
 function RangeDropdown({
   value,

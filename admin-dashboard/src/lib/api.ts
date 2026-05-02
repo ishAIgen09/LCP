@@ -131,6 +131,42 @@ export type AdminBilling = {
   rows: AdminBillingRow[];
 };
 
+// Mirror of app.schemas.BrandInvoice* — the super-admin Brand-detail
+// dispute-resolution accordion calls /api/admin/platform/brands/{id}/
+// invoices and renders this list.
+export type BrandInvoiceLine = {
+  description: string | null;
+  amount_pence: number;
+  currency: string;
+  proration: boolean;
+  quantity: number | null;
+  period_start: string | null;
+  period_end: string | null;
+};
+
+export type BrandInvoice = {
+  id: string;
+  number: string | null;
+  status: string;
+  amount_paid_pence: number;
+  amount_due_pence: number;
+  total_pence: number;
+  currency: string;
+  created_at: string;
+  period_start: string | null;
+  period_end: string | null;
+  hosted_invoice_url: string | null;
+  invoice_pdf: string | null;
+  lines: BrandInvoiceLine[];
+};
+
+export type BrandInvoicesResponse = {
+  brand_id: string;
+  brand_name: string;
+  stripe_customer_id: string | null;
+  invoices: BrandInvoice[];
+};
+
 async function getJSON<T>(path: string): Promise<T> {
   return sendJSON<T>("GET", path);
 }
@@ -254,6 +290,17 @@ export function createBrand(body: {
   owner_last_name?: string;
 }): Promise<AdminBrand> {
   return sendJSON<AdminBrand>("POST", "/api/admin/platform/brands", body);
+}
+
+// Super-Admin "Billing History" accordion in the Brand-detail surface.
+// Round-trips to Stripe via the backend — empty `invoices: []` means
+// the brand has never gone through Checkout (no stripe_customer_id).
+export function fetchBrandInvoices(
+  brandId: string,
+): Promise<BrandInvoicesResponse> {
+  return getJSON<BrandInvoicesResponse>(
+    `/api/admin/platform/brands/${encodeURIComponent(brandId)}/invoices`,
+  );
 }
 
 export function createPlatformCafe(body: {
