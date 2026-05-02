@@ -35,7 +35,6 @@ import {
   persistBrand,
   persistSession,
   updateAdminBrand,
-  updateCafe,
   updateCafeAmenities,
   type ApiMetrics,
 } from "@/lib/api"
@@ -158,6 +157,7 @@ function App() {
       phone?: string | null
       food_hygiene_rating: FoodHygieneRating
       amenityIds: string[]
+      suspended_coffee_enabled: boolean
     }): Promise<string> => {
       if (session?.role !== "admin") {
         throw new ApiError(401, "Not signed in as admin.")
@@ -176,6 +176,7 @@ function App() {
         address: values.address,
         phone: values.phone ?? null,
         food_hygiene_rating: values.food_hygiene_rating,
+        suspended_coffee_enabled: values.suspended_coffee_enabled,
       })
 
       // 2. Amenities live on a separate endpoint. Failure here must NOT be
@@ -363,31 +364,7 @@ function App() {
             {nav === "settings" && (
               <SettingsView
                 brand={brand}
-                cafes={cafes}
                 onSave={handleUpdateBrand}
-                onToggleCafeSuspendedCoffee={async (cafeId, enabled) => {
-                  if (!session) return
-                  // Optimistic flip: update local state first so the
-                  // switch animates immediately, then the API call.
-                  // On API error, refresh from server (which restores
-                  // truth) and the SettingsView surfaces the message.
-                  setCafes((prev) =>
-                    prev.map((c) =>
-                      c.id === cafeId ? { ...c, suspendedCoffeeEnabled: enabled } : c,
-                    ),
-                  )
-                  try {
-                    await updateCafe(session.token, cafeId, {
-                      suspended_coffee_enabled: enabled,
-                    })
-                  } catch (e) {
-                    // Roll back the optimistic flip and re-throw so
-                    // SettingsView's CommunityBoardCard can render the
-                    // error inline.
-                    await refreshAdminData(session.token)
-                    throw e
-                  }
-                }}
               />
             )}
             <BuildCreditFooter />

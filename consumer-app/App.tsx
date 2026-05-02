@@ -274,7 +274,15 @@ function AppShell() {
       <RewardModal
         visible={reward !== null}
         payload={reward}
+        token={session.token}
         onClose={() => setReward(null)}
+        onDonationSuccess={() => {
+          // Burning a banked reward → wallet poll picks up the new
+          // total on the next tick (3s). Reset the in-memory delta
+          // refs so the next poll doesn't celebrate a "stamp earned"
+          // for the negative-going delta.
+          setReward(null);
+        }}
       />
     </View>
   );
@@ -383,6 +391,7 @@ function HomeView({
         if (seeded && stampsUp && wallet.latest_earn) {
           onReward({
             stampsEarned: Math.max(1, totalBalance - prevTotal!),
+            cafeId: wallet.latest_earn.cafe_id,
             cafeName: wallet.latest_earn.cafe_name,
             cafeAddress: wallet.latest_earn.cafe_address,
             // Celebration shows the passport balance — the mobile's
@@ -390,6 +399,8 @@ function HomeView({
             // brand once latest_earn carries brand_id.
             newBalance: wallet.global_balance.current_stamps,
             freeDrinkUnlocked: bankedUp,
+            suspendedCoffeeEnabled:
+              wallet.latest_earn.suspended_coffee_enabled,
           });
         }
         prevTotalRef.current = totalBalance;

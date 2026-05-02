@@ -353,8 +353,10 @@ async def consumer_balance(
         ).first()
         latest_earn = LatestEarnPayload(
             transaction_id=earn.transaction_id,
+            cafe_id=cafe.id,
             cafe_name=cafe.name,
             cafe_address=cafe.address,
+            suspended_coffee_enabled=cafe.suspended_coffee_enabled,
             stamps_earned=earn.quantity,
             free_drink_unlocked=redeemed_hit is not None,
             timestamp=earn.timestamp,
@@ -456,8 +458,10 @@ async def consumer_wallet(
         ).first()
         latest_earn = LatestEarnPayload(
             transaction_id=earn.transaction_id,
+            cafe_id=cafe.id,
             cafe_name=cafe.name,
             cafe_address=cafe.address,
+            suspended_coffee_enabled=cafe.suspended_coffee_enabled,
             stamps_earned=earn.quantity,
             free_drink_unlocked=redeemed_hit is not None,
             timestamp=earn.timestamp,

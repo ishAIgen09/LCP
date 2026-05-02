@@ -55,6 +55,13 @@ class CafeCreate(BaseModel):
     pin: str | None = Field(default=None, min_length=4, max_length=8, pattern=r"^\d+$")
     phone: str | None = Field(default=None, max_length=40)
     food_hygiene_rating: FoodHygieneRating = "Awaiting Inspection"
+    # Per-cafe Pay It Forward / Suspended Coffee opt-in (PRD §4.5,
+    # migration 0020). Moved 2026-05-02 from the global Settings tab
+    # into the AddLocationDialog + EditLocationDialog so each cafe's
+    # opt-in is set when the location itself is configured. None ==
+    # "operator didn't tick the toggle" → falls through to the column
+    # default of FALSE.
+    suspended_coffee_enabled: bool | None = None
 
 
 class CafeResponse(BaseModel):
@@ -610,8 +617,15 @@ class ConsumerProfileUpdate(BaseModel):
 
 class LatestEarnPayload(BaseModel):
     transaction_id: UUID
+    # cafe_id added 2026-05-02 so the consumer-app's RewardModal can
+    # render a Pay-It-Forward "Donate to Community" CTA right next to
+    # Redeem when the earn happened at a cafe with the toggle on.
+    # Without it, the celebration would have to round-trip through
+    # /api/consumer/cafes to figure out donate eligibility.
+    cafe_id: UUID
     cafe_name: str
     cafe_address: str
+    suspended_coffee_enabled: bool = False
     stamps_earned: int
     free_drink_unlocked: bool
     timestamp: datetime

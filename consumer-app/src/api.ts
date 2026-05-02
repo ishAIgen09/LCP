@@ -152,8 +152,13 @@ export function updateConsumerProfile(
 
 export type LatestEarn = {
   transaction_id: string;
+  // cafe_id + suspended_coffee_enabled added 2026-05-02 so the
+  // RewardModal can render a Donate-to-Community CTA next to Redeem
+  // when the earn happened at a participating cafe (PRD §4.5).
+  cafe_id: string;
   cafe_name: string;
   cafe_address: string;
+  suspended_coffee_enabled: boolean;
   stamps_earned: number;
   free_drink_unlocked: boolean;
   timestamp: string;

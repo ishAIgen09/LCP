@@ -2275,6 +2275,11 @@ async def create_cafe(
         latitude=lat,
         longitude=lon,
     )
+    # Per-cafe Pay It Forward opt-in. Operator chose this when adding
+    # the location (relocated 2026-05-02 from the Settings tab).
+    # Falling through to the column default (FALSE) when omitted.
+    if payload.suspended_coffee_enabled is not None:
+        cafe.suspended_coffee_enabled = payload.suspended_coffee_enabled
     session.add(cafe)
     await session.commit()
     await session.refresh(cafe)

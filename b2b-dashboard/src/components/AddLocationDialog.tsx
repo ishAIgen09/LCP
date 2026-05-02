@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import {
   Check,
   CreditCard,
+  HandHeart,
   Info,
   Loader2,
   MapPin,
@@ -80,6 +81,11 @@ export function AddLocationDialog({
     phone?: string | null
     food_hygiene_rating: FoodHygieneRating
     amenityIds: string[]
+    // Per-cafe Pay It Forward / Suspended Coffee opt-in (PRD §4.5).
+    // Toggle was relocated 2026-05-02 from the Settings tab into the
+    // Add/Edit Location dialogs so the choice is made when the
+    // location is configured.
+    suspended_coffee_enabled: boolean
   }) => Promise<string>
   // Called when the user clicks "Need to use a different card?" inside the
   // per-cafe billing warning block. Parent (App.tsx) owns the API call and
@@ -104,6 +110,10 @@ export function AddLocationDialog({
   const [foodHygieneRating, setFoodHygieneRating] =
     useState<FoodHygieneRating>("Awaiting Inspection")
   const [amenities, setAmenities] = useState<Set<AmenityId>>(new Set())
+  // Pay It Forward toggle — defaults off so opting in is a deliberate
+  // choice the operator makes, not an accidental side-effect of adding
+  // a location. Persisted to cafes.suspended_coffee_enabled on submit.
+  const [suspendedCoffeeEnabled, setSuspendedCoffeeEnabled] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [openingPortal, setOpeningPortal] = useState(false)
@@ -217,6 +227,7 @@ export function AddLocationDialog({
     setPhone("")
     setFoodHygieneRating("Awaiting Inspection")
     setAmenities(new Set())
+    setSuspendedCoffeeEnabled(false)
     setError(null)
     setSubmitting(false)
   }
@@ -248,6 +259,7 @@ export function AddLocationDialog({
         phone: trimmedPhone ? trimmedPhone : null,
         food_hygiene_rating: foodHygieneRating,
         amenityIds: [...amenities],
+        suspended_coffee_enabled: suspendedCoffeeEnabled,
       })
       reset()
       onOpenChange(false)
@@ -472,6 +484,65 @@ export function AddLocationDialog({
               Inspection" until you've had your first audit.
             </p>
           </div>
+
+          {/* Pay It Forward / Community Board — per-cafe opt-in.
+              Toggle was relocated 2026-05-02 from the Settings tab so
+              it sits next to the rest of the per-location config. */}
+          <label
+            className={cn(
+              "flex cursor-pointer items-start justify-between gap-3 rounded-md border px-3 py-3 transition-colors",
+              suspendedCoffeeEnabled
+                ? "border-emerald-300 bg-emerald-50/60"
+                : "border-border bg-muted/20 hover:bg-muted/40",
+            )}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <HandHeart
+                  className={cn(
+                    "h-4 w-4 shrink-0",
+                    suspendedCoffeeEnabled
+                      ? "text-emerald-700"
+                      : "text-muted-foreground",
+                  )}
+                  strokeWidth={2.25}
+                />
+                <span className="text-[12.5px] font-medium tracking-tight text-foreground">
+                  Community Board (Pay It Forward)
+                </span>
+              </div>
+              <p className="mt-1 text-[11.5px] leading-snug text-muted-foreground">
+                Lets customers donate a banked free drink to this cafe's
+                pool — your barista can serve it to someone in need. You
+                can flip this off at any time without losing pool history.
+              </p>
+            </div>
+            <span className="relative inline-flex shrink-0 items-center pt-0.5">
+              <input
+                type="checkbox"
+                checked={suspendedCoffeeEnabled}
+                onChange={(e) => setSuspendedCoffeeEnabled(e.target.checked)}
+                disabled={submitting}
+                className="peer sr-only"
+              />
+              <span
+                className={cn(
+                  "inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors",
+                  suspendedCoffeeEnabled ? "bg-emerald-500" : "bg-neutral-300",
+                  submitting && "opacity-60",
+                )}
+              >
+                <span
+                  className={cn(
+                    "inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform",
+                    suspendedCoffeeEnabled
+                      ? "translate-x-[18px]"
+                      : "translate-x-0.5",
+                  )}
+                />
+              </span>
+            </span>
+          </label>
 
           {/* Amenities */}
           <div className="grid gap-2">

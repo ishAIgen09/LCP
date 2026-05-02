@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { Check, Loader2, ShieldCheck } from "lucide-react"
+import { Check, HandHeart, Loader2, ShieldCheck } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -65,6 +65,9 @@ export function EditLocationDialog({
   const [phone, setPhone] = useState("")
   const [rating, setRating] = useState<FoodHygieneRating>("Awaiting Inspection")
   const [amenities, setAmenities] = useState<Set<AmenityId>>(new Set())
+  // Pay It Forward / Community Board opt-in (PRD §4.5). Toggle was
+  // relocated 2026-05-02 from Settings → Edit Location dialog.
+  const [suspendedCoffeeEnabled, setSuspendedCoffeeEnabled] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -77,6 +80,7 @@ export function EditLocationDialog({
     setPhone(cafe.phone ?? "")
     setRating(cafe.foodHygieneRating)
     setAmenities(new Set(sanitizeAmenityIds(cafe.amenities)))
+    setSuspendedCoffeeEnabled(cafe.suspendedCoffeeEnabled)
     setError(null)
   }, [open, cafe])
 
@@ -115,6 +119,9 @@ export function EditLocationDialog({
       }
       if (rating !== cafe.foodHygieneRating) {
         patch.food_hygiene_rating = rating
+      }
+      if (suspendedCoffeeEnabled !== cafe.suspendedCoffeeEnabled) {
+        patch.suspended_coffee_enabled = suspendedCoffeeEnabled
       }
 
       if (Object.keys(patch).length > 0) {
@@ -212,6 +219,67 @@ export function EditLocationDialog({
               </SelectContent>
             </Select>
           </div>
+
+          {/* Pay It Forward / Community Board — per-cafe opt-in.
+              Relocated 2026-05-02 from the Settings tab. */}
+          <label
+            className={cn(
+              "flex cursor-pointer items-start justify-between gap-3 rounded-md border px-3 py-3 transition-colors",
+              suspendedCoffeeEnabled
+                ? "border-emerald-300 bg-emerald-50/60"
+                : "border-border bg-muted/20 hover:bg-muted/40",
+              saving && "pointer-events-none opacity-60",
+            )}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <HandHeart
+                  className={cn(
+                    "h-4 w-4 shrink-0",
+                    suspendedCoffeeEnabled
+                      ? "text-emerald-700"
+                      : "text-muted-foreground",
+                  )}
+                  strokeWidth={2.25}
+                />
+                <span className="text-[12.5px] font-medium tracking-tight text-foreground">
+                  Community Board (Pay It Forward)
+                </span>
+              </div>
+              <p className="mt-1 text-[11.5px] leading-snug text-muted-foreground">
+                Lets customers donate a banked free drink to this cafe's
+                pool. Toggle off any time without losing pool history.
+              </p>
+            </div>
+            <span className="relative inline-flex shrink-0 items-center pt-0.5">
+              <input
+                type="checkbox"
+                checked={suspendedCoffeeEnabled}
+                onChange={(e) =>
+                  setSuspendedCoffeeEnabled(e.target.checked)
+                }
+                disabled={saving}
+                className="peer sr-only"
+              />
+              <span
+                className={cn(
+                  "inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors",
+                  suspendedCoffeeEnabled
+                    ? "bg-emerald-500"
+                    : "bg-neutral-300",
+                )}
+              >
+                <span
+                  className={cn(
+                    "inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform",
+                    suspendedCoffeeEnabled
+                      ? "translate-x-[18px]"
+                      : "translate-x-0.5",
+                  )}
+                />
+              </span>
+            </span>
+          </label>
 
           <div className="grid gap-2">
             <div className="flex items-baseline justify-between">

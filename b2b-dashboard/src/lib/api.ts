@@ -646,6 +646,10 @@ export async function createCafe(
     pin?: string
     phone?: string | null
     food_hygiene_rating?: FoodHygieneRating
+    // Per-cafe Pay It Forward / Suspended Coffee opt-in (PRD §4.5).
+    // Sent on create as of 2026-05-02 — toggle moved from Settings tab
+    // into the Add Location dialog so the choice is made up front.
+    suspended_coffee_enabled?: boolean
   }
 ): Promise<ApiCafe> {
   return request<ApiCafe>(
