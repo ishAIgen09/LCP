@@ -237,42 +237,27 @@ export function AmenitiesFilterModal({
             })}
           </ScrollView>
 
+          {/* Footer CTAs — primary "Show Cafes" is mint-on-espresso and
+              fills the row width so it reads as the obvious next step.
+              Clear sits to the left as a secondary action and dims to
+              45% when there's nothing to clear. */}
           <View
-            className="flex-row items-center px-6"
+            className="px-6"
             style={{
-              gap: 10,
               borderTopWidth: 1,
               borderColor: COLOR.border,
               paddingTop: 14,
             }}
           >
             <Pressable
-              onPress={clearAll}
-              disabled={draft.size === 0}
-              accessibilityRole="button"
-              className="h-12 items-center justify-center rounded-2xl px-5"
-              style={({ pressed }) => ({
-                backgroundColor: COLOR.surface,
-                borderWidth: 1,
-                borderColor: COLOR.border,
-                opacity: draft.size === 0 ? 0.45 : pressed ? 0.85 : 1,
-              })}
-            >
-              <Text
-                style={{
-                  fontFamily: FONT.semibold,
-                  fontSize: 13,
-                  color: COLOR.text,
-                  letterSpacing: 0.3,
-                }}
-              >
-                Clear
-              </Text>
-            </Pressable>
-            <Pressable
               onPress={handleApply}
               accessibilityRole="button"
-              className="h-12 flex-1 items-center justify-center rounded-2xl"
+              accessibilityLabel={
+                draft.size > 0
+                  ? `Show cafés matching ${draft.size} filter${draft.size === 1 ? "" : "s"}`
+                  : "Show all cafés"
+              }
+              className="h-14 items-center justify-center rounded-2xl"
               style={({ pressed }) => ({
                 backgroundColor: COLOR.accent,
                 opacity: pressed ? 0.85 : 1,
@@ -281,14 +266,35 @@ export function AmenitiesFilterModal({
               <Text
                 style={{
                   fontFamily: FONT.semibold,
-                  fontSize: 14,
+                  fontSize: 15,
                   color: COLOR.accentInk,
                   letterSpacing: 0.3,
                 }}
               >
                 {draft.size > 0
-                  ? `Apply ${draft.size} filter${draft.size === 1 ? "" : "s"}`
-                  : "Apply"}
+                  ? `Show Cafés · ${draft.size} filter${draft.size === 1 ? "" : "s"}`
+                  : "Show Cafés"}
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={clearAll}
+              disabled={draft.size === 0}
+              accessibilityRole="button"
+              className="mt-2 h-11 items-center justify-center rounded-2xl"
+              style={({ pressed }) => ({
+                backgroundColor: "transparent",
+                opacity: draft.size === 0 ? 0.45 : pressed ? 0.7 : 1,
+              })}
+            >
+              <Text
+                style={{
+                  fontFamily: FONT.semibold,
+                  fontSize: 13,
+                  color: COLOR.textMuted,
+                  letterSpacing: 0.3,
+                }}
+              >
+                Clear all
               </Text>
             </Pressable>
           </View>

@@ -62,3 +62,52 @@ async def geocode_address(
     if not address or not address.strip():
         return None, None
     return await asyncio.to_thread(_resolve_sync, address.strip())
+
+
+# ─────────────────────────────────────────────────────────────────
+# Address autocomplete — top N matches for the b2b "Add location"
+# combobox (founder direction 2026-05-02). Same fail-soft posture as
+# geocode_address: any error path returns []. Caller is responsible
+# for de-bouncing input so we don't hammer Nominatim.
+# ─────────────────────────────────────────────────────────────────
+
+
+def _suggest_sync(query: str, limit: int) -> list[str]:
+    try:
+        from geopy.geocoders import Nominatim  # type: ignore[import-untyped]
+    except Exception:
+        logger.warning(
+            "geocode_suggest: geopy not installed — returning empty list"
+        )
+        return []
+    try:
+        geolocator = Nominatim(user_agent=_USER_AGENT, timeout=5)
+        results = geolocator.geocode(
+            query, exactly_one=False, limit=limit, addressdetails=False
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("geocode_suggest failed for %r: %s", query[:80], exc)
+        return []
+    if not results:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for r in results:
+        formatted = getattr(r, "address", None)
+        if not formatted or formatted in seen:
+            continue
+        seen.add(formatted)
+        out.append(formatted)
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def geocode_suggest(
+    query: str | None, limit: int = 5
+) -> list[str]:
+    """Return up to `limit` formatted address strings matching `query`."""
+    if not query or len(query.strip()) < 3:
+        return []
+    capped = max(1, min(limit, 10))
+    return await asyncio.to_thread(_suggest_sync, query.strip(), capped)

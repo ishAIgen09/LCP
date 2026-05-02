@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   Check,
   CreditCard,
@@ -26,7 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { humanizeError } from "@/lib/api"
+import { geocodeAutocomplete, humanizeError } from "@/lib/api"
 import { CancellationFeedbackModal } from "@/components/CancellationFeedbackModal"
 import { AMENITIES, type AmenityId } from "@/lib/amenities"
 import { cn } from "@/lib/utils"
@@ -55,21 +55,10 @@ const FSA_LABEL: Record<Exclude<FoodHygieneRating, "Awaiting Inspection">, strin
   "1": "Major Improvement Necessary",
 }
 
-// Mock address corpus — a Places autocomplete stand-in until we wire a real
-// geocoding API (Google Places / Mapbox / Ordnance Survey). Filter is a plain
-// case-insensitive substring match — good enough to demonstrate the UX.
-const MOCK_ADDRESSES: string[] = [
-  "14 Rivington St, London EC2A 3DU",
-  "22 Redchurch St, London E2 7DP",
-  "45 Caledonian Rd, London N1 9DX",
-  "88 Rye Lane, London SE15 5BS",
-  "5 Brighton Lanes, Brighton BN1 1HB",
-  "110 Hackney Rd, London E2 7QL",
-  "3 Broadway Market, London E8 4QJ",
-  "27 Bold St, Liverpool L1 4DN",
-  "12 Thomas St, Manchester M4 1FU",
-  "9 Grassmarket, Edinburgh EH1 2HY",
-]
+// Address suggestions are now backed by /api/b2b/geocode/autocomplete
+// (geopy → Nominatim). The mock corpus that previously lived here was
+// deleted 2026-05-02; debounced API queries replace it.
+const AUTOCOMPLETE_DEBOUNCE_MS = 800
 
 export function AddLocationDialog({
   open,
@@ -147,11 +136,58 @@ export function AddLocationDialog({
 
   const searchWrapRef = useRef<HTMLDivElement | null>(null)
 
-  const suggestions = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return []
-    return MOCK_ADDRESSES.filter((a) => a.toLowerCase().includes(q)).slice(0, 5)
-  }, [query])
+  const [suggestions, setSuggestions] = useState<string[]>([])
+  const [suggestLoading, setSuggestLoading] = useState(false)
+  const [suggestError, setSuggestError] = useState<string | null>(null)
+
+  // Debounced autocomplete: 800ms after the user stops typing, hit
+  // /api/b2b/geocode/autocomplete. We cancel the in-flight request on
+  // every keystroke (AbortController) so the dropdown only ever shows
+  // results for the most recent query. Picking a suggestion clears
+  // `picked` → flagged below so we don't immediately re-fetch the
+  // exact string we just locked in.
+  useEffect(() => {
+    const trimmed = query.trim()
+    if (mode !== "search") {
+      setSuggestions([])
+      setSuggestLoading(false)
+      setSuggestError(null)
+      return
+    }
+    // If `picked === query`, the user just clicked a suggestion. Don't
+    // re-fetch — we'd just paint the same row back.
+    if (picked && picked === query) {
+      return
+    }
+    if (trimmed.length < 3) {
+      setSuggestions([])
+      setSuggestLoading(false)
+      setSuggestError(null)
+      return
+    }
+    const controller = new AbortController()
+    const timer = window.setTimeout(async () => {
+      setSuggestLoading(true)
+      setSuggestError(null)
+      try {
+        const list = await geocodeAutocomplete(token, trimmed, controller.signal)
+        if (controller.signal.aborted) return
+        setSuggestions(list)
+      } catch (e) {
+        if (controller.signal.aborted) return
+        // Surface as a soft inline note — autocomplete failure shouldn't
+        // block manual entry.
+        setSuggestError(humanizeError(e))
+        setSuggestions([])
+      } finally {
+        if (!controller.signal.aborted) setSuggestLoading(false)
+      }
+    }, AUTOCOMPLETE_DEBOUNCE_MS)
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [query, mode, picked, token])
 
   // Final address string sent to the backend. Either the picked suggestion,
   // the free-typed query, or the joined manual parts — whichever mode is
@@ -287,10 +323,16 @@ export function AddLocationDialog({
                   disabled={submitting}
                 />
 
-                {focused && suggestions.length > 0 && (
+                {focused && suggestLoading && (
+                  <div className="absolute left-0 right-0 top-[calc(100%+4px)] z-10 flex items-center gap-2 rounded-xl border border-border bg-popover px-3 py-2.5 text-[12px] text-muted-foreground shadow-lg">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.25} />
+                    Searching addresses…
+                  </div>
+                )}
+                {focused && !suggestLoading && suggestions.length > 0 && (
                   <ul
                     role="listbox"
-                    className="absolute left-0 right-0 top-[calc(100%+4px)] z-10 overflow-hidden rounded-xl border border-border bg-popover shadow-lg ring-1 ring-foreground/5"
+                    className="absolute left-0 right-0 top-[calc(100%+4px)] z-10 max-h-72 overflow-y-auto overflow-x-hidden rounded-xl border border-border bg-popover shadow-lg ring-1 ring-foreground/5"
                   >
                     {suggestions.map((addr) => (
                       <li key={addr}>
@@ -312,9 +354,12 @@ export function AddLocationDialog({
                     ))}
                   </ul>
                 )}
-                {focused && query.trim().length > 0 && suggestions.length === 0 && (
+                {focused &&
+                  !suggestLoading &&
+                  query.trim().length >= 3 &&
+                  suggestions.length === 0 && (
                   <div className="absolute left-0 right-0 top-[calc(100%+4px)] z-10 rounded-xl border border-border bg-popover px-3 py-2.5 text-[12px] text-muted-foreground shadow-lg">
-                    No matches. Keep typing, or
+                    {suggestError ?? "No matches. Keep typing, or"}
                     <button
                       type="button"
                       onMouseDown={(e) => e.preventDefault()}

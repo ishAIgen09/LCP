@@ -38,7 +38,7 @@ from app.b2b_routes import router as b2b_router
 import stripe
 
 from app.billing import router as billing_router, sync_subscription_quantity
-from app.geocoding import geocode_address
+from app.geocoding import geocode_address, geocode_suggest
 from app.consumer_auth import (
     consumer_router as consumer_api_router,
     router as consumer_auth_router,
@@ -2173,6 +2173,32 @@ async def export_b2b_report_csv(
     slug = re.sub(r"[^A-Za-z0-9]+", "-", brand.name).strip("-").lower() or "brand"
     stamp = now.strftime("%Y-%m-%d_%H%M")
     return _streaming_csv_response(rows, f"lcp-report-{slug}-{range}-{stamp}.csv")
+
+
+# ─────────────────────────────────────────────────────────────────
+# Address autocomplete — feeds the b2b-dashboard "Add location"
+# combobox (founder direction 2026-05-02). Thin wrapper around
+# geopy/Nominatim that returns the top N formatted address strings
+# for a free-text query. Authenticated as a brand admin so we don't
+# expose Nominatim's quota to anonymous traffic; the lookup itself
+# touches no DB rows. Caller (b2b-dashboard) is expected to debounce
+# input at 800 ms before hitting this.
+# ─────────────────────────────────────────────────────────────────
+class GeocodeAutocompleteResponse(BaseModel):
+    suggestions: list[str]
+
+
+@app.get("/api/b2b/geocode/autocomplete", response_model=GeocodeAutocompleteResponse)
+async def b2b_geocode_autocomplete(
+    q: str = Query(..., min_length=3, max_length=200),
+    admin: AdminSession = Depends(get_admin_session),
+) -> GeocodeAutocompleteResponse:
+    # `admin` is required so the route can't be scraped anonymously,
+    # but we don't filter results by brand — operators routinely add
+    # cafes anywhere in the country.
+    _ = admin
+    results = await geocode_suggest(q, limit=5)
+    return GeocodeAutocompleteResponse(suggestions=results)
 
 
 @app.get("/api/admin/cafes", response_model=list[CafeResponse])

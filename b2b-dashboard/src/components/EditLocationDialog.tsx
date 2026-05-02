@@ -27,6 +27,7 @@ import {
   updateCafe,
   updateCafeAmenities,
 } from "@/lib/api"
+import { AddressAutocompleteInput } from "@/components/AddressAutocompleteInput"
 import type { Cafe, FoodHygieneRating } from "@/lib/mock"
 import { cn } from "@/lib/utils"
 
@@ -152,12 +153,16 @@ export function EditLocationDialog({
             <label className="text-[12px] font-medium text-foreground">
               Address
             </label>
-            <Input
+            <AddressAutocompleteInput
+              token={token}
               value={address}
-              onChange={(e) => setAddress(e.target.value)}
-              className="h-10"
+              onChange={setAddress}
               disabled={saving}
+              placeholder="Search a new address…"
             />
+            <p className="text-[11px] text-muted-foreground">
+              Pick a suggestion to lock in a clean, geocoded address.
+            </p>
           </div>
 
           <div className="grid gap-1.5">

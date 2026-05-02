@@ -70,7 +70,8 @@ async function request<T>(
   method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
   path: string,
   body?: unknown,
-  headers?: Record<string, string>
+  headers?: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<T> {
   // NOTE: we deliberately do NOT strip trailing slashes here any more. An
   // earlier belt-and-braces `.replace(/\/+$/, "")` silently rewrote
@@ -96,6 +97,7 @@ async function request<T>(
         ...(headers ?? {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal,
     })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
@@ -345,6 +347,27 @@ export function cafeFromApi(apiCafe: ApiCafe, brandActive: boolean): Cafe {
 
 export async function listCafes(token: string): Promise<ApiCafe[]> {
   return request<ApiCafe[]>("GET", "/api/admin/cafes", undefined, authHeader(token))
+}
+
+// Address autocomplete — feeds the AddLocationDialog combobox. Backend
+// thinly wraps Nominatim (geopy) and returns the top 5 formatted
+// matches. Caller debounces input at 800ms before invoking; the
+// network round-trip itself is unbudgeted.
+export async function geocodeAutocomplete(
+  token: string,
+  query: string,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  if (query.trim().length < 3) return []
+  const path = `/api/b2b/geocode/autocomplete?q=${encodeURIComponent(query.trim())}`
+  const raw = await request<{ suggestions: string[] }>(
+    "GET",
+    path,
+    undefined,
+    authHeader(token),
+    signal,
+  )
+  return raw.suggestions ?? []
 }
 
 export async function getAdminMe(

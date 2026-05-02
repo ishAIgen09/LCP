@@ -4,6 +4,7 @@ import {
   Car,
   Coffee,
   Croissant,
+  HandHeart,
   Laptop,
   Leaf,
   Milk,
@@ -16,6 +17,15 @@ import {
 // `id` strings, same labels, same lucide icons so the two surfaces feel
 // like the same product. Keep in sync when adding new amenities.
 
+// NOTE on `pay_it_forward` (id = `PAY_IT_FORWARD_FILTER_ID`): this is a
+// SYNTHETIC filter, not a stored amenity. It must NOT appear in any
+// cafe.amenities array on the wire — the consumer Discover view derives
+// it from `cafe.suspended_coffee_enabled`. Keeping the entry in this
+// catalogue means the AmenitiesFilterModal renders it as a regular
+// checkbox row alongside the genuine amenities, which is exactly the UX
+// the founder asked for.
+export const PAY_IT_FORWARD_FILTER_ID = "pay_it_forward";
+
 export type AmenityDef = {
   id: string;
   label: string;
@@ -23,6 +33,7 @@ export type AmenityDef = {
 };
 
 export const AMENITIES: readonly AmenityDef[] = [
+  { id: PAY_IT_FORWARD_FILTER_ID, label: "Pay It Forward",         Icon: HandHeart },
   { id: "specialty_beans",       label: "Specialty Beans",         Icon: Coffee },
   { id: "alternative_milks",     label: "Alternative Milks",       Icon: Milk },
   { id: "dog_friendly",          label: "Dog Friendly",            Icon: Bone },

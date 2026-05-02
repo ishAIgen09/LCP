@@ -42,7 +42,11 @@ import { RewardModal, type RewardPayload } from "./src/RewardModal";
 import { AmenitiesFilterModal } from "./src/AmenitiesFilterModal";
 import { CafeDetailsModal } from "./src/CafeDetailsModal";
 import { EditProfileModal } from "./src/EditProfileModal";
-import { lookupAmenity, type AmenityDef } from "./src/amenities";
+import {
+  PAY_IT_FORWARD_FILTER_ID,
+  lookupAmenity,
+  type AmenityDef,
+} from "./src/amenities";
 import {
   fetchDiscoverCafes,
   fetchWallet,
@@ -984,12 +988,15 @@ function DiscoverView({ session }: { session: Session }) {
 
   // Smart filter: only surface amenities that at least one local cafe
   // actually supports — no point offering "Halal" if no nearby cafe ticks
-  // it. Keeps the pill row honest.
+  // it. The synthetic Pay It Forward filter is derived from the cafe's
+  // suspended_coffee_enabled flag (not a real amenity row), so we add
+  // its id when any local cafe has it on.
   const availableAmenityIds = useMemo(() => {
     if (!localCafes) return new Set<string>();
     const set = new Set<string>();
     for (const c of localCafes) {
       for (const id of c.amenities) set.add(id);
+      if (c.suspended_coffee_enabled) set.add(PAY_IT_FORWARD_FILTER_ID);
     }
     return set;
   }, [localCafes]);
@@ -997,9 +1004,16 @@ function DiscoverView({ session }: { session: Session }) {
   const visibleCafes = useMemo(() => {
     if (!localCafes) return localCafes;
     if (activeAmenities.size === 0) return localCafes;
-    // AND-match: a cafe must satisfy *every* selected amenity.
+    // AND-match: a cafe must satisfy *every* selected amenity. The
+    // Pay It Forward filter is virtual — we resolve it against the
+    // cafe's suspended_coffee_enabled flag rather than the amenities
+    // array, since it isn't stored as a regular amenity server-side.
     return localCafes.filter((c) => {
       for (const id of activeAmenities) {
+        if (id === PAY_IT_FORWARD_FILTER_ID) {
+          if (!c.suspended_coffee_enabled) return false;
+          continue;
+        }
         if (!c.amenities.includes(id)) return false;
       }
       return true;
