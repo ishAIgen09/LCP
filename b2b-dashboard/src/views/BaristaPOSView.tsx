@@ -13,6 +13,7 @@ import {
   CheckCircle2,
   Coffee,
   Gift,
+  HandHeart,
   Keyboard,
   Loader2,
   LogOut,
@@ -40,8 +41,12 @@ import { cn } from "@/lib/utils"
 import {
   ApiError,
   b2bScan,
+  donateSuspendedCoffeeAtTill,
   getCustomerStatus,
+  getSuspendedCoffeePool,
   redeem,
+  serveSuspendedCoffee,
+  type CommunityPoolStatus,
   type CustomerStatusResponse,
 } from "@/lib/api"
 import type { Session } from "@/lib/mock"
@@ -96,6 +101,15 @@ export function BaristaPOSView({
   const [submitting, setSubmitting] = useState(false)
   const [toast, setToast] = useState<Toast | null>(null)
 
+  // Community Board / Suspended Coffee state (PRD §4.5).
+  // - `pool` null until the first /pool fetch resolves (widget hides).
+  // - `pool.enabled === false` → cafe owner hasn't toggled the feature on
+  //   in Settings; widget stays hidden too.
+  // - `pifBusy` gates both the +1 Paid at Till and the -1 Serve buttons
+  //   so a quick double-tap can't fire two requests in a row.
+  const [pool, setPool] = useState<CommunityPoolStatus | null>(null)
+  const [pifBusy, setPifBusy] = useState(false)
+
   const scannerRef = useRef<Html5Qrcode | null>(null)
   const scannerPausedRef = useRef(false)
   const lockoutUntilRef = useRef(0)
@@ -108,6 +122,25 @@ export function BaristaPOSView({
   useEffect(() => {
     scannedRef.current = scannedCode
   }, [scannedCode])
+
+  // Pool initial fetch — pure side effect, no toast dependency.
+  // Subsequent mutations are wired below `showToast` so the toast
+  // helper is in scope for the closure.
+  useEffect(() => {
+    let cancelled = false
+    getSuspendedCoffeePool(session.venueApiKey)
+      .then((p) => {
+        if (!cancelled) setPool(p)
+      })
+      .catch(() => {
+        // Don't surface — pool widget is non-critical; the rest of the
+        // POS keeps working. Will retry next mount.
+        if (!cancelled) setPool(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [session.venueApiKey])
 
   // ─── Toast ────────────────────────────────────────────────────────────
   const showToast = useCallback(
@@ -123,6 +156,58 @@ export function BaristaPOSView({
     },
     [],
   )
+
+  // ─── Community Board (Pay It Forward) mutate handlers ───────────────
+  // Defined here (after showToast) so the closures capture it. The
+  // initial pool fetch lives further up — independent of toast.
+  const handleDonateTill = useCallback(async () => {
+    if (pifBusy || !pool) return
+    setPifBusy(true)
+    try {
+      const result = await donateSuspendedCoffeeAtTill(session.venueApiKey, 1)
+      setPool((prev) =>
+        prev ? { ...prev, pool_balance: result.new_pool_balance } : prev,
+      )
+      showToast(
+        `+1 added to the Community Board (now ${result.new_pool_balance})`,
+        "success",
+      )
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.detail : "Couldn't record donation."
+      showToast(msg, "error", 4500)
+    } finally {
+      setPifBusy(false)
+    }
+  }, [pifBusy, pool, session.venueApiKey, showToast])
+
+  const handleServeFromPool = useCallback(async () => {
+    if (pifBusy || !pool || pool.pool_balance < 1) return
+    setPifBusy(true)
+    try {
+      const result = await serveSuspendedCoffee(session.venueApiKey)
+      setPool((prev) =>
+        prev ? { ...prev, pool_balance: result.new_pool_balance } : prev,
+      )
+      showToast(
+        `1 suspended coffee served · ${result.new_pool_balance} remaining`,
+        "success",
+      )
+    } catch (e) {
+      // 409 path — server returns "Community pool is empty." in detail.
+      // Surface as an error toast rather than a fatal banner; the rest
+      // of the POS is unaffected.
+      if (e instanceof ApiError && e.status === 409) {
+        showToast(e.detail || "Community pool is empty.", "error", 4500)
+        // Sync local state with server reality (pool is 0).
+        setPool((prev) => (prev ? { ...prev, pool_balance: 0 } : prev))
+      } else {
+        const msg = e instanceof ApiError ? e.detail : "Couldn't serve from pool."
+        showToast(msg, "error", 4500)
+      }
+    } finally {
+      setPifBusy(false)
+    }
+  }, [pifBusy, pool, session.venueApiKey, showToast])
 
   // ─── API error → toast mapping ───────────────────────────────────────
   const handleApiError = useCallback(
@@ -473,6 +558,19 @@ export function BaristaPOSView({
               {statePill.label}
             </span>
           </div>
+
+          {/* Community Board / Pay It Forward (PRD §4.5) — only renders
+              when the cafe owner has toggled the feature on in Settings.
+              Always visible above the scan tabs so the barista can serve
+              or record a till donation without changing modes. */}
+          {pool?.enabled ? (
+            <CommunityBoardWidget
+              balance={pool.pool_balance}
+              busy={pifBusy}
+              onDonateTill={handleDonateTill}
+              onServe={handleServeFromPool}
+            />
+          ) : null}
 
           <div role="tablist" className="grid grid-cols-2 gap-1 rounded-xl bg-muted/40 p-1">
             <ModeTab
@@ -940,6 +1038,76 @@ function Stepper({
           {emptyHint}
         </p>
       )}
+    </div>
+  )
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// Community Board widget — Pay It Forward / Suspended Coffee
+// PRD §4.5. Renders only when the cafe is enrolled (parent gates on
+// `pool.enabled`). Two quick-action buttons that mutate the pool by
+// ±1; the parent owns the API calls + balance state so the widget
+// stays display-only.
+// ─────────────────────────────────────────────────────────────────────
+
+function CommunityBoardWidget({
+  balance,
+  busy,
+  onDonateTill,
+  onServe,
+}: {
+  balance: number
+  busy: boolean
+  onDonateTill: () => void
+  onServe: () => void
+}) {
+  const empty = balance < 1
+  return (
+    <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
+      <div className="flex items-center gap-3">
+        <div className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-white text-emerald-600 ring-1 ring-emerald-200">
+          <HandHeart className="h-5 w-5" strokeWidth={2.25} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-[12px] font-semibold uppercase tracking-wider text-emerald-700">
+            Community Board
+          </div>
+          <div className="text-[15px] font-semibold tracking-tight text-foreground">
+            {balance} {balance === 1 ? "coffee" : "coffees"} on the board
+          </div>
+        </div>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-9 gap-1.5 border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-50"
+          onClick={onDonateTill}
+          disabled={busy}
+        >
+          {busy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.25} />
+          ) : (
+            <Plus className="h-3.5 w-3.5" strokeWidth={2.25} />
+          )}
+          Paid at Till
+        </Button>
+        <Button
+          size="sm"
+          className="h-9 gap-1.5 bg-emerald-600 text-white hover:bg-emerald-600/90 disabled:bg-emerald-200 disabled:text-emerald-700"
+          onClick={onServe}
+          disabled={busy || empty}
+          title={empty ? "Pool is empty" : "Serve one from the community pool"}
+        >
+          {busy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.25} />
+          ) : (
+            <Minus className="h-3.5 w-3.5" strokeWidth={2.25} />
+          )}
+          Serve from Pool
+        </Button>
+      </div>
     </div>
   )
 }

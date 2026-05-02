@@ -27,6 +27,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { humanizeError } from "@/lib/api"
+import { CancellationFeedbackModal } from "@/components/CancellationFeedbackModal"
 import { AMENITIES, type AmenityId } from "@/lib/amenities"
 import { cn } from "@/lib/utils"
 import type { Brand, FoodHygieneRating } from "@/lib/mock"
@@ -74,12 +75,16 @@ export function AddLocationDialog({
   open,
   onOpenChange,
   brand,
+  token,
   onSubmit,
   onOpenPortal,
 }: {
   open: boolean
   onOpenChange: (v: boolean) => void
   brand: Brand
+  // Brand admin JWT — needed for the cancellation-feedback intercept
+  // POST that gates the Stripe-portal redirect (PRD §4.2).
+  token: string
   onSubmit: (values: {
     name: string
     address: string
@@ -89,7 +94,9 @@ export function AddLocationDialog({
   }) => Promise<string>
   // Called when the user clicks "Need to use a different card?" inside the
   // per-cafe billing warning block. Parent (App.tsx) owns the API call and
-  // the window.location redirect so the dialog stays API-free.
+  // the window.location redirect so the dialog stays API-free. Now gated
+  // behind the cancellation-feedback modal — only fired AFTER the survey
+  // is successfully POSTed.
   onOpenPortal: () => Promise<void>
 }) {
   const [name, setName] = useState("")
@@ -111,11 +118,15 @@ export function AddLocationDialog({
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [openingPortal, setOpeningPortal] = useState(false)
+  // Cancel-intercept (PRD §4.2): the "open portal" link doesn't redirect
+  // directly anymore — it pops the CancellationFeedbackModal first. The
+  // modal POSTs the survey, then calls back into `runOpenPortal` which
+  // performs the Stripe call + redirect. Closing the modal without
+  // submitting cancels the flow without firing any redirect.
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
 
-  const openPortal = async () => {
-    if (submitting || openingPortal) return
+  const runOpenPortal = async () => {
     setError(null)
-    setOpeningPortal(true)
     try {
       await onOpenPortal()
       // onOpenPortal triggers a full-page redirect. If we return, it failed —
@@ -125,6 +136,13 @@ export function AddLocationDialog({
     } finally {
       setOpeningPortal(false)
     }
+  }
+
+  const openPortal = () => {
+    if (submitting || openingPortal) return
+    setError(null)
+    setOpeningPortal(true)
+    setFeedbackOpen(true)
   }
 
   const searchWrapRef = useRef<HTMLDivElement | null>(null)
@@ -552,6 +570,17 @@ export function AddLocationDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+      <CancellationFeedbackModal
+        open={feedbackOpen}
+        onOpenChange={(v) => {
+          setFeedbackOpen(v)
+          // Modal dismissed without submitting → user cancelled the
+          // portal-open flow entirely. Re-enable the trigger button.
+          if (!v) setOpeningPortal(false)
+        }}
+        token={token}
+        onSuccess={runOpenPortal}
+      />
     </Dialog>
   )
 }

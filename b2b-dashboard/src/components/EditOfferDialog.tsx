@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { Calendar, Loader2, MapPin, Sparkles, Tag } from "lucide-react"
+import { Calendar, Loader2, MapPin, MessageSquareText, Sparkles, Tag } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -24,6 +24,8 @@ import {
 import { humanizeError, updateOffer } from "@/lib/api"
 import type { Cafe } from "@/lib/mock"
 import {
+  CUSTOM_OFFER_INSPIRATION,
+  CUSTOM_OFFER_TEXT_MAX,
   OFFER_TARGETS,
   OFFER_TYPES,
   localDateTimeToISO,
@@ -52,6 +54,7 @@ export function EditOfferDialog({
   const [type, setType] = useState<OfferType>("percent")
   const [target, setTarget] = useState<OfferTarget>("any_drink")
   const [amount, setAmount] = useState<string>("")
+  const [customText, setCustomText] = useState<string>("")
   const [startDate, setStartDate] = useState<string>("")
   const [startTime, setStartTime] = useState<string>("")
   const [endDate, setEndDate] = useState<string>("")
@@ -61,11 +64,19 @@ export function EditOfferDialog({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Rotating inspiration helper text shown beneath the custom-offer
+  // textarea. Cycles every 4s while the user hasn't typed anything;
+  // pauses once they start typing so the bouncing copy doesn't fight
+  // their attention.
+  const [inspirationIdx, setInspirationIdx] = useState(0)
+  const [inspirationVisible, setInspirationVisible] = useState(true)
+
   useEffect(() => {
     if (!open || !offer) return
     setType(offer.type)
     setTarget(offer.target)
     setAmount(offer.amount == null ? "" : String(offer.amount))
+    setCustomText(offer.customText ?? "")
     setStartDate(offer.startDate)
     setStartTime(offer.startTime)
     setEndDate(offer.endDate)
@@ -73,6 +84,18 @@ export function EditOfferDialog({
     setTargetCafeIds(offer.targetCafeIds)
     setError(null)
   }, [open, offer])
+
+  useEffect(() => {
+    if (type !== "custom" || customText.trim().length > 0) return
+    const interval = window.setInterval(() => {
+      setInspirationVisible(false)
+      window.setTimeout(() => {
+        setInspirationIdx((i) => (i + 1) % CUSTOM_OFFER_INSPIRATION.length)
+        setInspirationVisible(true)
+      }, 200)
+    }, 4000)
+    return () => window.clearInterval(interval)
+  }, [type, customText])
 
   const amountKind: AmountKind = useMemo(
     () => OFFER_TYPES.find((t) => t.id === type)!.amountKind,
@@ -83,7 +106,20 @@ export function EditOfferDialog({
     if (!offer) return
     setError(null)
 
-    if (amountKind !== "none") {
+    // Custom offers carry the entire content in custom_text; target
+    // and amount are persisted but ignored at render. Validate the
+    // copy field instead of amount.
+    if (type === "custom") {
+      const trimmed = customText.trim()
+      if (trimmed.length === 0) {
+        setError("Write the offer copy your customers will see.")
+        return
+      }
+      if (trimmed.length > CUSTOM_OFFER_TEXT_MAX) {
+        setError(`Offer copy is limited to ${CUSTOM_OFFER_TEXT_MAX} characters.`)
+        return
+      }
+    } else if (amountKind !== "none") {
       const parsed = Number(amount)
       if (!Number.isFinite(parsed) || parsed <= 0) {
         setError(
@@ -123,10 +159,11 @@ export function EditOfferDialog({
       const updated = await updateOffer(token, offer.id, {
         offer_type: type,
         target,
-        amount: amountKind === "none" ? null : Number(amount),
+        amount: type === "custom" || amountKind === "none" ? null : Number(amount),
         starts_at: startsIso,
         ends_at: endsIso,
         target_cafe_ids: targetCafeIds,
+        custom_text: type === "custom" ? customText.trim() : null,
       })
       onSaved(offerFromApi(updated))
       onOpenChange(false)
@@ -168,7 +205,7 @@ export function EditOfferDialog({
               </SelectContent>
             </Select>
 
-            {amountKind !== "none" && (
+            {type !== "custom" && amountKind !== "none" && (
               <div className="mt-3 grid gap-1.5">
                 <label className="text-[12px] font-medium text-foreground">
                   {amountKind === "percent"
@@ -196,23 +233,46 @@ export function EditOfferDialog({
             )}
           </Field>
 
-          <Field icon={Sparkles} label="Applies to">
-            <Select
-              value={target}
-              onValueChange={(v) => setTarget(v as OfferTarget)}
-            >
-              <SelectTrigger className="h-10 w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {OFFER_TARGETS.map((t) => (
-                  <SelectItem key={t.id} value={t.id}>
-                    {t.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
+          {type === "custom" ? (
+            <Field icon={MessageSquareText} label="Offer copy">
+              <textarea
+                value={customText}
+                onChange={(e) => setCustomText(e.target.value.slice(0, CUSTOM_OFFER_TEXT_MAX))}
+                rows={3}
+                disabled={saving}
+                placeholder="Write the exact copy your customers will see in the app."
+                className="block w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-[13.5px] leading-relaxed outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+              />
+              <div className="mt-1 flex items-center justify-between text-[11px] text-muted-foreground">
+                <span
+                  className={`transition-opacity duration-200 ${inspirationVisible ? "opacity-80" : "opacity-30"}`}
+                >
+                  Inspiration: {CUSTOM_OFFER_INSPIRATION[inspirationIdx]}
+                </span>
+                <span>
+                  {customText.length}/{CUSTOM_OFFER_TEXT_MAX}
+                </span>
+              </div>
+            </Field>
+          ) : (
+            <Field icon={Sparkles} label="Applies to">
+              <Select
+                value={target}
+                onValueChange={(v) => setTarget(v as OfferTarget)}
+              >
+                <SelectTrigger className="h-10 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {OFFER_TARGETS.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      {t.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          )}
 
           <Field icon={Calendar} label="When it runs">
             <div className="grid gap-3 sm:grid-cols-2">

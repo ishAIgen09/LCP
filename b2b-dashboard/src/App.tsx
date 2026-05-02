@@ -35,6 +35,7 @@ import {
   persistBrand,
   persistSession,
   updateAdminBrand,
+  updateCafe,
   updateCafeAmenities,
   type ApiMetrics,
 } from "@/lib/api"
@@ -360,7 +361,34 @@ function App() {
               />
             )}
             {nav === "settings" && (
-              <SettingsView brand={brand} onSave={handleUpdateBrand} />
+              <SettingsView
+                brand={brand}
+                cafes={cafes}
+                onSave={handleUpdateBrand}
+                onToggleCafeSuspendedCoffee={async (cafeId, enabled) => {
+                  if (!session) return
+                  // Optimistic flip: update local state first so the
+                  // switch animates immediately, then the API call.
+                  // On API error, refresh from server (which restores
+                  // truth) and the SettingsView surfaces the message.
+                  setCafes((prev) =>
+                    prev.map((c) =>
+                      c.id === cafeId ? { ...c, suspendedCoffeeEnabled: enabled } : c,
+                    ),
+                  )
+                  try {
+                    await updateCafe(session.token, cafeId, {
+                      suspended_coffee_enabled: enabled,
+                    })
+                  } catch (e) {
+                    // Roll back the optimistic flip and re-throw so
+                    // SettingsView's CommunityBoardCard can render the
+                    // error inline.
+                    await refreshAdminData(session.token)
+                    throw e
+                  }
+                }}
+              />
             )}
             <BuildCreditFooter />
           </div>
@@ -371,6 +399,7 @@ function App() {
         open={addLocationOpen}
         onOpenChange={setAddLocationOpen}
         brand={brand}
+        token={session.token}
         onSubmit={handleAddLocation}
         onOpenPortal={handleOpenPortal}
       />

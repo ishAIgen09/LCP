@@ -26,6 +26,7 @@ import {
   humanizeError,
   type PlanTier,
 } from "@/lib/api"
+import { CancellationFeedbackModal } from "@/components/CancellationFeedbackModal"
 import type { Brand } from "@/lib/mock"
 
 type PlanRow = {
@@ -182,10 +183,16 @@ export function BillingView({
     }
   }, [toast])
 
-  const openPortal = async () => {
-    if (opening) return
+  // Cancel-intercept (PRD §4.2): the "Manage Payment Method & Invoices"
+  // button doesn't open the Stripe portal directly anymore — it opens
+  // CancellationFeedbackModal first. The modal POSTs the survey, then
+  // calls back into `runOpenPortal` which actually performs the Stripe
+  // call + redirect. Closing the modal without submitting cancels the
+  // flow without firing the redirect.
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
+
+  const runOpenPortal = async () => {
     setError(null)
-    setOpening(true)
     try {
       const { checkout_url } = await createPortalSession(token)
       window.location.href = checkout_url
@@ -193,6 +200,13 @@ export function BillingView({
       setError(humanizeError(e))
       setOpening(false)
     }
+  }
+
+  const openPortal = () => {
+    if (opening) return
+    setError(null)
+    setOpening(true)
+    setFeedbackOpen(true)
   }
 
   const confirmPlanChange = async () => {
@@ -379,6 +393,18 @@ export function BillingView({
       cafeCount={cafeCount}
       submitting={submittingPlan}
       onConfirm={confirmPlanChange}
+    />
+
+    <CancellationFeedbackModal
+      open={feedbackOpen}
+      onOpenChange={(v) => {
+        setFeedbackOpen(v)
+        // Modal closed without submitting → user cancelled, reset the
+        // "opening" gate so the button is clickable again.
+        if (!v) setOpening(false)
+      }}
+      token={token}
+      onSuccess={runOpenPortal}
     />
 
     {toast ? <BillingToast toast={toast} onDismiss={() => setToast(null)} /> : null}

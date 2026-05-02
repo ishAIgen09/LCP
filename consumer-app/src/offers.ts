@@ -20,6 +20,11 @@ export function formatOfferHeadline(o: DiscoverOffer): string {
       return `Buy one ${singularize(target)}, get one free`;
     case "double_stamps":
       return `Double stamps on ${target}`;
+    case "custom":
+      // Bespoke promo copy — render the operator's text verbatim,
+      // falling back to a generic label if the row somehow lacks
+      // custom_text (defensive; backend rejects empty custom_text).
+      return o.custom_text ?? "Special offer";
   }
 }
 

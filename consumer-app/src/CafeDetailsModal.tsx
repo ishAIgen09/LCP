@@ -1,9 +1,19 @@
 import { useState } from "react";
-import { Modal, Pressable, ScrollView, Text, TouchableOpacity, View } from "react-native";
+import {
+  ActivityIndicator,
+  Alert,
+  Modal,
+  Pressable,
+  ScrollView,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   ChevronRight,
   Coffee,
+  HandHeart,
   MapPin,
   Megaphone,
   Sparkles,
@@ -11,20 +21,31 @@ import {
 } from "lucide-react-native";
 
 import { lookupAmenity, type AmenityDef } from "./amenities";
-import type { DiscoverCafe, DiscoverOffer } from "./api";
+import { ApiError, donateLoyalty, type DiscoverCafe, type DiscoverOffer } from "./api";
 import { ContactLocationModal } from "./ContactLocationModal";
 import { formatOfferHeadline, formatOfferWindow } from "./offers";
 import { COLOR, FONT } from "./theme";
 
 export function CafeDetailsModal({
   cafe,
+  token,
   onClose,
+  onDonationSuccess,
 }: {
   cafe: DiscoverCafe | null;
+  // Consumer JWT — passed in by App.tsx so the donate-loyalty POST
+  // can authenticate. Always present when the modal is open (the user
+  // can't reach Discover without a session).
+  token: string;
   onClose: () => void;
+  // Lifted-up callback — App.tsx patches its local cafes state with
+  // the new pool balance so the Explore card + this modal both
+  // reflect the post-donation count without a refetch.
+  onDonationSuccess: (newPoolBalance: number) => void;
 }) {
   const insets = useSafeAreaInsets();
   const [contactOpen, setContactOpen] = useState(false);
+  const [donating, setDonating] = useState(false);
   if (!cafe) return null;
 
   const knownAmenities = cafe.amenities
@@ -36,6 +57,40 @@ export function CafeDetailsModal({
     // the next time the user taps a card — reset explicitly.
     setContactOpen(false);
     onClose();
+  };
+
+  const handleDonate = async () => {
+    if (donating || !cafe) return;
+    Alert.alert(
+      "Donate 1 reward?",
+      `Burn one banked reward and add a coffee to ${cafe.name}'s Community Board pool. Someone in need will be able to claim it next time they walk in.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Confirm donation",
+          style: "default",
+          onPress: async () => {
+            setDonating(true);
+            try {
+              const result = await donateLoyalty(token, cafe.id);
+              onDonationSuccess(result.new_pool_balance);
+              Alert.alert(
+                "Thank you!",
+                `Your coffee is on the board for the next person who needs it. ${result.new_pool_balance} on the board now.`,
+              );
+            } catch (e) {
+              const msg =
+                e instanceof ApiError
+                  ? e.detail
+                  : "Couldn't process the donation. Try again in a moment.";
+              Alert.alert("Donation didn't go through", msg);
+            } finally {
+              setDonating(false);
+            }
+          },
+        },
+      ],
+    );
   };
 
   return (
@@ -128,6 +183,14 @@ export function CafeDetailsModal({
           </View>
 
           <AmenitiesSection amenities={knownAmenities} />
+
+          {cafe.suspended_coffee_enabled ? (
+            <CommunityBoardSection
+              poolBalance={cafe.suspended_coffee_pool ?? 0}
+              donating={donating}
+              onDonate={handleDonate}
+            />
+          ) : null}
 
           <TouchableOpacity
             onPress={() => setContactOpen(true)}
@@ -230,6 +293,102 @@ function EmptyNotice({ message }: { message: string }) {
     </View>
   );
 }
+
+// Pay It Forward / Suspended Coffee section inside CafeDetailsModal.
+// Only renders when the cafe has toggled the feature on (parent
+// gates on cafe.suspended_coffee_enabled). Shows the current pool
+// count + a Donate button that burns one banked reward.
+function CommunityBoardSection({
+  poolBalance,
+  donating,
+  onDonate,
+}: {
+  poolBalance: number;
+  donating: boolean;
+  onDonate: () => void;
+}) {
+  const coffeeWord = poolBalance === 1 ? "coffee" : "coffees";
+  return (
+    <View style={{ marginTop: 28 }}>
+      <SectionKicker
+        icon={<HandHeart size={13} color={"#00B85F"} strokeWidth={2.2} />}
+        label="Community Board"
+      />
+      <View
+        style={{
+          marginTop: 12,
+          paddingVertical: 14,
+          paddingHorizontal: 16,
+          borderRadius: 14,
+          backgroundColor: "rgba(0,229,118,0.08)",
+          borderWidth: 1,
+          borderColor: "rgba(0,229,118,0.28)",
+        }}
+      >
+        <Text
+          style={{
+            fontFamily: FONT.semibold,
+            fontSize: 15,
+            color: COLOR.text,
+            letterSpacing: -0.1,
+          }}
+        >
+          {poolBalance > 0
+            ? `${poolBalance} ${coffeeWord} waiting on the board`
+            : "Be the first to put a coffee on the board"}
+        </Text>
+        <Text
+          style={{
+            marginTop: 6,
+            fontFamily: FONT.regular,
+            fontSize: 12.5,
+            lineHeight: 18,
+            color: COLOR.textMuted,
+          }}
+        >
+          Donate one of your banked rewards. Someone in need can claim it next
+          time they walk in — no questions asked.
+        </Text>
+        <TouchableOpacity
+          onPress={onDonate}
+          activeOpacity={0.85}
+          disabled={donating}
+          accessibilityRole="button"
+          accessibilityLabel="Donate one banked reward to this cafe's Community Board"
+          style={{
+            marginTop: 14,
+            paddingVertical: 12,
+            borderRadius: 12,
+            backgroundColor: donating ? "rgba(0,229,118,0.5)" : "#00B85F",
+            alignItems: "center",
+            justifyContent: "center",
+            flexDirection: "row",
+          }}
+        >
+          {donating ? (
+            <ActivityIndicator color="#FFFFFF" />
+          ) : (
+            <>
+              <HandHeart size={14} color="#FFFFFF" strokeWidth={2.4} />
+              <Text
+                style={{
+                  marginLeft: 8,
+                  fontFamily: FONT.semibold,
+                  fontSize: 14,
+                  color: "#FFFFFF",
+                  letterSpacing: -0.1,
+                }}
+              >
+                Donate 1 Reward
+              </Text>
+            </>
+          )}
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
 
 function AmenitiesSection({ amenities }: { amenities: AmenityDef[] }) {
   return (

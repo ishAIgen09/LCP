@@ -171,19 +171,29 @@ export type ApiCafe = {
   phone?: string | null
   food_hygiene_rating?: FoodHygieneRating
   amenities?: string[]
+  // Per-cafe Pay It Forward / Suspended Coffee opt-in (PRD §4.5).
+  // Default false on backend; older API responses pre-dating migration
+  // 0020 may omit the field — treat undefined as false.
+  suspended_coffee_enabled?: boolean
   created_at?: string
 }
 
 export type ApiOffer = {
   id: string
   brand_id: string
-  offer_type: "percent" | "fixed" | "bogo" | "double_stamps"
+  // 'custom' (added 2026-05-01, migration 0018) = bespoke free-text variant.
+  // For custom offers, `target` and `amount` are persisted but ignored at
+  // render — `custom_text` carries the entire content of the offer.
+  offer_type: "percent" | "fixed" | "bogo" | "double_stamps" | "custom"
   target: "any_drink" | "all_pastries" | "food" | "merchandise" | "entire_order"
   amount: string | number | null
   starts_at: string
   ends_at: string
   // NULL (from API) = applies to all brand cafes. Array = scoped to those ids.
   target_cafe_ids: string[] | null
+  // Populated for offer_type='custom'; NULL for the four structured types.
+  // Max 280 chars (server validates; mirrors b2b's UI cap).
+  custom_text: string | null
   created_at: string
 }
 
@@ -326,6 +336,7 @@ export function cafeFromApi(apiCafe: ApiCafe, brandActive: boolean): Cafe {
     phone: apiCafe.phone ?? null,
     foodHygieneRating: apiCafe.food_hygiene_rating ?? "Awaiting Inspection",
     storeNumber: apiCafe.store_number ?? null,
+    suspendedCoffeeEnabled: apiCafe.suspended_coffee_enabled ?? false,
   }
 }
 
@@ -461,6 +472,97 @@ export async function createPortalSession(
   )
 }
 
+// Cancellation feedback survey (PRD §4.2, migration 0019). Posted before
+// the b2b dashboard hands off to the Stripe Customer Portal so a brand
+// cancelling can never bypass the survey. Server enforces the same enum
+// + the conditional 'other' details requirement; matches the values in
+// app/models.py::CANCELLATION_REASONS.
+export type CancellationReason =
+  | "free_drink_cost"
+  | "barista_friction"
+  | "price_too_high"
+  | "low_volume"
+  | "feature_gap"
+  | "closing_business"
+  | "other"
+
+export type CancellationFeedbackResponse = {
+  id: string
+  brand_id: string
+  reason: CancellationReason
+  details: string | null
+  acknowledged: boolean
+  created_at: string
+}
+
+export async function postCancellationFeedback(
+  token: string,
+  values: {
+    reason: CancellationReason
+    details?: string | null
+    acknowledged: boolean
+  }
+): Promise<CancellationFeedbackResponse> {
+  return request<CancellationFeedbackResponse>(
+    "POST",
+    "/api/b2b/cancellation-feedback",
+    values,
+    authHeader(token),
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Pay It Forward / Suspended Coffee — POS-side (Venue API key auth)
+// PRD §4.5 + migration 0020.
+// ─────────────────────────────────────────────────────────────────
+
+export type CommunityPoolStatus = {
+  cafe_id: string
+  enabled: boolean
+  pool_balance: number
+}
+
+export type SuspendedCoffeeMutationResponse = {
+  ok: boolean
+  new_pool_balance: number
+}
+
+export async function getSuspendedCoffeePool(
+  venueApiKey: string,
+): Promise<CommunityPoolStatus> {
+  return request<CommunityPoolStatus>(
+    "GET",
+    "/api/b2b/suspended-coffee/pool",
+    undefined,
+    { "Venue-API-Key": venueApiKey },
+  )
+}
+
+export async function donateSuspendedCoffeeAtTill(
+  venueApiKey: string,
+  count: number,
+): Promise<SuspendedCoffeeMutationResponse> {
+  return request<SuspendedCoffeeMutationResponse>(
+    "POST",
+    "/api/b2b/suspended-coffee/donate-till",
+    { count },
+    { "Venue-API-Key": venueApiKey },
+  )
+}
+
+export async function serveSuspendedCoffee(
+  venueApiKey: string,
+): Promise<SuspendedCoffeeMutationResponse> {
+  // Empty body — cafe identity from the Venue-API-Key header. 409
+  // bubbles up as ApiError with detail "Community pool is empty."
+  return request<SuspendedCoffeeMutationResponse>(
+    "POST",
+    "/api/b2b/suspended-coffee/serve",
+    undefined,
+    { "Venue-API-Key": venueApiKey },
+  )
+}
+
 // Two tiers map to the two products on the Billing tab:
 //   starter → "Private Plan"        (£5.00/mo per location)
 //   pro     → "LCP+ Global Pass"    (£7.99/mo per location)
@@ -549,6 +651,10 @@ export async function updateCafe(
     address?: string
     phone?: string | null
     food_hygiene_rating?: FoodHygieneRating
+    // Per-cafe Pay It Forward / Suspended Coffee opt-in (PRD §4.5,
+    // migration 0020). null/undefined = leave existing flag untouched;
+    // explicit true/false flips it.
+    suspended_coffee_enabled?: boolean
   }
 ): Promise<ApiCafe> {
   const id = requireCafeId(cafeId, "updateCafe")
@@ -648,6 +754,9 @@ export async function createOffer(
     starts_at: string
     ends_at: string
     target_cafe_ids: string[] | null
+    // Required when offer_type === "custom" (server validates non-empty +
+    // ≤ 280 chars). Silently dropped server-side for non-custom types.
+    custom_text?: string | null
   }
 ): Promise<ApiOffer> {
   return request<ApiOffer>(
@@ -668,6 +777,7 @@ export async function updateOffer(
     starts_at: string
     ends_at: string
     target_cafe_ids: string[] | null
+    custom_text?: string | null
   }
 ): Promise<ApiOffer> {
   return request<ApiOffer>(

@@ -2,13 +2,24 @@ import { useEffect, useMemo, useState } from "react"
 import {
   Building2,
   CheckCircle2,
+  Coffee,
   Globe,
+  HandHeart,
+  Info,
   Loader2,
   Lock,
   UserRound,
+  X,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -19,7 +30,7 @@ import {
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { humanizeError } from "@/lib/api"
-import type { Brand, SchemeType } from "@/lib/mock"
+import type { Brand, Cafe, SchemeType } from "@/lib/mock"
 
 type Patch = {
   name?: string
@@ -36,10 +47,17 @@ type Patch = {
 
 export function SettingsView({
   brand,
+  cafes,
   onSave,
+  onToggleCafeSuspendedCoffee,
 }: {
   brand: Brand
+  cafes: Cafe[]
   onSave: (patch: Patch) => Promise<void>
+  // Per-cafe Pay It Forward toggle. Caller (App.tsx) wraps updateCafe +
+  // refreshes the cafes list. Resolves on success; rejects so the
+  // toggle UI can roll back the optimistic flip + surface the error.
+  onToggleCafeSuspendedCoffee: (cafeId: string, enabled: boolean) => Promise<void>
 }) {
   // Brand profile drafts
   const [draftName, setDraftName] = useState(brand.name)
@@ -408,6 +426,225 @@ export function SettingsView({
           )}
         </CardContent>
       </Card>
+
+      <CommunityBoardCard
+        cafes={cafes}
+        onToggle={onToggleCafeSuspendedCoffee}
+      />
+    </div>
+  )
+}
+
+
+// ─────────────────────────────────────────────────────────────────
+// Community Board / Suspended Coffee — per-cafe opt-in toggles
+// (PRD §4.5 — Pay It Forward)
+// ─────────────────────────────────────────────────────────────────
+
+function CommunityBoardCard({
+  cafes,
+  onToggle,
+}: {
+  cafes: Cafe[]
+  onToggle: (cafeId: string, enabled: boolean) => Promise<void>
+}) {
+  const [learnMoreOpen, setLearnMoreOpen] = useState(false)
+  // Optimistic flip — local enabled state per cafe so the switch
+  // animates immediately. Reverts on API error.
+  const [pending, setPending] = useState<Set<string>>(new Set())
+  const [error, setError] = useState<string | null>(null)
+
+  const handleToggle = async (cafe: Cafe, next: boolean) => {
+    setError(null)
+    setPending((p) => new Set(p).add(cafe.id))
+    try {
+      await onToggle(cafe.id, next)
+    } catch (e) {
+      setError(humanizeError(e))
+    } finally {
+      setPending((p) => {
+        const n = new Set(p)
+        n.delete(cafe.id)
+        return n
+      })
+    }
+  }
+
+  return (
+    <>
+      <Card className="lg:col-span-2">
+        <CardHeader>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <CardTitle className="flex items-center gap-2 text-[15px] tracking-tight">
+                <HandHeart className="h-4 w-4 text-emerald-600" strokeWidth={2.25} />
+                Community Board
+              </CardTitle>
+              <CardDescription className="mt-1">
+                Accept "Suspended Coffee" donations from customers + your till. Per-cafe toggle —
+                each location decides for itself.
+              </CardDescription>
+            </div>
+            <button
+              type="button"
+              onClick={() => setLearnMoreOpen(true)}
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              aria-label="Learn more about Suspended Coffee"
+              title="Learn more"
+            >
+              <Info className="h-4 w-4" strokeWidth={2.25} />
+            </button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-2.5 pt-0">
+          {cafes.length === 0 ? (
+            <p className="rounded-md border border-dashed border-border bg-muted/30 px-3 py-3 text-[12px] text-muted-foreground">
+              Add your first location and the Pay It Forward toggle will appear here.
+            </p>
+          ) : (
+            cafes.map((cafe) => {
+              const busy = pending.has(cafe.id)
+              const checked = cafe.suspendedCoffeeEnabled
+              return (
+                <label
+                  key={cafe.id}
+                  className="flex cursor-pointer items-center justify-between rounded-md border border-border bg-muted/20 px-3 py-2.5 transition-colors hover:bg-muted/40"
+                >
+                  <div className="min-w-0 flex-1 pr-3">
+                    <div className="flex items-center gap-2">
+                      <Coffee className="h-3.5 w-3.5 text-muted-foreground" strokeWidth={2.25} />
+                      <span className="truncate text-[13px] font-medium text-foreground">
+                        {cafe.name}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 truncate text-[11.5px] text-muted-foreground">
+                      {cafe.address}
+                    </p>
+                  </div>
+                  <span className="relative inline-flex items-center">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={busy}
+                      onChange={(e) => handleToggle(cafe, e.target.checked)}
+                      className="peer sr-only"
+                    />
+                    <span
+                      className={cn(
+                        "inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors",
+                        checked ? "bg-emerald-500" : "bg-neutral-300",
+                        busy && "opacity-60",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform",
+                          checked ? "translate-x-[18px]" : "translate-x-0.5",
+                        )}
+                      />
+                    </span>
+                  </span>
+                </label>
+              )
+            })
+          )}
+          {error ? (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-[12px] text-destructive">
+              {error}
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <SuspendedCoffeeLearnMoreModal
+        open={learnMoreOpen}
+        onOpenChange={setLearnMoreOpen}
+      />
+    </>
+  )
+}
+
+
+function SuspendedCoffeeLearnMoreModal({
+  open,
+  onOpenChange,
+}: {
+  open: boolean
+  onOpenChange: (v: boolean) => void
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[520px]">
+        <DialogHeader>
+          <div className="mb-1 flex items-center gap-2">
+            <span className="grid h-8 w-8 place-items-center rounded-md bg-emerald-500/10 text-emerald-700 ring-1 ring-emerald-500/30">
+              <HandHeart className="h-4 w-4" strokeWidth={2.25} />
+            </span>
+            <DialogTitle className="text-[16px] tracking-tight">
+              The Suspended Coffee tradition
+            </DialogTitle>
+            <button
+              type="button"
+              onClick={() => onOpenChange(false)}
+              className="ml-auto grid h-7 w-7 place-items-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              aria-label="Close"
+            >
+              <X className="h-4 w-4" strokeWidth={2.25} />
+            </button>
+          </div>
+          <DialogDescription>
+            <em>Caffè sospeso</em> — the century-old Italian habit of paying for a coffee you
+            don&apos;t drink, so someone in need can claim it later. We&apos;ve digitised the ledger so
+            it&apos;s a tap, not a paper-pad.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3 py-2">
+          <Step
+            num={1}
+            title="Accept"
+            body="A donation enters the pool either as a customer's loyalty-reward donation (right inside the Local Coffee Perks app) or as a till-paid donation a barista records on the POS."
+          />
+          <Step
+            num={2}
+            title="Record"
+            body="Each donation increments the cafe's pool by one drink unit. Append-only ledger — your barista can scroll back through every donation + serve. Pool counts in coffees, never currency."
+          />
+          <Step
+            num={3}
+            title="Serve"
+            body='When someone walks in and asks, your barista taps "Serve from pool" on the POS. Pool drops by one. No customer identity is ever recorded — anonymous claims, dignity preserved.'
+          />
+        </div>
+
+        <p className="text-[11.5px] leading-snug text-muted-foreground">
+          Toggle a cafe on and the Community Board badge starts showing on its consumer-app
+          profile. You can toggle off at any time without losing historical donation data.
+        </p>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+
+function Step({
+  num,
+  title,
+  body,
+}: {
+  num: number
+  title: string
+  body: string
+}) {
+  return (
+    <div className="flex items-start gap-3">
+      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-emerald-500/15 text-[12px] font-semibold text-emerald-700 ring-1 ring-emerald-500/30">
+        {num}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="text-[13px] font-semibold tracking-tight text-foreground">{title}</div>
+        <p className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{body}</p>
+      </div>
     </div>
   )
 }

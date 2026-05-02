@@ -21,6 +21,7 @@ import {
   Compass,
   Clock,
   Gift,
+  HandHeart,
   House,
   MapPin,
   Navigation,
@@ -1091,7 +1092,28 @@ function DiscoverView({ session }: { session: Session }) {
         </View>
       )}
 
-      <CafeDetailsModal cafe={selected} onClose={() => setSelected(null)} />
+      <CafeDetailsModal
+        cafe={selected}
+        token={session.token}
+        onClose={() => setSelected(null)}
+        onDonationSuccess={(newPool) => {
+          // Patch local Discover state so the pool count updates
+          // immediately on close. Backend response is the source of
+          // truth — refetch on next /api/consumer/cafes poll.
+          setCafes((prev) =>
+            prev
+              ? prev.map((c) =>
+                  c.id === selected?.id
+                    ? { ...c, suspended_coffee_pool: newPool }
+                    : c,
+                )
+              : prev,
+          );
+          setSelected((s) =>
+            s ? { ...s, suspended_coffee_pool: newPool } : s,
+          );
+        }}
+      />
     </ScrollView>
   );
 }
@@ -1235,6 +1257,7 @@ function DiscoverCafeCard({
         )}
         {cafe.is_lcp_plus && <LcpPlusPill />}
         {cafe.live_offers.length > 0 && <ActiveOffersPill />}
+        {cafe.suspended_coffee_enabled ? <CommunityBoardPill /> : null}
       </View>
 
       {knownAmenities.length > 0 && (
@@ -1518,6 +1541,35 @@ function ActiveOffersPill() {
         }}
       >
         Active Offers
+      </Text>
+    </View>
+  );
+}
+
+// Pay It Forward / Suspended Coffee badge — shows on Explore cards
+// when the cafe has toggled the feature on (PRD §4.5). Mint accent
+// matches the brand palette + signals "community" warmth.
+function CommunityBoardPill() {
+  return (
+    <View
+      style={{
+        ...PILL_STYLE,
+        backgroundColor: "rgba(0,229,118,0.12)",
+        borderColor: "rgba(0,229,118,0.34)",
+      }}
+      accessibilityLabel="Community Board — accepts Pay It Forward donations"
+    >
+      <HandHeart size={11} color={"#00B85F"} strokeWidth={2.2} />
+      <Text
+        style={{
+          marginLeft: 6,
+          fontSize: 10.5,
+          color: "#00B85F",
+          fontFamily: FONT.semibold,
+          letterSpacing: 0.3,
+        }}
+      >
+        Community Board
       </Text>
     </View>
   );

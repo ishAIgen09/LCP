@@ -35,6 +35,8 @@ import {
 } from "@/lib/api"
 import type { Cafe } from "@/lib/mock"
 import {
+  CUSTOM_OFFER_INSPIRATION,
+  CUSTOM_OFFER_TEXT_MAX,
   OFFER_TARGETS,
   OFFER_TYPES,
   localDateTimeToISO,
@@ -59,6 +61,7 @@ export function PromotionsView({
   const [type, setType] = useState<OfferType>("percent")
   const [target, setTarget] = useState<OfferTarget>("any_drink")
   const [amount, setAmount] = useState<string>("") // raw input, coerced to number on save
+  const [customText, setCustomText] = useState<string>("")
   const [startDate, setStartDate] = useState<string>(() => toDateInput(new Date()))
   const [startTime, setStartTime] = useState<string>("14:00")
   const [endDate, setEndDate] = useState<string>(() => toDateInput(new Date()))
@@ -70,6 +73,24 @@ export function PromotionsView({
   const [saved, setSaved] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [loading, setLoading] = useState(true)
+
+  // Rotating inspiration helper text under the custom-offer textarea.
+  // See lib/offers.ts::CUSTOM_OFFER_INSPIRATION + PRD §4.4. Cycles every
+  // 4s while the field is empty; pauses on first keystroke.
+  const [inspirationIdx, setInspirationIdx] = useState(0)
+  const [inspirationVisible, setInspirationVisible] = useState(true)
+
+  useEffect(() => {
+    if (type !== "custom" || customText.trim().length > 0) return
+    const interval = window.setInterval(() => {
+      setInspirationVisible(false)
+      window.setTimeout(() => {
+        setInspirationIdx((i) => (i + 1) % CUSTOM_OFFER_INSPIRATION.length)
+        setInspirationVisible(true)
+      }, 200)
+    }, 4000)
+    return () => window.clearInterval(interval)
+  }, [type, customText])
 
   const [offers, setOffers] = useState<Offer[]>([])
   const [editing, setEditing] = useState<Offer | null>(null)
@@ -101,6 +122,7 @@ export function PromotionsView({
     setType("percent")
     setTarget("any_drink")
     setAmount("")
+    setCustomText("")
     setStartDate(today)
     setStartTime("14:00")
     setEndDate(today)
@@ -112,7 +134,17 @@ export function PromotionsView({
     setError(null)
     setSaved(false)
 
-    if (amountKind !== "none") {
+    if (type === "custom") {
+      const trimmed = customText.trim()
+      if (trimmed.length === 0) {
+        setError("Write the offer copy your customers will see.")
+        return
+      }
+      if (trimmed.length > CUSTOM_OFFER_TEXT_MAX) {
+        setError(`Offer copy is limited to ${CUSTOM_OFFER_TEXT_MAX} characters.`)
+        return
+      }
+    } else if (amountKind !== "none") {
       const parsed = Number(amount)
       if (!Number.isFinite(parsed) || parsed <= 0) {
         setError(
@@ -159,10 +191,11 @@ export function PromotionsView({
       const created = await createOffer(token, {
         offer_type: type,
         target,
-        amount: amountKind === "none" ? null : Number(amount),
+        amount: type === "custom" || amountKind === "none" ? null : Number(amount),
         starts_at: startsIso,
         ends_at: endsIso,
         target_cafe_ids: targetCafeIds,
+        custom_text: type === "custom" ? customText.trim() : null,
       })
       setOffers((prev) => [offerFromApi(created), ...prev])
       setSaved(true)
@@ -192,15 +225,16 @@ export function PromotionsView({
       id: "preview",
       type,
       target,
-      amount: amountKind === "none" ? null : Number(amount) || 0,
+      amount: type === "custom" || amountKind === "none" ? null : Number(amount) || 0,
       startDate: startDate || toDateInput(new Date()),
       startTime: startTime || "00:00",
       endDate: endDate || startDate || toDateInput(new Date()),
       endTime: endTime || "00:00",
       targetCafeIds,
+      customText: type === "custom" ? customText : null,
       createdAt: Date.now(),
     }),
-    [type, target, amount, amountKind, startDate, startTime, endDate, endTime, targetCafeIds]
+    [type, target, amount, amountKind, customText, startDate, startTime, endDate, endTime, targetCafeIds]
   )
 
   // Lead-time warning — soft, not blocking.
@@ -246,7 +280,7 @@ export function PromotionsView({
                 </SelectContent>
               </Select>
 
-              {amountKind !== "none" && (
+              {type !== "custom" && amountKind !== "none" && (
                 <div className="mt-3 grid gap-1.5">
                   <label className="text-[12px] font-medium text-foreground">
                     {amountKind === "percent" ? "Discount percentage" : "Promo price (£)"}
@@ -271,21 +305,47 @@ export function PromotionsView({
               )}
             </Step>
 
-            {/* STEP 2 */}
-            <Step number={2} title="Applies to" icon={Sparkles}>
-              <Select value={target} onValueChange={(v) => setTarget(v as OfferTarget)}>
-                <SelectTrigger className="h-10 w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {OFFER_TARGETS.map((t) => (
-                    <SelectItem key={t.id} value={t.id}>
-                      {t.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Step>
+            {/* STEP 2 — for non-custom offers (target picker) OR custom
+                offers (free-text body). The custom branch hides the
+                target dropdown and the structured-amount input
+                completely (PRD §4.3 — target/amount are bypassed for
+                custom offers). */}
+            {type === "custom" ? (
+              <Step number={2} title="Offer copy" icon={MessageSquareText}>
+                <textarea
+                  value={customText}
+                  onChange={(e) => setCustomText(e.target.value.slice(0, CUSTOM_OFFER_TEXT_MAX))}
+                  rows={3}
+                  placeholder="Write the exact copy your customers will see in the app."
+                  className="block w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-[13.5px] leading-relaxed outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                />
+                <div className="mt-1 flex items-center justify-between text-[11px] text-muted-foreground">
+                  <span
+                    className={`transition-opacity duration-200 ${inspirationVisible ? "opacity-80" : "opacity-30"}`}
+                  >
+                    Inspiration: {CUSTOM_OFFER_INSPIRATION[inspirationIdx]}
+                  </span>
+                  <span>
+                    {customText.length}/{CUSTOM_OFFER_TEXT_MAX}
+                  </span>
+                </div>
+              </Step>
+            ) : (
+              <Step number={2} title="Applies to" icon={Sparkles}>
+                <Select value={target} onValueChange={(v) => setTarget(v as OfferTarget)}>
+                  <SelectTrigger className="h-10 w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {OFFER_TARGETS.map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Step>
+            )}
 
             {/* STEP 3 */}
             <Step number={3} title="When it runs" icon={Calendar}>

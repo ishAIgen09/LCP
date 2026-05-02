@@ -179,9 +179,14 @@ export function fetchWallet(token: string): Promise<WalletResponse> {
 
 export type DiscoverOffer = {
   id: string;
-  offer_type: "percent" | "fixed" | "bogo" | "double_stamps";
+  // 'custom' added 2026-05-01 (PRD §4.3) — bespoke free-text variant.
+  // The card renders `custom_text` verbatim instead of the structured
+  // "X% off Y" template used for the four pre-existing types.
+  offer_type: "percent" | "fixed" | "bogo" | "double_stamps" | "custom";
   target: "any_drink" | "all_pastries" | "food" | "merchandise" | "entire_order";
   amount: string | number | null;
+  // Populated when offer_type === "custom"; null for the structured types.
+  custom_text: string | null;
   starts_at: string;
   ends_at: string;
 };
@@ -210,6 +215,13 @@ export type DiscoverCafe = {
   latitude: number | null;
   longitude: number | null;
   distance_miles: number | null;
+  // Pay It Forward / Suspended Coffee (PRD §4.5, backend ≥ 2026-05-01).
+  // `suspended_coffee_enabled` drives the "Community Board" badge in the
+  // Explore card; `suspended_coffee_pool` is the current drink-unit count
+  // surfaced inside CafeDetailsModal. Older API responses pre-dating
+  // migration 0020 may omit these — treat undefined as false / 0 in UI.
+  suspended_coffee_enabled?: boolean;
+  suspended_coffee_pool?: number;
 };
 
 export function fetchDiscoverCafes(
@@ -238,4 +250,70 @@ export function fetchHistory(
   limit = 50,
 ): Promise<HistoryEntry[]> {
   return getJSON<HistoryEntry[]>(`/api/consumer/me/history?limit=${limit}`, token);
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Pay It Forward / Suspended Coffee — consumer donation (Mode 1)
+// PRD §4.5.6. Burns 1 banked reward (10 stamps, brand-scoped) → +1
+// to the cafe's Community Board pool.
+// ────────────────────────────────────────────────────────────────────
+
+export type SuspendedCoffeeMutationResponse = {
+  ok: boolean;
+  new_pool_balance: number;
+};
+
+export function donateLoyalty(
+  token: string,
+  cafeId: string,
+): Promise<SuspendedCoffeeMutationResponse> {
+  // Authenticated POST — body carries the destination cafe; server
+  // resolves the brand from cafe_id and validates that the user has
+  // ≥ 10 scoped stamps for that brand. 400 on insufficient stamps,
+  // 403 if the cafe hasn't toggled the feature on.
+  return postJSONWithAuth<SuspendedCoffeeMutationResponse>(
+    "/api/consumer/suspended-coffee/donate-loyalty",
+    { cafe_id: cafeId },
+    token,
+  );
+}
+
+// Authenticated variant of postJSON — same response/error shape but
+// adds the Bearer header. Inlined here so callers don't have to set
+// up Authorization manually for one-off endpoints.
+async function postJSONWithAuth<T>(
+  path: string,
+  body: unknown,
+  token: string,
+): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}${path}`, {
+      method: "POST",
+      headers: {
+        ...DEFAULT_HEADERS,
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new ApiError(
+      0,
+      "Couldn't reach the server. Check your connection and try again.",
+    );
+  }
+  let data: any = null;
+  try {
+    data = await res.json();
+  } catch {
+    // empty body is fine on 2xx
+  }
+  if (!res.ok) {
+    const detail =
+      (data && (data.detail || data.message)) ||
+      `Request failed (${res.status}).`;
+    throw new ApiError(res.status, String(detail));
+  }
+  return data as T;
 }

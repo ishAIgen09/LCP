@@ -5,14 +5,32 @@
 import type { ApiOffer } from "./api"
 
 export const OFFER_TYPES = [
-  { id: "percent",       label: "Percentage Discount %", amountKind: "percent" },
-  { id: "fixed",         label: "Fixed Price £",          amountKind: "fixed"   },
-  { id: "bogo",          label: "Buy One Get One",        amountKind: "none"    },
-  { id: "double_stamps", label: "Double Stamps",          amountKind: "none"    },
+  { id: "percent",       label: "Percentage Discount %",   amountKind: "percent" },
+  { id: "fixed",         label: "Fixed Price £",            amountKind: "fixed"   },
+  { id: "bogo",          label: "Buy One Get One",          amountKind: "none"    },
+  { id: "double_stamps", label: "Double Stamps",            amountKind: "none"    },
+  // 'custom' (added 2026-05-01, PRD §4.3): operator writes the offer copy
+  // verbatim. Target + amount are bypassed in the form — only custom_text
+  // is persisted (max 280 chars).
+  { id: "custom",        label: "Custom (write your own)", amountKind: "none"    },
 ] as const satisfies ReadonlyArray<{ id: string; label: string; amountKind: "percent" | "fixed" | "none" }>
 
 export type OfferType = (typeof OFFER_TYPES)[number]["id"]
 export type AmountKind = (typeof OFFER_TYPES)[number]["amountKind"]
+
+// Server + UI cap on `custom_text`. Mirrors the Pydantic
+// CUSTOM_OFFER_TEXT_MAX in app/schemas.py — bumping one without the
+// other surfaces as a 422 the user won't understand.
+export const CUSTOM_OFFER_TEXT_MAX = 280
+
+// Inspiration placeholders that rotate inside the custom-offer Textarea
+// every 4s while the field is empty / unfocused. Strings are exact per
+// the founder's PRD §4.4 spec — don't reword without discussion.
+export const CUSTOM_OFFER_INSPIRATION = [
+  "e.g., Bring your dog in today and get a free puppuccino!",
+  "Flash your local university student ID for a free cookie with any large latte.",
+  "Mention the phrase 'Rainy Day Roast' at the till for an extra stamp.",
+] as const
 
 export const OFFER_TARGETS = [
   { id: "any_drink",    label: "Any Drink" },
@@ -38,6 +56,9 @@ export type Offer = {
   // null = applies to every cafe under the brand ("All Locations").
   // string[] = scoped to those specific cafe ids.
   targetCafeIds: string[] | null
+  // Bespoke promo copy when type === "custom" (PRD §4.3). null for the
+  // four structured types — the API persists null in those cases too.
+  customText: string | null
   createdAt: number     // epoch ms, sourced from ApiOffer.created_at
 }
 
@@ -54,6 +75,7 @@ export function offerFromApi(a: ApiOffer): Offer {
     endDate: toLocalDate(ends),
     endTime: toLocalTime(ends),
     targetCafeIds: a.target_cafe_ids ?? null,
+    customText: a.custom_text ?? null,
     createdAt: new Date(a.created_at).getTime(),
   }
 }

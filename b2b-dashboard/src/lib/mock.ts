@@ -52,6 +52,11 @@ export type Cafe = {
   // (see _allocate_store_number). Nullable for legacy rows that pre-date
   // the allocator change; UI falls back to initials in that case.
   storeNumber: string | null
+  // Per-cafe Pay It Forward / Suspended Coffee opt-in (PRD §4.5,
+  // migration 0020). Toggled from SettingsView's Community Board card.
+  // Defaults to false; explicit true means the cafe accepts donations
+  // and the Barista POS shows the pool counter + Serve button.
+  suspendedCoffeeEnabled: boolean
 }
 
 // The current owner's brand. In a real build this would come from the
@@ -85,6 +90,7 @@ export const initialCafes: Cafe[] = [
     phone: null,
     foodHygieneRating: "Awaiting Inspection",
     storeNumber: null,
+    suspendedCoffeeEnabled: false,
   },
   {
     id: "c-02",
@@ -96,6 +102,7 @@ export const initialCafes: Cafe[] = [
     phone: null,
     foodHygieneRating: "Awaiting Inspection",
     storeNumber: null,
+    suspendedCoffeeEnabled: false,
   },
   {
     id: "c-03",
@@ -107,6 +114,7 @@ export const initialCafes: Cafe[] = [
     phone: null,
     foodHygieneRating: "Awaiting Inspection",
     storeNumber: null,
+    suspendedCoffeeEnabled: false,
   },
   {
     id: "c-04",
@@ -118,5 +126,6 @@ export const initialCafes: Cafe[] = [
     phone: null,
     foodHygieneRating: "Awaiting Inspection",
     storeNumber: null,
+    suspendedCoffeeEnabled: false,
   },
 ]
