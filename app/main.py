@@ -55,6 +55,7 @@ from app.models import (
     SchemeType,
     StampLedger,
     SubscriptionStatus,
+    SuspendedCoffeeLedger,
     User,
 )
 from app.schemas import (
@@ -1487,9 +1488,11 @@ tab sums active + pending_cancellation cafes at their scheme-based rate). \
 When they ask about ROI or retention, reason from ledger event counts, not \
 monetary figures, since cafes don't report ticket values.
 
-Answer concisely. One to three short paragraphs max. If a question would \
-require running SQL, say so and describe the query you'd run — you don't \
-have live DB access yet, just schema context."""
+Answer concisely. One to three short paragraphs max. A live snapshot \
+of platform-level totals is appended below — quote those numbers \
+verbatim when asked for current counts. For deeper questions that \
+would require ad-hoc SQL, describe the query you'd run; we don't \
+have live SQL execution yet, just schema context plus the snapshot."""
 
 
 # Lazy-initialised OpenAI client. A module-level singleton would couple
@@ -1509,19 +1512,144 @@ def _get_openai_client():
     return _openai_client
 
 
-# SECURITY — unauth'd, same posture as the other /api/admin/platform/*
-# routes. When the SQL-agent tool-use lands this MUST be wrapped in a
-# super-admin dependency before it sees prod.
-#
-# Super-admin AI chat. One-shot for now (no conversation history) — the
-# frontend widget maintains its own transcript; we accept a single
-# `message` and return a single `reply`. Modular on purpose: swapping
-# OpenAI for Anthropic/Gemini/etc. is a one-file change here.
+async def _ai_agent_live_metrics(session: AsyncSession) -> dict[str, int]:
+    """Pull a small bundle of platform-level counts so the AI assistant
+    can answer "how many brands signed up today?" without round-tripping
+    through a SQL tool call. Six aggregates, one query each — cheap on
+    Postgres for the cardinalities we're at (≤ thousands)."""
+    today_start = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+
+    metrics: dict[str, int] = {}
+
+    metrics["total_brands"] = int(
+        (
+            await session.execute(select(func.count()).select_from(Brand))
+        ).scalar_one()
+    )
+    metrics["brands_today"] = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(Brand)
+                .where(Brand.created_at >= today_start)
+            )
+        ).scalar_one()
+    )
+
+    metrics["total_cafes"] = int(
+        (
+            await session.execute(select(func.count()).select_from(Cafe))
+        ).scalar_one()
+    )
+    metrics["cafes_today"] = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(Cafe)
+                .where(Cafe.created_at >= today_start)
+            )
+        ).scalar_one()
+    )
+
+    # Brand-level Stripe subscription state. Mirrors the Billing tab's
+    # canonical "active subs" definition: subscription_status=ACTIVE.
+    metrics["active_subscriptions"] = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(Brand)
+                .where(Brand.subscription_status == SubscriptionStatus.ACTIVE)
+            )
+        ).scalar_one()
+    )
+
+    # Total scans = count of EARNED rows on global_ledger. One per
+    # till-side scan event (regardless of how many stamps it issued).
+    metrics["total_scans"] = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(GlobalLedger)
+                .where(GlobalLedger.action_type == GlobalLedgerAction.EARNED)
+            )
+        ).scalar_one()
+    )
+    metrics["scans_today"] = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(GlobalLedger)
+                .where(GlobalLedger.action_type == GlobalLedgerAction.EARNED)
+                .where(GlobalLedger.timestamp >= today_start)
+            )
+        ).scalar_one()
+    )
+
+    # Pay It Forward — total drinks ever donated (consumer + till). Each
+    # ledger row is one drink unit; events 'donate_loyalty' + 'donate_till'
+    # are positive deltas, 'serve' are negative. We count the positive
+    # rows (donations issued); pool balance is donations minus serves.
+    metrics["total_suspended_coffees_donated"] = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(SuspendedCoffeeLedger)
+                .where(SuspendedCoffeeLedger.units_delta > 0)
+            )
+        ).scalar_one()
+    )
+    metrics["suspended_coffees_pool_balance"] = int(
+        (
+            await session.execute(
+                select(
+                    func.coalesce(func.sum(SuspendedCoffeeLedger.units_delta), 0)
+                )
+            )
+        ).scalar_one()
+    )
+
+    return metrics
+
+
+def _format_live_metrics_block(metrics: dict[str, int]) -> str:
+    """Plaintext block appended to the system prompt so the model has
+    real numbers to quote when the admin asks."""
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return (
+        f"\n\nLive platform snapshot (as of {now_iso}). Use these "
+        "exact numbers when the admin asks for current totals; do "
+        "NOT estimate or substitute placeholders.\n"
+        f"- Total Brands: {metrics['total_brands']} "
+        f"(joined today: {metrics['brands_today']})\n"
+        f"- Total Cafes: {metrics['total_cafes']} "
+        f"(added today: {metrics['cafes_today']})\n"
+        f"- Active Subscriptions (brand-level Stripe ACTIVE): "
+        f"{metrics['active_subscriptions']}\n"
+        f"- Total Scans (lifetime EARN events on global_ledger): "
+        f"{metrics['total_scans']} (today: {metrics['scans_today']})\n"
+        f"- Suspended Coffees donated (lifetime): "
+        f"{metrics['total_suspended_coffees_donated']}\n"
+        f"- Community Board pool balance (donations minus serves, "
+        f"all cafes): {metrics['suspended_coffees_pool_balance']}"
+    )
+
+
+# Super-admin AI chat. Guarded by the super-admin JWT — same posture as
+# the rest of the /api/admin/platform/* routes that touch real data.
+# One-shot today (no conversation history): the frontend widget owns
+# the transcript and we accept a single `message`. Modular on purpose —
+# swapping OpenAI for Anthropic/Gemini is a one-file change here.
 @app.post(
     "/api/admin/platform/ai-agent",
     response_model=AiAgentResponse,
 )
-async def platform_ai_agent(payload: AiAgentRequest) -> AiAgentResponse:
+async def platform_ai_agent(
+    payload: AiAgentRequest,
+    session: AsyncSession = Depends(get_session),
+    _super_admin = Depends(get_super_admin_session),
+) -> AiAgentResponse:
     if not payload.message or not payload.message.strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1537,11 +1665,25 @@ async def platform_ai_agent(payload: AiAgentRequest) -> AiAgentResponse:
             reply="Please add your OPENAI_API_KEY to the backend .env file to activate the assistant."
         )
 
+    # Live metrics injected into the system prompt so the model can
+    # answer "how many brands signed up today?" with the actual number
+    # instead of "I don't have live DB access". Failures here degrade
+    # gracefully — the model still answers from its general schema
+    # context, just without the snapshot block.
+    try:
+        metrics = await _ai_agent_live_metrics(session)
+        snapshot = _format_live_metrics_block(metrics)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ai-agent: live-metrics fetch failed: %s", exc)
+        snapshot = ""
+
+    system_prompt = _AI_AGENT_SYSTEM_PROMPT + snapshot
+
     try:
         completion = await client.chat.completions.create(
             model=settings.openai_model,
             messages=[
-                {"role": "system", "content": _AI_AGENT_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": payload.message.strip()},
             ],
             # Conservative output budget — the system prompt invites

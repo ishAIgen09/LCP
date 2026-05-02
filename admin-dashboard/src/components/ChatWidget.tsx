@@ -13,7 +13,7 @@ const WELCOME_MESSAGE: Message = {
   id: "welcome",
   role: "assistant",
   content:
-    "I'm your LCP Data Assistant. Ask me anything about platform revenue, cafe ROI, or user behavior.",
+    "I'm your LCP Data Assistant. I read live platform totals on every reply — try \"How many brands signed up today?\" or \"What's the current Suspended Coffees pool balance?\".",
 };
 
 export function ChatWidget() {
@@ -143,8 +143,9 @@ function ChatHeader({ onClose }: { onClose: () => void }) {
           <div className="text-sm font-semibold text-neutral-100">
             LCP Data Assistant
           </div>
-          <div className="text-[10.5px] font-medium uppercase tracking-wider text-neutral-500">
-            Preview · placeholder responses
+          <div className="text-[10.5px] font-medium uppercase tracking-wider text-emerald-400">
+            <span className="inline-flex h-1.5 w-1.5 -translate-y-px rounded-full bg-emerald-400" />
+            <span className="ml-1.5">Live · real-time platform data</span>
           </div>
         </div>
       </div>
