@@ -17,6 +17,8 @@ import {
 import QRCode from "react-native-qrcode-svg";
 import {
   Bell,
+  ChevronDown,
+  ChevronUp,
   Coffee,
   Compass,
   Clock,
@@ -124,28 +126,6 @@ function getGreetingSubtitle(hour: number) {
   return "Decaf time?";
 }
 
-const SAMPLE_REWARDS: RewardPayload[] = [
-  {
-    stampsEarned: 1,
-    cafeName: "Shoreditch Roasters",
-    cafeAddress: "12 Redchurch St, London E2 7DP",
-    newBalance: 8,
-  },
-  {
-    stampsEarned: 1,
-    cafeName: "King's Cross Coffee",
-    cafeAddress: "45 Caledonian Rd, London N1 9DX",
-    newBalance: 9,
-  },
-  {
-    stampsEarned: 1,
-    cafeName: "Peckham Beans",
-    cafeAddress: "22 Rye Lane, London SE15 5BS",
-    newBalance: 10,
-    freeDrinkUnlocked: true,
-  },
-];
-
 export default function App() {
   const [fontsLoaded] = useFonts({
     Inter_400Regular,
@@ -246,10 +226,6 @@ function AppShell() {
           <HomeView
             session={session}
             onSignOut={() => setSession(null)}
-            onTriggerReward={() => {
-              const pick = SAMPLE_REWARDS[Math.floor(Math.random() * SAMPLE_REWARDS.length)];
-              setReward(pick);
-            }}
             onReward={handleReward}
           />
         )}
@@ -294,12 +270,10 @@ function AppShell() {
 function HomeView({
   session,
   onSignOut,
-  onTriggerReward,
   onReward,
 }: {
   session: Session;
   onSignOut: () => void;
-  onTriggerReward: () => void;
   onReward: (payload: RewardPayload) => void;
 }) {
   const firstName = session.consumer.first_name?.trim() || "friend";
@@ -321,6 +295,11 @@ function HomeView({
   // keeps the last-good values on screen. Cache-busted inside getJSON.
   const [stampsEarned, setStampsEarned] = useState(0);
   const [privateBalances, setPrivateBalances] = useState<PrivateBrandBalance[]>([]);
+  // Accordion gate for the private-cards list. Power users (founder
+  // expects 5–10+ brand cards) would otherwise blow out the home
+  // screen vertically. We always show the top N by stamp_balance and
+  // hide the rest behind a toggle.
+  const [showAllPrivate, setShowAllPrivate] = useState(false);
   const pollBusyRef = useRef(false);
 
   // Celebration trigger — delta detection on TOTAL balance + TOTAL banked
@@ -873,32 +852,14 @@ function HomeView({
             </Text>
           </View>
         ) : (
-          <View className="mt-3">
-            {privateBalances.map((b) => (
-              <BrandCardMini key={b.brand_id} balance={b} threshold={STAMPS_TARGET} />
-            ))}
-          </View>
+          <PrivateBrandsList
+            balances={privateBalances}
+            expanded={showAllPrivate}
+            onToggle={() => setShowAllPrivate((v) => !v)}
+          />
         )}
       </View>
 
-      <Pressable
-        onPress={onTriggerReward}
-        className="mt-5 flex-row items-center justify-center rounded-2xl py-3"
-        style={{
-          backgroundColor: "rgba(228,185,127,0.06)",
-          borderWidth: 1,
-          borderColor: "rgba(228,185,127,0.22)",
-          borderStyle: "dashed",
-        }}
-      >
-        <Sparkles size={14} color={COLOR.accent} strokeWidth={2} />
-        <Text
-          className="ml-2 text-[12px] font-semibold uppercase"
-          style={{ color: COLOR.accent, letterSpacing: 1.5 }}
-        >
-          Dev · Trigger Test Reward
-        </Text>
-      </Pressable>
     </ScrollView>
   );
 }
@@ -1627,6 +1588,78 @@ function LcpPlusPill() {
       >
         ✦ LCP+
       </Text>
+    </View>
+  );
+}
+
+// Number of brand cards always visible above the "View N more…" fold.
+// Founder direction: power users with many brand cards shouldn't have
+// to scroll past a wall of mini-cards to reach the rest of the home
+// screen. Pinned at 2 — short enough to stay above the fold on
+// every phone we test, long enough to hint that the list expands.
+const PRIVATE_CARDS_VISIBLE_LIMIT = 2;
+
+function PrivateBrandsList({
+  balances,
+  expanded,
+  onToggle,
+}: {
+  balances: PrivateBrandBalance[];
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  // Sort by stamp_balance desc so the cards closest to a free drink
+  // (the most "active" relationships in the user's perception) sit
+  // up top. Stable copy — Array.prototype.sort mutates, so we slice
+  // first to avoid disturbing the parent's polling state.
+  const sorted = useMemo(
+    () => [...balances].sort((a, b) => b.stamp_balance - a.stamp_balance),
+    [balances],
+  );
+
+  const overflow = sorted.length - PRIVATE_CARDS_VISIBLE_LIMIT;
+  const hasOverflow = overflow > 0;
+  const visible = expanded || !hasOverflow
+    ? sorted
+    : sorted.slice(0, PRIVATE_CARDS_VISIBLE_LIMIT);
+
+  return (
+    <View className="mt-3">
+      {visible.map((b) => (
+        <BrandCardMini key={b.brand_id} balance={b} threshold={STAMPS_TARGET} />
+      ))}
+      {hasOverflow ? (
+        <Pressable
+          onPress={onToggle}
+          accessibilityRole="button"
+          accessibilityLabel={
+            expanded
+              ? "Collapse private brand cards"
+              : `View ${overflow} more private brand cards`
+          }
+          className="mt-2 flex-row items-center justify-center rounded-2xl py-3"
+          style={({ pressed }) => ({
+            backgroundColor: COLOR.surface,
+            borderWidth: 1,
+            borderColor: COLOR.border,
+            opacity: pressed ? 0.85 : 1,
+          })}
+        >
+          {expanded ? (
+            <ChevronUp size={14} color={COLOR.textMuted} strokeWidth={2.2} />
+          ) : (
+            <ChevronDown size={14} color={COLOR.textMuted} strokeWidth={2.2} />
+          )}
+          <Text
+            className="ml-2 text-[12.5px] font-semibold"
+            style={{ color: COLOR.textMuted, letterSpacing: 0.2 }}
+          >
+            {expanded
+              ? "Show fewer"
+              : `View ${overflow} more private card${overflow === 1 ? "" : "s"}…`}
+          </Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }

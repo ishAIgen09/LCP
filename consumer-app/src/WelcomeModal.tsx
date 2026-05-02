@@ -131,7 +131,8 @@ export function WelcomeModal({
             className="mt-2 text-center text-[14px] leading-5"
             style={{ color: COLOR.textMuted }}
           >
-            We have two types of loyalty cards:
+            Cafes on our app offer one of two loyalty cards. Simply scan
+            at the till!
           </Text>
 
           {/* LCP+ block */}
@@ -164,8 +165,8 @@ export function WelcomeModal({
                 className="mt-1 text-[12.5px] leading-[18px]"
                 style={{ color: COLOR.textMuted }}
               >
-                Earn and redeem stamps across our entire network of
-                partner cafes.
+                Earn and redeem stamps across the entire network of
+                participating LCP+ cafes.
               </Text>
             </View>
           </View>
@@ -200,8 +201,8 @@ export function WelcomeModal({
                 className="mt-1 text-[12.5px] leading-[18px]"
                 style={{ color: COLOR.textMuted }}
               >
-                Earned and redeemed exclusively at your favorite specific
-                brands.
+                Earned and redeemed exclusively at any location of that
+                specific brand.
               </Text>
             </View>
           </View>
@@ -224,7 +225,7 @@ export function WelcomeModal({
                 fontFamily: FONT.semibold,
               }}
             >
-              Let's go!
+              Let&apos;s get brewing! ☕
             </Text>
           </Pressable>
         </Pressable>
