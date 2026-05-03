@@ -80,10 +80,15 @@ export function PlanChangeConfirmationDialog({
   const proration = previewProration(totalDelta)
   const newMonthlyTotal = toPlan.pricePence * cafeCount
 
-  // "Next billing date total" = standard month + proration adjustment.
-  // For upgrades the proration is positive (added to next invoice).
-  // For downgrades it's negative (a credit against next invoice).
-  const nextInvoiceTotal = newMonthlyTotal + proration.pence
+  // Upgrade: next invoice = standard month + prorated fee for current
+  // cycle remainder (Stripe charges proration_behavior=create_prorations).
+  // Downgrade: revenue-protection policy 2026-05-04 — NO credit is
+  // issued for the unused portion of the higher tier. Next invoice is
+  // simply the standard new-month total at the lower rate. The receipt
+  // section below renders very differently in the two cases.
+  const nextInvoiceTotal = isDowngrade
+    ? newMonthlyTotal
+    : newMonthlyTotal + proration.pence
 
   const now = new Date()
   const currentMonthName = MONTH_NAMES[now.getMonth()]
@@ -122,51 +127,72 @@ export function PlanChangeConfirmationDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {/* Receipt-style next-invoice breakdown. Three explicit lines so
-            the brand can see exactly how the next bill is composed and
-            never has to do the math themselves. */}
-        <div className="mt-2 divide-y divide-border rounded-lg border border-border bg-muted/20">
-          <ReceiptRow
-            label={`Prorated ${isDowngrade ? "credit" : "fee"} for the remainder of ${currentMonthName}`}
-            value={
-              totalDelta === 0
-                ? "£0.00"
-                : formatGBP(proration.pence)
-            }
-            valueClass={
-              isDowngrade
-                ? "text-emerald-700"
-                : isUpgrade
-                  ? "text-foreground"
-                  : "text-muted-foreground"
-            }
-            hint={
-              totalDelta === 0
-                ? undefined
-                : `${proration.daysRemaining} of ${proration.daysInMonth} days remaining${
-                    cafeCount > 0
-                      ? ` × ${cafeCount} location${cafeCount === 1 ? "" : "s"}`
-                      : ""
-                  }`
-            }
-          />
-          <ReceiptRow
-            label="Standard next month's total"
-            value={`${formatGBP(newMonthlyTotal)}`}
-            valueClass="text-foreground"
-            hint={
-              cafeCount > 0
-                ? `${formatGBP(toPlan.pricePence)} × ${cafeCount} location${cafeCount === 1 ? "" : "s"} = ${formatGBP(newMonthlyTotal)}`
-                : "No active locations yet — total kicks in once you add your first cafe."
-            }
-          />
-          <ReceiptRow
-            label="Total expected on your next billing date"
-            value={`${formatGBP(nextInvoiceTotal)}`}
-            valueClass="text-primary"
-            emphasis
-          />
-        </div>
+        {isDowngrade ? (
+          // Downgrade copy is hardcoded by founder policy (2026-05-04).
+          // No "prorated credit" row — the no-credit policy is the whole
+          // point. Standard next-month total is still shown so the brand
+          // sees exactly what they'll be billed.
+          <div className="mt-2 space-y-3">
+            <div className="rounded-lg border border-border bg-muted/30 px-4 py-3.5 text-[12.5px] leading-relaxed text-foreground">
+              You will instantly leave the LCP+ Global network. Because
+              you are exiting mid-cycle, no prorated credits are issued.
+              Your next invoice will be your standard Private rate.
+            </div>
+            <div className="divide-y divide-border rounded-lg border border-border bg-muted/20">
+              <ReceiptRow
+                label="Total expected on your next billing date"
+                value={`${formatGBP(nextInvoiceTotal)}`}
+                valueClass="text-primary"
+                hint={
+                  cafeCount > 0
+                    ? `${formatGBP(toPlan.pricePence)} × ${cafeCount} location${cafeCount === 1 ? "" : "s"} = ${formatGBP(newMonthlyTotal)}`
+                    : "No active locations yet — total kicks in once you add your first cafe."
+                }
+                emphasis
+              />
+            </div>
+          </div>
+        ) : (
+          // Upgrade / no-op: full three-line receipt as before.
+          <div className="mt-2 divide-y divide-border rounded-lg border border-border bg-muted/20">
+            <ReceiptRow
+              label={`Prorated fee for the remainder of ${currentMonthName}`}
+              value={
+                totalDelta === 0
+                  ? "£0.00"
+                  : formatGBP(proration.pence)
+              }
+              valueClass={
+                isUpgrade ? "text-foreground" : "text-muted-foreground"
+              }
+              hint={
+                totalDelta === 0
+                  ? undefined
+                  : `${proration.daysRemaining} of ${proration.daysInMonth} days remaining${
+                      cafeCount > 0
+                        ? ` × ${cafeCount} location${cafeCount === 1 ? "" : "s"}`
+                        : ""
+                    }`
+              }
+            />
+            <ReceiptRow
+              label="Standard next month's total"
+              value={`${formatGBP(newMonthlyTotal)}`}
+              valueClass="text-foreground"
+              hint={
+                cafeCount > 0
+                  ? `${formatGBP(toPlan.pricePence)} × ${cafeCount} location${cafeCount === 1 ? "" : "s"} = ${formatGBP(newMonthlyTotal)}`
+                  : "No active locations yet — total kicks in once you add your first cafe."
+              }
+            />
+            <ReceiptRow
+              label="Total expected on your next billing date"
+              value={`${formatGBP(nextInvoiceTotal)}`}
+              valueClass="text-primary"
+              emphasis
+            />
+          </div>
+        )}
 
         <DialogFooter className="mt-2">
           <Button

@@ -678,8 +678,11 @@ async def request_plan_change(
     elif monthly_total_delta_pence < 0:
         direction = "downgrade"
         immediate_charge_pence = None
-        # Credit is a positive amount the user gets back; flip the sign.
-        next_invoice_credit_pence = -proration_pence
+        # Revenue-protection policy (2026-05-04): downgrades issue NO
+        # prorated credit. The brand keeps the cycle they already paid
+        # for; next invoice charges at the new (lower) rate. Stripe call
+        # below uses proration_behavior="none" to match.
+        next_invoice_credit_pence = None
     else:
         direction = "noop"
         immediate_charge_pence = None
@@ -792,16 +795,27 @@ async def request_plan_change(
             )
         item_id = items[0]["id"]
 
-        # Step 2 — swap the price with create_prorations. This is the
-        # core call. Stripe writes proration line items for the unused
-        # portion of the old tier (negative) and the used portion of the
-        # new tier (positive) for the remainder of the current cycle.
+        # Step 2 — swap the price. Proration behaviour is direction-
+        # specific (revenue-protection policy 2026-05-04):
+        #   upgrade  → "create_prorations" so the brand pays the
+        #              prorated difference now and gets the new tier's
+        #              benefits in real time (Step 3 invoices+pays).
+        #   downgrade → "none" so NO credit is issued for the unused
+        #               portion of the old (higher) tier. The brand
+        #               finishes the cycle at the new (lower) rate
+        #               without a refund. Customers earned at the
+        #               brand revert to private scope on the next
+        #               consumer balance read because main.py joins
+        #               brand.scheme_type live (no ledger migration).
         # billing_cycle_anchor stays whatever the subscription was
         # originally created with — we never re-anchor mid-life.
+        proration_behavior = (
+            "create_prorations" if direction == "upgrade" else "none"
+        )
         stripe.SubscriptionItem.modify(
             item_id,
             price=new_price_id,
-            proration_behavior="create_prorations",
+            proration_behavior=proration_behavior,
         )
 
         # Step 3 — for upgrades, invoice + pay immediately so the cafe
