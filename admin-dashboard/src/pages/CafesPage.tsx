@@ -437,11 +437,19 @@ function CafeRow({
         {formatJoinedDate(cafe.created_at)}
       </td>
       <td className="px-5 py-3.5">
-        {/* Cafe-level billing_status — set from the Billing tab's Cancel
-            flow. Brand-level subscription_status is a different concept
-            (real Stripe subscription) and isn't what an admin cares
-            about when drilling into a single branch. */}
-        <StatusPill status={cafe.billing_status} />
+        {/* Effective status: a cafe can only be live if its brand is
+            paying. Cafe.billing_status captures per-cafe cancellation
+            *within* a paying brand; if the brand itself isn't ACTIVE,
+            that's the bottleneck (and the b2b dashboard + POS gate are
+            already reading brand.subscription_status, so the pill must
+            agree or it lies to the admin). */}
+        <StatusPill
+          status={
+            cafe.subscription_status === "active"
+              ? cafe.billing_status
+              : cafe.subscription_status
+          }
+        />
       </td>
       <td className="px-5 py-3.5">
         <div className="flex items-center justify-end gap-1">
