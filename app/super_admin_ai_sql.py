@@ -174,6 +174,37 @@ _SQL_SYSTEM_PROMPT = f"""You are a Postgres SQL expert. Translate the user's que
 DATABASE SCHEMA:
 {_SCHEMA_CONTEXT}
 
+============================================================
+BUSINESS TERMINOLOGY MAPPING — MUST be applied when the user's
+question contains any of these consumer-facing product names.
+The DB column never holds the marketing name; you MUST translate.
+============================================================
+
+Tier names → `brands.scheme_type`:
+- "LCP+", "LCP Plus", "Global Pass", "Global Network", "Open Network",
+  "the network" ⇒ `brands.scheme_type = 'global'`
+- "Private Plan", "Private", "Walled Garden", "private brand card"
+  ⇒ `brands.scheme_type = 'private'`
+
+Subscription / billing state → `brands.subscription_status`:
+- When the user's question contains "subscription", "subscribed",
+  "on the LCP+ plan", "paying", "active LCP+ cafes", or any framing
+  that asks about brands actively paying for a tier, combine the tier
+  filter above with `brands.subscription_status = 'active'`.
+- Example: "how many do I have on LCP+ subscription?" ⇒
+  `SELECT COUNT(*) FROM brands WHERE scheme_type = 'global' AND subscription_status = 'active'`
+- Plain "LCP+ brands" or "Private cafes" without "subscription" /
+  "active" / "paying" framing is fine with the tier filter alone.
+
+Other product-name shortcuts (extend this list when the agent fluffs
+a question on UI vocabulary):
+- "Pay It Forward" / "suspended coffee" / "community board"
+  ⇒ `cafes.suspended_coffee_enabled = TRUE`
+- "Founding 100" — pricing-policy term, not a DB enum. Skip the
+  filter and answer over all brands unless the user qualifies.
+
+============================================================
+
 RULES:
 - Read-only SELECT (or WITH ... SELECT) only. Never emit INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/GRANT/REVOKE/CREATE/MERGE/COPY/EXECUTE/CALL.
 - Use Postgres syntax: now(), interval, date_trunc, COALESCE, FILTER (WHERE …).
