@@ -6,14 +6,15 @@ from typing import Literal
 from uuid import UUID
 
 import stripe
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_admin_session
 from app.database import get_session, settings
-from app.models import Brand, Cafe, SchemeType, SubscriptionStatus
+from app.email_sender import send_tier_upgrade_notification
+from app.models import Brand, Cafe, SchemeType, StampLedger, SubscriptionStatus, User
 from app.schemas import AdminSession, CheckoutResponse
 
 logger = logging.getLogger(__name__)
@@ -633,9 +634,80 @@ class PlanChangeResponse(BaseModel):
     next_invoice_credit_pence: int | None = None
 
 
+async def _collect_upgrade_notification_recipients(
+    session: AsyncSession,
+    brand_id: UUID,
+) -> list[str]:
+    """Return distinct non-null user emails for consumers with a positive
+    net stamp balance at any cafe of `brand_id` at the moment of the call.
+
+    Net is `SUM(stamp_delta)` across the user's EARN(+1) and REDEEM(-10)
+    rows for this brand's cafes. Suspended users are excluded — they
+    can't redeem, notifying them is noise. Used on the PRIVATE → GLOBAL
+    upgrade path of /plan-change to seed the B2C notification batch."""
+    stmt = (
+        select(User.email)
+        .join(StampLedger, StampLedger.customer_id == User.id)
+        .join(Cafe, Cafe.id == StampLedger.cafe_id)
+        .where(Cafe.brand_id == brand_id)
+        .where(User.email.is_not(None))
+        .where(User.is_suspended.is_(False))
+        .group_by(User.id, User.email)
+        .having(func.sum(StampLedger.stamp_delta) > 0)
+    )
+    result = await session.execute(stmt)
+    return [row[0] for row in result.all() if row[0]]
+
+
+def _send_upgrade_notification_batch(
+    to_emails: list[str],
+    brand_name: str,
+    brand_id: str,
+) -> None:
+    """Fire-and-forget transactional email batch — runs in FastAPI's
+    BackgroundTasks threadpool after request_plan_change has already
+    returned 200 to the brand owner. Each send is best-effort: a single
+    failure logs + continues so one bad address doesn't drop the rest.
+
+    Idempotency is enforced upstream — we only reach here when the
+    brand's scheme_type actually flipped Private → Global in this
+    request's transaction (the `brand.scheme_type != new_scheme` guard
+    in request_plan_change ensures a re-clicked plan-change is a no-op
+    on the second call). send_tier_upgrade_notification itself never
+    raises (its underlying send_email logs + swallows errors), so the
+    try/except here is belt-and-suspenders."""
+    ok = 0
+    fail = 0
+    for email in to_emails:
+        try:
+            sent = send_tier_upgrade_notification(
+                to_email=email, brand_name=brand_name
+            )
+            if sent:
+                ok += 1
+            else:
+                fail += 1
+        except Exception as exc:  # noqa: BLE001 — best-effort batch
+            fail += 1
+            logger.warning(
+                "TIER-UPGRADE-EMAIL send failed brand=%s to=%s err=%s",
+                brand_id,
+                email,
+                exc,
+            )
+    logger.info(
+        "TIER-UPGRADE-EMAIL-BATCH-DONE brand=%s sent=%d failed=%d total=%d",
+        brand_id,
+        ok,
+        fail,
+        len(to_emails),
+    )
+
+
 @router.post("/plan-change", response_model=PlanChangeResponse)
 async def request_plan_change(
     body: PlanChangeRequest,
+    background_tasks: BackgroundTasks,
     admin: AdminSession = Depends(get_admin_session),
     session: AsyncSession = Depends(get_session),
 ) -> PlanChangeResponse:
@@ -874,6 +946,22 @@ async def request_plan_change(
     # than roll back a real Stripe charge.
     new_scheme = _scheme_type_for_plan(body.to_plan)
     if new_scheme is not None and brand.scheme_type != new_scheme:
+        old_scheme = brand.scheme_type
+        # B2C "supercharged stamps" notification fires only on the
+        # Private → Global flip. Snapshot recipients BEFORE the write
+        # so the batch reflects the moment of the tier change. Empty
+        # list is fine — the brand might have zero stamping customers
+        # yet (no emails dispatched, no harm).
+        notify_emails: list[str] = []
+        is_upgrade_to_global = (
+            old_scheme == SchemeType.PRIVATE
+            and new_scheme == SchemeType.GLOBAL
+        )
+        if is_upgrade_to_global:
+            notify_emails = await _collect_upgrade_notification_recipients(
+                session, brand_id=brand.id
+            )
+
         try:
             brand.scheme_type = new_scheme
             await session.commit()
@@ -885,6 +973,22 @@ async def request_plan_change(
                 exc,
             )
             await session.rollback()
+            # Tier flip didn't land — don't dispatch a batch that would
+            # tell customers about an upgrade that never happened.
+            notify_emails = []
+
+        if notify_emails:
+            background_tasks.add_task(
+                _send_upgrade_notification_batch,
+                to_emails=notify_emails,
+                brand_name=brand.name,
+                brand_id=str(brand.id),
+            )
+            logger.info(
+                "TIER-UPGRADE-EMAIL-BATCH scheduled brand=%s recipients=%d",
+                brand.id,
+                len(notify_emails),
+            )
 
     return PlanChangeResponse(
         notified=True,
