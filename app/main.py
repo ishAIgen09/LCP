@@ -3048,6 +3048,14 @@ app.include_router(consumer_api_router)
 app.include_router(billing_router)
 app.include_router(b2b_router)
 
+# Super-admin Text-to-SQL Data Assistant. Sibling to the curated
+# /api/admin/platform/ai-agent endpoint above (which injects a fixed
+# set of live metrics into the system prompt) — /ask-db is the
+# broader text-to-SQL flow guarded by SET TRANSACTION READ ONLY +
+# a SELECT-only static check. See app/super_admin_ai_sql.py.
+from app.super_admin_ai_sql import router as super_admin_ai_sql_router  # noqa: E402
+app.include_router(super_admin_ai_sql_router)
+
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 

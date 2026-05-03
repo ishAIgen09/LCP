@@ -1,19 +1,28 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Send, Sparkles, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Loader2, Send, Sparkles, X } from "lucide-react";
 
-import { postAiAgent } from "@/lib/api";
+import { postAskDb } from "@/lib/api";
 
 type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  // Assistant messages backed by /ask-db carry the executed SQL +
+  // row count so the operator can audit what the LLM did. Rendered
+  // as a small "based on N rows" footer with an expandable showing
+  // the SQL string. Optional so the welcome message + error-fallback
+  // bubbles can leave them blank.
+  sql?: string;
+  rowCount?: number;
+  rows?: Record<string, unknown>[];
+  truncated?: boolean;
 };
 
 const WELCOME_MESSAGE: Message = {
   id: "welcome",
   role: "assistant",
   content:
-    "I'm your LCP Data Assistant. I read live platform totals on every reply — try \"How many brands signed up today?\" or \"What's the current Suspended Coffees pool balance?\".",
+    "I'm your LCP Data Assistant. Ask me anything about live platform data — try \"How many brands signed up last week?\", \"Top 5 cafes by stamps this month?\", or \"How many rewards have been redeemed today?\". I'll write the SQL, run it read-only, and summarise the result.",
 };
 
 export function ChatWidget() {
@@ -54,13 +63,17 @@ export function ChatWidget() {
     setBusy(true);
     setError(null);
     try {
-      const res = await postAiAgent(trimmed);
+      const res = await postAskDb(trimmed);
       setMessages((prev) => [
         ...prev,
         {
           id: `a-${Date.now()}`,
           role: "assistant",
           content: res.reply,
+          sql: res.sql || undefined,
+          rowCount: res.row_count,
+          rows: res.rows,
+          truncated: res.truncated,
         },
       ]);
     } catch (e) {
@@ -176,9 +189,51 @@ function MessageBubble({ message }: { message: Message }) {
       <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-emerald-500/15 ring-1 ring-emerald-500/30">
         <Sparkles className="h-3 w-3 text-emerald-300" strokeWidth={2.4} />
       </div>
-      <div className="max-w-[85%] rounded-2xl rounded-tl-md border border-neutral-800 bg-neutral-900/60 px-3.5 py-2 text-sm leading-5 text-neutral-200 shadow-sm">
-        {message.content}
+      <div className="max-w-[85%] space-y-1.5">
+        <div className="rounded-2xl rounded-tl-md border border-neutral-800 bg-neutral-900/60 px-3.5 py-2 text-sm leading-5 text-neutral-200 shadow-sm">
+          {message.content}
+        </div>
+        {message.sql ? <DataReceipt message={message} /> : null}
       </div>
+    </div>
+  );
+}
+
+// Transparency footer that hangs under the assistant bubble whenever
+// the message was produced by the /ask-db endpoint. Collapsed by
+// default — an "N rows" chip you can expand to inspect the SQL the
+// LLM emitted (founder direction: every answer must be auditable).
+function DataReceipt({ message }: { message: Message }) {
+  const [open, setOpen] = useState(false);
+  const rowCount = message.rowCount ?? 0;
+  const truncated = message.truncated ?? false;
+  return (
+    <div className="rounded-md border border-neutral-800 bg-neutral-950/40">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-[10.5px] font-medium uppercase tracking-wider text-neutral-500 transition-colors hover:text-neutral-300"
+      >
+        <span>
+          Based on {rowCount.toLocaleString()} row{rowCount === 1 ? "" : "s"}
+          {truncated ? " (truncated)" : ""}
+        </span>
+        {open ? (
+          <ChevronUp className="h-3 w-3" strokeWidth={2.2} />
+        ) : (
+          <ChevronDown className="h-3 w-3" strokeWidth={2.2} />
+        )}
+      </button>
+      {open ? (
+        <div className="border-t border-neutral-800 px-2.5 py-2">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+            SQL
+          </div>
+          <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-emerald-200/90">
+            {message.sql}
+          </pre>
+        </div>
+      ) : null}
     </div>
   );
 }

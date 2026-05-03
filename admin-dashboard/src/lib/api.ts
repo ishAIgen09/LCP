@@ -421,6 +421,25 @@ export function postAiAgent(message: string): Promise<AiAgentReply> {
   });
 }
 
+// Text-to-SQL Data Assistant. Mirrors the server response shape from
+// app/super_admin_ai_sql.py — `reply` is the natural-language summary
+// (rendered as the chat bubble), `sql` + `rows` + `row_count` power
+// the transparency expandable below it. `truncated` flips when the
+// raw row set was clipped at the server-side MAX_ROWS_RETURNED cap.
+export type AskDbReply = {
+  reply: string;
+  sql: string;
+  rows: Record<string, unknown>[];
+  row_count: number;
+  truncated: boolean;
+};
+
+export function postAskDb(message: string): Promise<AskDbReply> {
+  return sendJSON<AskDbReply>("POST", "/api/admin/platform/ask-db", {
+    message,
+  });
+}
+
 // Fetch a CSV and trigger a browser download. Goes through fetch (not a
 // plain <a href>) so a 4xx surfaces as a throwable error the caller can
 // show in a toast, and the filename comes from Content-Disposition when
