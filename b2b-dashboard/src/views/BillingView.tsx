@@ -128,12 +128,15 @@ export function BillingView({
   const [opening, setOpening] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Plan-change flow state. The brand model doesn't carry a plan tier yet —
-  // every brand starts on the Private Plan ("starter"). Held in local state
-  // so a successful confirm flips the CURRENT pill + per-loc price + total
-  // monthly cost across the whole tab in one render. When the backend
-  // exposes brand.plan_tier, seed the initial value from there.
-  const [currentPlan, setCurrentPlan] = useState<PlanTier>("starter")
+  // Plan-change flow state seeded from brand.schemeType (PRIVATE | GLOBAL),
+  // which the webhook persists from the Stripe Checkout session metadata
+  // (billing.py:957-967) and the /plan-change endpoint keeps in lockstep
+  // (_scheme_type_for_plan). Held in local state so a successful confirm
+  // flips the CURRENT pill + per-loc price + total monthly cost across
+  // the whole tab in one render without waiting for a brand refetch.
+  const [currentPlan, setCurrentPlan] = useState<PlanTier>(
+    brand.schemeType === "global" ? "pro" : "starter",
+  )
   const currentPlanRow =
     PLANS.find((p) => p.id === currentPlan) ?? PLANS[0]
   const totalMonthlyPence = currentPlanRow.pricePence * cafeCount
