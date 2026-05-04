@@ -33,6 +33,17 @@ def _require_stripe_key() -> None:
         )
 
 
+def _stripe_get(obj: object, key: str, default: object = None) -> object:
+    # Stripe Python SDK v8 removed `dict` inheritance from `StripeObject`,
+    # so `.get()` on real webhook payloads raises AttributeError. The
+    # `debug_skip_stripe_sig` branch still feeds us `json.loads` output
+    # (a plain dict). Bridge both shapes — `dict.get` for plain dicts,
+    # `getattr` for Stripe Objects.
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
 async def _count_brand_cafes(session: AsyncSession, brand_id: UUID) -> int:
     result = await session.execute(
         select(func.count(Cafe.id)).where(Cafe.brand_id == brand_id)
@@ -77,7 +88,8 @@ async def sync_subscription_quantity(
 
     try:
         subscription = stripe.Subscription.retrieve(brand.stripe_subscription_id)
-        items = subscription.get("items", {}).get("data", [])
+        items_obj = _stripe_get(subscription, "items") or {}
+        items = _stripe_get(items_obj, "data") or []
         if not items:
             logger.error(
                 "Subscription %s has no items — can't sync quantity",
@@ -85,7 +97,7 @@ async def sync_subscription_quantity(
             )
             return
         item_id = items[0]["id"]
-        current_qty = items[0].get("quantity", 0)
+        current_qty = _stripe_get(items[0], "quantity", 0)
         if current_qty == cafe_count:
             return
         # proration_behavior="create_prorations" is co-termed: Stripe
@@ -384,7 +396,7 @@ async def cancel_subscription(
     # Keep current_period_end aligned with what Stripe reports — the
     # frontend uses this to render the "scheduled to cancel on …"
     # date string.
-    cpe_ts = updated.get("current_period_end")
+    cpe_ts = _stripe_get(updated, "current_period_end")
     if cpe_ts:
         brand.current_period_end = datetime.fromtimestamp(int(cpe_ts), tz=timezone.utc)
     await session.commit()
@@ -476,7 +488,7 @@ async def reactivate_subscription(
     # owns; only flip from PENDING_CANCELLATION.
     if brand.subscription_status == SubscriptionStatus.PENDING_CANCELLATION:
         brand.subscription_status = SubscriptionStatus.ACTIVE
-    cpe_ts = updated.get("current_period_end")
+    cpe_ts = _stripe_get(updated, "current_period_end")
     if cpe_ts:
         brand.current_period_end = datetime.fromtimestamp(int(cpe_ts), tz=timezone.utc)
     await session.commit()
@@ -859,7 +871,8 @@ async def request_plan_change(
         # surface it; one Stripe round-trip is acceptable for a
         # rare-cadence operation like a plan change.
         subscription = stripe.Subscription.retrieve(brand.stripe_subscription_id)
-        items = subscription.get("items", {}).get("data", [])
+        items_obj = _stripe_get(subscription, "items") or {}
+        items = _stripe_get(items_obj, "data") or []
         if not items:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
@@ -1047,11 +1060,13 @@ async def stripe_webhook(
                 detail="Invalid signature",
             )
 
-    event_type = event.get("type")
+    event_type = _stripe_get(event, "type")
     if event_type == "checkout.session.completed":
-        obj = event["data"]["object"]
-        brand_id_str = (obj.get("metadata") or {}).get("brand_id") or obj.get(
-            "client_reference_id"
+        data = _stripe_get(event, "data") or {}
+        obj = _stripe_get(data, "object") or {}
+        metadata = _stripe_get(obj, "metadata") or {}
+        brand_id_str = _stripe_get(metadata, "brand_id") or _stripe_get(
+            obj, "client_reference_id"
         )
         if not brand_id_str:
             return {"received": True, "warning": "no brand_id on session"}
@@ -1065,10 +1080,10 @@ async def stripe_webhook(
             return {"received": True, "warning": "brand not found"}
 
         brand.subscription_status = SubscriptionStatus.ACTIVE
-        stripe_customer_id = obj.get("customer")
+        stripe_customer_id = _stripe_get(obj, "customer")
         if stripe_customer_id and not brand.stripe_customer_id:
             brand.stripe_customer_id = stripe_customer_id
-        stripe_subscription_id = obj.get("subscription")
+        stripe_subscription_id = _stripe_get(obj, "subscription")
         if stripe_subscription_id and not brand.stripe_subscription_id:
             brand.stripe_subscription_id = stripe_subscription_id
 
@@ -1078,7 +1093,7 @@ async def stripe_webhook(
         # reflect the new tier on the next page load. Unknown / missing
         # tier values are left alone (we treat them as "no preference",
         # not as a directive to flip).
-        tier = (obj.get("metadata") or {}).get("tier")
+        tier = _stripe_get(metadata, "tier")
         if tier == "global":
             brand.scheme_type = SchemeType.GLOBAL
         elif tier == "private":
@@ -1108,9 +1123,10 @@ async def stripe_webhook(
     # (ACTIVE / PENDING_CANCELLATION) to CANCELED in one pass so the
     # super-admin Billing tab drops them from MRR immediately.
     if event_type == "customer.subscription.deleted":
-        obj = event["data"]["object"]
-        stripe_customer_id = obj.get("customer")
-        stripe_subscription_id = obj.get("id")
+        data = _stripe_get(event, "data") or {}
+        obj = _stripe_get(data, "object") or {}
+        stripe_customer_id = _stripe_get(obj, "customer")
+        stripe_subscription_id = _stripe_get(obj, "id")
 
         # Locate the brand — prefer subscription_id (more specific), fall
         # back to customer_id, then metadata if neither is on file.
@@ -1130,7 +1146,8 @@ async def stripe_webhook(
                 )
             ).scalar_one_or_none()
         if brand is None:
-            meta_brand_id = (obj.get("metadata") or {}).get("brand_id")
+            metadata = _stripe_get(obj, "metadata") or {}
+            meta_brand_id = _stripe_get(metadata, "brand_id")
             if meta_brand_id:
                 try:
                     brand = await session.get(Brand, UUID(meta_brand_id))
@@ -1171,9 +1188,10 @@ async def stripe_webhook(
     #      having moved first. The handler is the only thing that
     #      keeps the DB + UI honest in that case.
     if event_type == "customer.subscription.updated":
-        obj = event["data"]["object"]
-        stripe_subscription_id = obj.get("id")
-        stripe_customer_id = obj.get("customer")
+        data = _stripe_get(event, "data") or {}
+        obj = _stripe_get(data, "object") or {}
+        stripe_subscription_id = _stripe_get(obj, "id")
+        stripe_customer_id = _stripe_get(obj, "customer")
 
         brand: Brand | None = None
         if stripe_subscription_id:
@@ -1193,8 +1211,8 @@ async def stripe_webhook(
         if brand is None:
             return {"received": True, "warning": "no matching brand"}
 
-        new_cape = bool(obj.get("cancel_at_period_end", False))
-        cpe_ts = obj.get("current_period_end")
+        new_cape = bool(_stripe_get(obj, "cancel_at_period_end", False))
+        cpe_ts = _stripe_get(obj, "current_period_end")
         changed = False
 
         if brand.cancel_at_period_end != new_cape:
